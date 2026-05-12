@@ -53,3 +53,38 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# CMake build artifacts
+build/
+build-*/
+out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.cbp
+compile_commands.json
+
+# Simulation outputs (results dirs created by `spody propagate --out`)
+results/
+*.csv
+*.dat
+!examples/**/*.csv
+!examples/**/*.dat
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
