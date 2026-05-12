@@ -1,97 +1,169 @@
 # SpOdy
+
 **Simultaneous Propagation of Orbital DYnamics**
 
-SpOdy is a high-performance, high-precision **orbital dynamics propagator**
-designed for the **simultaneous integration of multiple space objects**.
+[![CI](https://github.com/ValeEng/spody/actions/workflows/ci.yml/badge.svg)](https://github.com/ValeEng/spody/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Status: alpha](https://img.shields.io/badge/Status-alpha-orange.svg)](#status)
 
-All objects are propagated within a single simulation framework, while
-**each trajectory remains dynamically independent**. This design enables
-efficient batch propagation of satellites, debris, and constellations
-without introducing mutual dynamical coupling.
-
----
-
-## Key Features
-
-- **Simultaneous propagation of multiple objects**
-  - Multiple spacecraft and space objects propagated in the same run
-  - Independent orbital dynamics for each object
-
-- **High-precision orbital dynamics**
-  - High-order numerical integration schemes
-  - Accurate short- and long-term propagation
-
-- **High-performance design**
-  - Optimized for large numbers of independent trajectories
-  - Suitable for constellation- and debris-scale simulations
-
-- **Flexible dynamical modeling**
-  - Central-body gravity
-  - Third-body perturbations (applied independently)
-  - Modular and extensible force-model architecture
-
-- **Open and modular**
-  - Clean and extensible software design
-  - Easy integration into external pipelines
+SpOdy is a high-performance orbital dynamics propagator built as a thin
+application layer on top of [**spody-core**](https://github.com/ValeEng/spody-core),
+the underlying C library. The long-term aim is to make precision astrodynamics
+accessible without ceremony: a single, small CLI driver plus an optional
+graphical front-end, both fed by a plain-text input file.
 
 ---
 
-## Typical Applications
+## Status
 
-- Satellite constellation propagation
-- Orbital debris evolution
-- Large-scale batch orbit propagation
-- Mission analysis and trade studies
-- Independent multi-object simulations
-
----
-
-## Design Philosophy
-
-SpOdy focuses on **system-level efficiency without dynamical coupling**.
-
-By propagating multiple objects simultaneously while keeping their dynamics
-independent, SpOdy enables:
-- Efficient large-scale simulations
-- Consistent configuration and modeling
-- Straightforward extension toward future coupled dynamics
+**Alpha — early scaffolding.** The CLI dispatch (`propagate`, `validate`, `info`)
+compiles and runs, but the simulation handlers are still stubs. The TOML input
+schema, the actual propagation driver, and the Python GUI all live on the
+roadmap below. The library underneath (`spody-core`) is functional and
+validated against an external 6-day LRO reference (322 µm position drift vs the
+reference simulator over 6 days, sub-km drift vs SPICE-reconstructed LRO POD,
+roughly 8× faster than Tudat and 2.5× faster than Orekit on the same setup).
 
 ---
 
-## Future Extensions
+## Architecture
 
-While current versions propagate objects independently, the architecture is
-designed to allow future extensions toward:
-- Coupled multi-body dynamics
-- Mutual perturbations
-- Fully interacting N-body systems
+```
+        [TOML input file]
+                |
+                v
+        +-------------------+
+        |   spody (CLI)     |   <- this repo
+        +-------------------+
+                |  links statically against
+                v
+        +-------------------+
+        |   spody-core      |   <- submodule, https://github.com/ValeEng/spody-core
+        +-------------------+
+                |
+                v
+        [CSV / binary output files]
+                |
+                v
+        [Python GUI / web frontend]   <- planned, file-based, no C bindings
+```
+
+The split is deliberate:
+
+- **spody-core** is a clean C99 library, fully reusable on its own.
+- **spody** is the executable that turns it into a complete tool: input
+  parsing, simulation orchestration, output formatting.
+- The future Python GUI (under `python/`) will follow the **Patran/Nastran**
+  pattern — it generates the TOML, invokes the binary, and parses the output
+  files. It will not link C code directly. The same binary therefore serves
+  desktop, batch HPC, and (eventually) a web backend with no source changes.
 
 ---
 
-## Disclaimer
+## Build
 
-This software is intended for research, educational, and engineering purposes
-only and is provided "as is", without warranty of any kind.
+```bash
+git clone --recursive https://github.com/ValeEng/spody.git
+cd spody
+cmake -B build
+cmake --build build --config Release
+```
 
-SpOdy propagates multiple space objects within a common simulation framework;
-however, each object is propagated with **independent dynamics**. The software
-does not model mutual gravitational interactions, close-approach effects,
-collisions, or any form of dynamical coupling between objects.
+The `--recursive` flag clones the `spody-core` submodule. If you cloned
+without it:
 
-The accuracy, completeness, and suitability of the results are not guaranteed in all cases.
-Users must independently verify and validate all outputs before use in
-operational, mission-critical, or safety-critical contexts. The authors
-disclaim any liability arising from the use of this software.
+```bash
+git submodule update --init --recursive
+```
+
+Resulting binary:
+
+- `build/spody` on Linux / macOS
+- `build/Release/spody.exe` on Windows (MSVC multi-config)
+
+Smoke test:
+
+```bash
+$ ./build/spody info
+SpOdy app  : 0.1.0
+spody-core : 1.0.0  (git <sha>, built <timestamp>)
+```
+
+---
+
+## CLI usage (current)
+
+```
+spody <command> [options]
+
+Commands:
+  propagate  <input.toml> [--out <dir>]   run a simulation         (stub)
+  validate   <input.toml>                 check input file, no run (stub)
+  info                                    print version + capabilities
+```
+
+Both `propagate` and `validate` are placeholders; only `info` is wired today.
+The TOML schema is being designed -- see the roadmap.
+
+---
+
+## Roadmap
+
+Ordered roughly by what unlocks the most for users:
+
+- [ ] TOML input schema and parser (`tomlc99` drop-in)
+- [ ] `spody validate` — fully parse + sanity-check input without running
+- [ ] `spody propagate` — single-spacecraft propagation end-to-end
+- [ ] CSV + binary output writers; output schema documented
+- [ ] Examples (`examples/lro_6day/`, ISS LEO, GEO with SRP, …)
+- [ ] Python GUI prototype under `python/` — TOML editor + result viewer
+- [ ] Multi-spacecraft / constellation propagation in a single run
+- [ ] Web frontend wrapping the same binary
+
+---
+
+## Repository layout
+
+```
+spody/
+├── .github/workflows/        # CI (build matrix linux / macos / windows + smoke test)
+├── external/
+│   └── spody-core/           # submodule, the C library
+├── src/
+│   └── main.c                # CLI entry point + subcommand dispatch
+├── examples/                 # input TOML examples (planned)
+├── tests/                    # end-to-end CLI tests (planned)
+├── python/                   # GUI prototype (planned, file-based IO)
+├── CMakeLists.txt
+├── LICENSE
+└── README.md
+```
+
+---
+
+## Design philosophy
+
+- **One binary, file-based I/O.** No Python ↔ C bindings, no plugin system.
+  The same `spody` executable drives desktop, batch, and web.
+- **spody-core is a first-class consumer-friendly library.** Anyone can pull
+  the submodule, link the static library, and ignore this app entirely.
+- **Performance accessible, not hidden.** spody-core is C99 + CMake with zero
+  external dependencies; the API is direct (no virtual dispatch, no opaque
+  managers), so SIMD-friendly hot paths stay SIMD-friendly through the whole
+  call chain.
+
+---
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](./LICENSE).
 
 ---
 
 ## Acknowledgements
 
-SpOdy has been developed independently. Some implementation 
-choices and algorithmic approaches are inspired by established concepts 
-and design patterns used in the **General Mission Analysis Tool (GMAT)**.
-
-
-GMAT is an open-source mission analysis system developed by NASA and released
-under the Apache License 2.0.
-
+SpOdy is developed independently. A few high-level patterns are inspired by
+established mission-analysis systems, notably **GMAT** (NASA, Apache 2.0).
+Validation work has been done against external references including SPICE LRO
+POD products and side-by-side benchmarks vs **Tudat** (TU Delft) and
+**Orekit** (CS Group / ESA).
