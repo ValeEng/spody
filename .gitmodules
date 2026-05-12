@@ -1,0 +1,3 @@
+[submodule "external/spody-core"]
+	path = external/spody-core
+	url = https://github.com/ValeEng/spody-core
