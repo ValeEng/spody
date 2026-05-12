@@ -1,0 +1,71 @@
+name: CI
+
+# Build spody (the application) on the three major desktop platforms with
+# both common free compilers per platform. Runs on every push to main and
+# every pull request.
+#
+# Unlike spody-core, the checkout step here MUST recursively fetch the
+# spody-core submodule, otherwise external/spody-core is empty and the
+# add_subdirectory() in CMakeLists.txt fails.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+          - os: macos-latest
+            compiler: clang
+            cc: clang
+          - os: windows-latest
+            compiler: msvc
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Smoke test (spody info)
+        shell: bash
+        run: |
+          # Locate the spody binary in either single-config (build/) or
+          # multi-config (build/Release/) layout.
+          if [ -x build/spody ]; then
+              build/spody info
+          elif [ -x build/Release/spody.exe ]; then
+              build/Release/spody.exe info
+          elif [ -x build/spody.exe ]; then
+              build/spody.exe info
+          else
+              echo "could not locate spody binary"
+              find build -maxdepth 3 -name "spody*"
+              exit 1
+          fi
