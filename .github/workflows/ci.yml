@@ -48,7 +48,13 @@ jobs:
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        # SPODY_WHOLE_PROGRAM_OPT=OFF disables -flto / /GL+/LTCG. The Ubuntu
+        # runners ship a clang whose bitcode (LLVM 18) is newer than the gold
+        # plugin shipped with binutils (LLVM 16), so an LTO link fails with
+        # "file format not recognized". CI is a build + smoke test, not a
+        # performance benchmark, so we just turn LTO off here. Local Release
+        # builds keep it on by default.
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSPODY_WHOLE_PROGRAM_OPT=OFF
 
       - name: Build
         run: cmake --build build --config Release --parallel
