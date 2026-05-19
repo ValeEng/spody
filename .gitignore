@@ -70,8 +70,14 @@ compile_commands.json
 results/
 *.csv
 *.dat
+*.bin
 !examples/**/*.csv
 !examples/**/*.dat
+
+# Per-example output dirs: keep the directory shape (.gitkeep) but
+# ignore anything spody propagate writes into them.
+examples/**/output/*
+!examples/**/output/.gitkeep
 
 # Python
 __pycache__/
@@ -88,3 +94,4 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+note.txt

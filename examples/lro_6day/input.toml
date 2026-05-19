@@ -1,0 +1,47 @@
+# SpOdy input file -- LRO 6-day reference propagation.
+#
+# Propagates NASA's Lunar Reconnaissance Orbiter for 6 days from
+# 2009-09-18 12:00 UTC. Initial conditions come from SPICE LRO POD
+# ephemeris at that epoch. This is the canonical validation scenario
+# for spody-core and reproduces the bench used in
+#   external/spody-core/tvb/validations/val_propagator_lro.c
+#
+# All paths are relative to this TOML file.
+
+[simulation]
+name       = "lro_6day"
+et_start_s = 3.065472661824111e+08      # 2009-09-18 12:00 UTC (TDB)
+duration_s = 5.184e+05                  # 6 days
+
+[spacecraft]
+mass_kg = 1916.0
+# SRP / drag are disabled in this scenario, so no [spacecraft.srp] block.
+
+[initial_state]
+# Cartesian in the Moon-centred ICRF-aligned frame.
+frame        = "central_inertial"
+position_km  = [ 1622.030233600,  512.084982400, -529.342614300]
+velocity_kms = [    0.648832282,   -0.519033001,    1.440002498]
+
+[force_model]
+central_body     = "Moon"
+harmonics_file   = "../../external/spody-core/raw_data/GRGM1200B/gggrx_1200b_sha.tab"
+harmonics_degree = 80
+third_bodies     = ["Earth", "Sun"]
+srp              = false
+
+[ephemeris]
+file = "../../external/spody-core/raw_data/DE440/de440.spody"
+
+[integrator]
+type     = "rkdp45"
+rel_tol  = 1.0e-11
+h_init_s = 60.0
+h_min_s  = 1.0e-5
+h_max_s  = 2700.0
+
+[output]
+mode       = "fixed"
+interval_s = 60.0
+csv_file   = "output/lro_6day.csv"
+bin_file   = "output/lro_6day.bin"

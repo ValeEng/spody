@@ -1,0 +1,72 @@
+# SpOdy batch input -- minimal mass + SRP sweep around the LRO scenario.
+#
+# Three cases varying spacecraft mass and SRP coefficient. Duration and
+# harmonics degree are kept small to make this a fast smoke test (a few
+# seconds total). All paths are relative to this TOML file.
+#
+# Run with:    spody batch examples/batch_demo/input.toml
+# Expected:    examples/batch_demo/output/batch/{csv,bin} per case
+#
+# Notes on schema:
+#   - The whole top-level (sections [simulation] through [output]) acts as
+#     the BASE scenario.
+#   - Removing or commenting out [batch] makes this file a normal single-
+#     scenario input runnable via `spody propagate`.
+#   - In batch mode the VALUES of output.csv_file / output.bin_file are
+#     ignored; only their PRESENCE matters (= "emit this stream per case").
+#     Per-case paths are computed as
+#         <batch.output_dir>/batch/<batch.name>_<id>.<csv|bin>
+
+[simulation]
+name       = "lro_batch_demo"
+et_start_s = 3.065472661824111e+08      # 2009-09-18 12:00 UTC (TDB)
+duration_s = 3600.0                     # 1 hour
+
+[spacecraft]
+mass_kg = 1916.0                        # overridden per case
+
+  [spacecraft.srp]
+  area_m2 = 20.0
+  Cr      = 1.3                         # overridden per case
+
+[initial_state]
+frame        = "central_inertial"
+position_km  = [ 1622.030233600,  512.084982400, -529.342614300]
+velocity_kms = [    0.648832282,   -0.519033001,    1.440002498]
+
+[force_model]
+central_body     = "Moon"
+harmonics_file   = "../../external/spody-core/raw_data/GRGM1200B/gggrx_1200b_sha.tab"
+harmonics_degree = 20                   # small N for fast smoke test
+third_bodies     = ["Earth", "Sun"]
+srp              = true
+
+[ephemeris]
+file = "../../external/spody-core/raw_data/DE440/de440.spody"
+
+[integrator]
+type     = "rkdp45"
+rel_tol  = 1.0e-9
+h_init_s = 60.0
+h_min_s  = 1.0e-5
+h_max_s  = 600.0
+
+[output]
+mode       = "fixed"
+interval_s = 60.0
+csv_file   = "ignored_in_batch.csv"     # presence = "emit CSV per case"
+bin_file   = "ignored_in_batch.bin"     # presence = "emit binary per case"
+log_file   = "ignored_in_batch.log"     # presence = "tee stdout/stderr to a log file"
+
+[batch]
+name          = "mass_srp_sweep"
+output_dir    = "output"                # must EXIST; "batch/" subdir is auto-created
+thread_number = 1                       # >1 reserved for future OpenMP build
+cases_file    = "cases.csv"
+
+[batch.columns]
+# CSV column name -> dotted path of the InputConfig field to override.
+# Shared fields (ephemeris.file, force_model.harmonics_*, central_body)
+# are NOT allowed here -- they must stay identical across the batch.
+mass_kg = "spacecraft.mass_kg"
+Cr      = "spacecraft.srp.Cr"

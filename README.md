@@ -16,13 +16,13 @@ graphical front-end, both fed by a plain-text input file.
 
 ## Status
 
-**Alpha — early scaffolding.** The CLI dispatch (`propagate`, `validate`, `info`)
-compiles and runs, but the simulation handlers are still stubs. The TOML input
-schema, the actual propagation driver, and the Python GUI all live on the
-roadmap below. The library underneath (`spody-core`) is functional and
-validated against an external 6-day LRO reference (322 µm position drift vs the
-reference simulator over 6 days, sub-km drift vs SPICE-reconstructed LRO POD,
-roughly 8× faster than Tudat and 2.5× faster than Orekit on the same setup).
+**Alpha — functional, rough edges.** Single-scenario propagation, schema
+validation, and multi-case batch runs all work end-to-end against the
+[LRO 6-day reference](examples/lro_6day/) and a
+[batch smoke test](examples/batch_demo/). The Python GUI, events, and
+parallel batch (OpenMP) are still on the roadmap below. The library
+underneath (`spody-core`) is validated against SPICE LRO POD ephemerides
+with sub-km position drift over the 6-day window.
 
 ---
 
@@ -91,33 +91,53 @@ spody-core : 1.0.0  (git <sha>, built <timestamp>)
 
 ---
 
-## CLI usage (current)
+## CLI usage
 
 ```
 spody <command> [options]
 
 Commands:
-  propagate  <input.toml> [--out <dir>]   run a simulation         (stub)
-  validate   <input.toml>                 check input file, no run (stub)
+  propagate  <input.toml> [--out <dir>]   run a single simulation
+  batch      <input.toml>                 run a multi-case batch
+  validate   <input.toml>                 check input file (no run)
   info                                    print version + capabilities
 ```
 
-Both `propagate` and `validate` are placeholders; only `info` is wired today.
-The TOML schema is being designed -- see the roadmap.
+All commands are functional. For the full input file schema (TOML), see
+[`examples/README.md`](examples/README.md). For working scenarios you can
+copy from, see [`examples/lro_6day/`](examples/lro_6day/) and
+[`examples/batch_demo/`](examples/batch_demo/).
 
 ---
 
 ## Roadmap
 
-Ordered roughly by what unlocks the most for users:
+Ordered roughly by what unlocks the most for users.
 
-- [ ] TOML input schema and parser (`tomlc99` drop-in)
-- [ ] `spody validate` — fully parse + sanity-check input without running
-- [ ] `spody propagate` — single-spacecraft propagation end-to-end
-- [ ] CSV + binary output writers; output schema documented
-- [ ] Examples (`examples/lro_6day/`, ISS LEO, GEO with SRP, …)
+**Done**
+
+- [x] TOML input schema and parser (`tomlc99` drop-in)
+- [x] `spody validate` — fully parse + sanity-check input without running
+- [x] `spody propagate` — single-spacecraft propagation end-to-end
+- [x] CSV + binary output writers
+- [x] `spody batch` — multi-case run from a base TOML + CSV matrix of
+      per-case overrides, sequential
+- [x] Tee log output (`output.log_file` mirrors stdout/stderr to a
+      timestamped file)
+- [x] Examples: [`lro_6day/`](examples/lro_6day/),
+      [`batch_demo/`](examples/batch_demo/)
+
+**Pending**
+
+- [ ] Acceleration breakdown output (per-force contributions) in single
+      propagate mode
+- [ ] Event detection and `events_log` output
+- [ ] Atmospheric drag model in spody-core (placeholder today)
+- [ ] More central bodies (Earth, Mars) in addition to the Moon
+- [ ] Parallel batch via OpenMP (`thread_number > 1`)
+- [ ] Binary `.spody` variant of `cases_file` (CSV-only today)
+- [ ] Additional examples: ISS LEO with drag, GEO with SRP
 - [ ] Python GUI prototype under `python/` — TOML editor + result viewer
-- [ ] Multi-spacecraft / constellation propagation in a single run
 - [ ] Web frontend wrapping the same binary
 
 ---
@@ -128,10 +148,17 @@ Ordered roughly by what unlocks the most for users:
 spody/
 ├── .github/workflows/        # CI (build matrix linux / macos / windows + smoke test)
 ├── external/
-│   └── spody-core/           # submodule, the C library
+│   ├── spody-core/           # submodule, the C library
+│   └── tomlc99/              # vendored TOML parser (cktan/tomlc99, MIT)
 ├── src/
-│   └── main.c                # CLI entry point + subcommand dispatch
-├── examples/                 # input TOML examples (planned)
+│   ├── main.c                # CLI entry point + subcommand dispatch
+│   ├── app_diagnostics.{c,h} # SpodyError + tee log mirror
+│   ├── toml_input.{c,h}      # TOML parser, validator, batch matrix loader
+│   ├── sim_setup.{c,h}       # InputConfig -> SimulationShared + SimulationWorker
+│   └── sim_run.{c,h}         # propagation loop, CSV / binary writers
+├── examples/                 # input TOML examples (schema guide in examples/README.md)
+│   ├── lro_6day/             # reference: NASA LRO 6-day propagation
+│   └── batch_demo/           # smoke test: 3-case mass + SRP sweep
 ├── tests/                    # end-to-end CLI tests (planned)
 ├── python/                   # GUI prototype (planned, file-based IO)
 ├── CMakeLists.txt
