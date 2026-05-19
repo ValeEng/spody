@@ -152,9 +152,11 @@ typedef struct {
     /* [output] */
     SpodyOutputMode output_mode;
     double          output_interval_s;
-    char            csv_file[SPODY_MAX_PATH];   /* resolved path, "" if none */
-    char            bin_file[SPODY_MAX_PATH];   /* resolved path, "" if none */
-    char            log_file[SPODY_MAX_PATH];   /* resolved path, "" if none */
+    char            csv_file[SPODY_MAX_PATH];           /* resolved path, "" if none */
+    char            bin_file[SPODY_MAX_PATH];           /* resolved path, "" if none */
+    char            log_file[SPODY_MAX_PATH];           /* resolved path, "" if none */
+    char            accelerations_file[SPODY_MAX_PATH]; /* per-force acc binary; "" disables */
+    char            events_log[SPODY_MAX_PATH];         /* event triggers binary; "" disables */
 
     /* [batch] -- NULL if absent in the TOML, heap-allocated otherwise.
      * Released by spody_free_input. */
@@ -209,12 +211,24 @@ void spody_apply_batch_case(const InputConfig *base,
 int spody_validate_input(const InputConfig *cfg, SpodyError *err);
 
 /*
- * Resolve a third-body name (e.g. "Earth", "Sun") to a NAIF id and the
- * matching gravitational parameter (km^3/s^2). Returns 0 on success or
- * -1 if the name is unknown. Used by sim_setup to populate the
- * ForceModelContext, and by the validator to catch bad names early.
+ * Resolve a third-body name (e.g. "Earth", "Sun") to its NAIF id, the
+ * matching gravitational parameter (km^3/s^2) and the mean body radius
+ * (km, used as the impact threshold). Each out-pointer may be NULL.
+ * Returns 0 on success or -1 if the name is unknown. Used by sim_setup
+ * to populate the ForceModelContext, by the validator to catch bad
+ * names early, and by sim_run to build the always-on IMPACT event list.
  */
-int spody_lookup_third_body(const char *name, int *naif_id, double *mu);
+int spody_lookup_third_body(const char *name, int *naif_id,
+                            double *mu, double *radius_km);
+
+/*
+ * Reverse lookup by NAIF id. Same semantics as spody_lookup_third_body
+ * but takes the integer NAIF id directly (useful when the name has
+ * already been consumed and only the id is around, e.g. when building
+ * the multi-body event list from the force-model context).
+ */
+int spody_lookup_body_by_naif(int naif_id, const char **name,
+                              double *mu, double *radius_km);
 
 #ifdef __cplusplus
 }

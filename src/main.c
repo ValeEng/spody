@@ -99,7 +99,8 @@ static void compose_batch_log_path(const BatchConfig *batch,
 }
 
 /* Build per-case output paths inside batch_subdir using <name>_<id>.<ext>.
- * Only overwrites csv_file / bin_file if the base set them (presence-as-toggle). */
+ * Each output toggle is presence-driven: only paths that were set in the
+ * base TOML are rewritten -- empty stays empty. */
 static void compose_case_output_paths(InputConfig *cfg, const BatchConfig *batch,
                                       const char *batch_subdir, int case_idx) {
     const char *id = batch->case_ids[case_idx];
@@ -110,6 +111,14 @@ static void compose_case_output_paths(InputConfig *cfg, const BatchConfig *batch
     if (cfg->bin_file[0]) {
         snprintf(cfg->bin_file, sizeof cfg->bin_file, "%s/%s_%s.bin",
                  batch_subdir, batch->name, id);
+    }
+    if (cfg->accelerations_file[0]) {
+        snprintf(cfg->accelerations_file, sizeof cfg->accelerations_file,
+                 "%s/%s_%s_acc.bin", batch_subdir, batch->name, id);
+    }
+    if (cfg->events_log[0]) {
+        snprintf(cfg->events_log, sizeof cfg->events_log,
+                 "%s/%s_%s_events.bin", batch_subdir, batch->name, id);
     }
 }
 
@@ -153,6 +162,10 @@ static void print_config_summary(const InputConfig *cfg) {
     spody_log_printf("\n");
     if (cfg->csv_file[0]) spody_log_printf("  output csv       : %s\n", cfg->csv_file);
     if (cfg->bin_file[0]) spody_log_printf("  output binary    : %s\n", cfg->bin_file);
+    if (cfg->accelerations_file[0])
+        spody_log_printf("  accelerations    : %s\n", cfg->accelerations_file);
+    if (cfg->events_log[0])
+        spody_log_printf("  events log       : %s\n", cfg->events_log);
     if (cfg->batch) {
         spody_log_printf("  batch            : %s  (%d cases x %d columns, threads=%d)\n",
                cfg->batch->name, cfg->batch->n_cases, cfg->batch->n_columns,
@@ -207,27 +220,24 @@ static int cmd_propagate(int argc, char **argv) {
         return 1;
     }
 
-    /* --out redirects every output file (CSV / binary / log) to that
-     * directory, keeping only the basename from the TOML. Lets the user
-     * reuse the same TOML for batch runs without editing it. */
+    /* --out redirects every output file (CSV / binary / log / accelerations
+     * / events) to that directory, keeping only the basename from the TOML.
+     * Lets the user reuse the same TOML for ad-hoc runs without editing it. */
     if (out_dir) {
-        if (cfg.csv_file[0]) {
-            char tmp[SPODY_MAX_PATH];
-            snprintf(tmp, sizeof tmp, "%s/%s",
-                     out_dir, basename_of(cfg.csv_file));
-            snprintf(cfg.csv_file, sizeof cfg.csv_file, "%s", tmp);
-        }
-        if (cfg.bin_file[0]) {
-            char tmp[SPODY_MAX_PATH];
-            snprintf(tmp, sizeof tmp, "%s/%s",
-                     out_dir, basename_of(cfg.bin_file));
-            snprintf(cfg.bin_file, sizeof cfg.bin_file, "%s", tmp);
-        }
-        if (cfg.log_file[0]) {
-            char tmp[SPODY_MAX_PATH];
-            snprintf(tmp, sizeof tmp, "%s/%s",
-                     out_dir, basename_of(cfg.log_file));
-            snprintf(cfg.log_file, sizeof cfg.log_file, "%s", tmp);
+        struct { char *dst; size_t cap; } slots[] = {
+            { cfg.csv_file,           sizeof cfg.csv_file           },
+            { cfg.bin_file,           sizeof cfg.bin_file           },
+            { cfg.log_file,           sizeof cfg.log_file           },
+            { cfg.accelerations_file, sizeof cfg.accelerations_file },
+            { cfg.events_log,         sizeof cfg.events_log         },
+        };
+        for (size_t i = 0; i < sizeof slots / sizeof slots[0]; ++i) {
+            if (slots[i].dst[0]) {
+                char tmp[SPODY_MAX_PATH];
+                snprintf(tmp, sizeof tmp, "%s/%s",
+                         out_dir, basename_of(slots[i].dst));
+                snprintf(slots[i].dst, slots[i].cap, "%s", tmp);
+            }
         }
     }
 
@@ -256,6 +266,10 @@ static int cmd_propagate(int argc, char **argv) {
     spody_log_printf("\n");
     if (cfg.csv_file[0]) spody_log_printf("  -> CSV     : %s\n", cfg.csv_file);
     if (cfg.bin_file[0]) spody_log_printf("  -> binary  : %s\n", cfg.bin_file);
+    if (cfg.accelerations_file[0])
+        spody_log_printf("  -> accel   : %s\n", cfg.accelerations_file);
+    if (cfg.events_log[0])
+        spody_log_printf("  -> events  : %s\n", cfg.events_log);
 
     /* Two-phase setup mirrors spody-core's shared/per-thread contract:
      * SimulationShared owns the read-only file-mapped data; one or more

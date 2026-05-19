@@ -3,20 +3,28 @@
  *
  * Hot loop layout (fixed mode):
  *
- *   emit (t = 0, y0)
+ *   emit_traj  (t = 0, y0)
+ *   emit_accel (t = 0, y0)               -- if accelerations enabled
  *   t_next = dt
  *   while (integ.t < t_end):
  *       clip integ.h to land on t_end if it would overshoot
  *       onestep
  *       while t_next <= integ.t:
- *           theta = (t_next - integ.t_old) / integ.h_old
- *           dense_eval(integ, theta, y_q)
- *           emit (t_next, y_q)
+ *           y_q = hermite(integ, t_next)
+ *           emit_traj  (t_next, y_q)
+ *           emit_accel (t_next, y_q)      -- if accelerations enabled
  *           t_next += dt
- *   if last emit != t_end: emit (t_end, integ.y)
+ *       impact_check(refined) on central + every third body
+ *       if any event triggered -> log + STOP
  *
- * Step mode skips the dense-output drain and just writes integ.y after
- * every accepted step.
+ * Step mode skips the dense-output drain: emit_traj / emit_accel run
+ * once per accepted step on integ.y, the impact check runs on the same
+ * state.
+ *
+ * IMPACT predicate uses the per-thread ephemeris cache built into
+ * spody_get_ephposition: the integrator's last RHS stage (FSAL, c=1.0)
+ * has just queried each body at the same `et`, so the event check is
+ * a cache hit -- no extra Chebyshev evaluation per step.
  */
 #include "sim_run.h"
 
@@ -25,11 +33,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "spody_events.h"        /* SpodyEvent, EventRecord, refined check */
+#include "spody_forcemodels.h"   /* ForceBreakdown, spody_force_breakdown  */
+#include "toml_input.h"          /* spody_lookup_body_by_naif              */
+#include "app_diagnostics.h"     /* spody_log_printf                       */
+
 /* --------------------------------------------------------------------------
- * Writers
+ * Trajectory writer (CSV + binary)
  * -------------------------------------------------------------------------- */
 
-#define SPODY_BIN_MAGIC "SPDYOUT_"   /* 8 bytes, no NUL */
+#define SPODY_BIN_MAGIC   "SPDYOUT_"   /* 8 bytes, no NUL */
 #define SPODY_BIN_VERSION 1u
 #define SPODY_BIN_STATE_DIM 6u
 
@@ -39,20 +52,19 @@ static int write_csv_header(FILE *fp) {
         ? -1 : 0;
 }
 
-/* 24-byte binary header. Little-endian (native on every CI target). */
 static int write_bin_header(FILE *fp) {
     if (fwrite(SPODY_BIN_MAGIC, 1, 8, fp) != 8) return -1;
     uint32_t hdr[4] = {
-        SPODY_BIN_VERSION,    /* format_version              */
-        SPODY_BIN_STATE_DIM,  /* state_dim (doubles after t) */
-        0u,                   /* reserved                    */
-        0u                    /* reserved                    */
+        SPODY_BIN_VERSION,
+        SPODY_BIN_STATE_DIM,
+        0u,
+        0u
     };
     if (fwrite(hdr, sizeof(uint32_t), 4, fp) != 4) return -1;
     return 0;
 }
 
-static int emit_record(FILE *csv, FILE *bin, double t, const double y[6]) {
+static int emit_trajectory(FILE *csv, FILE *bin, double t, const double y[6]) {
     if (csv) {
         if (fprintf(csv,
                     "%.15e,%.15e,%.15e,%.15e,%.15e,%.15e,%.15e\n",
@@ -68,6 +80,151 @@ static int emit_record(FILE *csv, FILE *bin, double t, const double y[6]) {
 }
 
 /* --------------------------------------------------------------------------
+ * Accelerations writer
+ *
+ * Records are `ForceBreakdown` structs from spody-core, written verbatim
+ * (one struct per record, including the n_third counter and the
+ * SPODY_FM_MAX_THIRD per-body slots even when only the first n_third are
+ * populated). The reader can mmap the data section as a flat
+ * `ForceBreakdown[]` array.
+ * -------------------------------------------------------------------------- */
+
+#define SPODY_ACC_MAGIC   "SPDYACC_"
+#define SPODY_ACC_VERSION 1u
+
+static int write_acc_header(FILE *fp) {
+    if (fwrite(SPODY_ACC_MAGIC, 1, 8, fp) != 8) return -1;
+    uint32_t hdr[4] = {
+        SPODY_ACC_VERSION,
+        (uint32_t)sizeof(ForceBreakdown),   /* record_size in bytes */
+        0u,
+        0u
+    };
+    if (fwrite(hdr, sizeof(uint32_t), 4, fp) != 4) return -1;
+    return 0;
+}
+
+static int emit_breakdown(FILE *fp, const ForceModelContext *ctx,
+                          double t, const double *y) {
+    if (!fp) return 0;
+    ForceBreakdown bd;
+    spody_force_breakdown(ctx, t, y, &bd);
+    if (fwrite(&bd, sizeof bd, 1, fp) != 1) return -1;
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Events writer
+ *
+ * One `EventRecord` per trigger, written verbatim. The events log is
+ * opt-in (cfg->events_log non-empty) but the IMPACT check is always on
+ * -- if disabled, triggers still stop the propagation, they just are
+ * not recorded.
+ * -------------------------------------------------------------------------- */
+
+#define SPODY_EVT_MAGIC   "SPDYEVT_"
+#define SPODY_EVT_VERSION 1u
+
+static int write_evt_header(FILE *fp) {
+    if (fwrite(SPODY_EVT_MAGIC, 1, 8, fp) != 8) return -1;
+    uint32_t hdr[4] = {
+        SPODY_EVT_VERSION,
+        (uint32_t)sizeof(EventRecord),
+        0u,
+        0u
+    };
+    if (fwrite(hdr, sizeof(uint32_t), 4, fp) != 4) return -1;
+    return 0;
+}
+
+static int emit_event(FILE *fp, const SpodyEvent *ev) {
+    if (!fp) return 0;
+    EventRecord r;
+    r.t           = ev->t_trigger;
+    r.kind        = (int)ev->kind;
+    r.naif_id     = ev->naif_id;
+    r.radius_km   = ev->radius_km;
+    r.distance_km = ev->distance_at_trigger;
+    for (int i = 0; i < 6; ++i) r.y[i] = ev->y_trigger[i];
+    if (fwrite(&r, sizeof r, 1, fp) != 1) return -1;
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Multi-body IMPACT event list
+ *
+ * Always-on policy: one SpodyEvent per body in the force model
+ *   - central body : threshold = ctx->R_central
+ *   - each third   : threshold from BODY_TABLE (mean equatorial radius)
+ *
+ * The third bodies whose radius is not known to the table (shouldn't
+ * happen with the names the validator accepts, but defensive) are
+ * skipped silently. Heap-owned array, freed in cleanup.
+ * -------------------------------------------------------------------------- */
+static int build_impact_events(const SimulationWorker *w,
+                               SpodyEvent **out_events, int *out_n,
+                               SpodyError *err) {
+    *out_events = NULL;
+    *out_n      = 0;
+
+    int cap = 1 + w->n_third;
+    SpodyEvent *ev = (SpodyEvent *)calloc((size_t)cap, sizeof *ev);
+    if (!ev) {
+        spody_error_set(err, SPODY_ERR_INTERNAL,
+                "out of memory allocating impact event array (%d entries)", cap);
+        return SPODY_ERR_INTERNAL;
+    }
+
+    int n = 0;
+    /* Central body. */
+    ev[n] = spody_event_impact(w->ctx.naif_central, w->ctx.R_central,
+                               SPODY_EVENT_ACTION_LOG_AND_STOP);
+    n++;
+
+    /* Third bodies. */
+    for (int i = 0; i < w->n_third; ++i) {
+        double r_km = 0.0;
+        if (spody_lookup_body_by_naif(w->third_naif[i], NULL, NULL, &r_km) != 0
+            || r_km <= 0.0) {
+            /* Unknown body -- shouldn't happen since the validator gates
+             * on BODY_TABLE; skip rather than spamming errors. */
+            continue;
+        }
+        ev[n] = spody_event_impact(w->third_naif[i], r_km,
+                                   SPODY_EVENT_ACTION_LOG_AND_STOP);
+        n++;
+    }
+
+    *out_events = ev;
+    *out_n      = n;
+    return SPODY_OK;
+}
+
+/* Run the refined IMPACT check on every event after an accepted step.
+ * Returns:
+ *    0 -> nothing fired, keep propagating
+ *    1 -> at least one trigger; events[*first_idx] is the first (lowest
+ *         naif_id ordering, central first by construction)
+ *   -1 -> I/O error while writing the events log */
+static int check_impacts(SpodyEvent *events, int n_events,
+                         const ForceModelContext *ctx,
+                         const IntegratorAllData *integ,
+                         FILE *evt_fp, int *first_idx) {
+    int any = 0;
+    for (int i = 0; i < n_events; ++i) {
+        if (events[i].triggered) continue;
+        if (spody_event_check_refined(&events[i], ctx, integ) == 1) {
+            if (!any) {
+                *first_idx = i;
+                any = 1;
+            }
+            if (evt_fp && emit_event(evt_fp, &events[i]) < 0) return -1;
+        }
+    }
+    return any;
+}
+
+/* --------------------------------------------------------------------------
  * Main driver
  * -------------------------------------------------------------------------- */
 
@@ -75,11 +232,12 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                           SpodyError *err) {
     spody_error_clear(err);
 
-    FILE *csv = NULL;
-    FILE *bin = NULL;
-    int rc = SPODY_OK;
+    FILE *csv = NULL, *bin = NULL, *acc = NULL, *evt = NULL;
+    SpodyEvent *events = NULL;
+    int         n_events = 0;
+    int         rc = SPODY_OK;
 
-    /* Open requested output files, fail fast if anything is wrong. */
+    /* ----- open the requested output files ----- */
     if (cfg->csv_file[0]) {
         csv = fopen(cfg->csv_file, "w");
         if (!csv) {
@@ -87,8 +245,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                     "cannot open csv_file for write: '%s'", cfg->csv_file);
             rc = SPODY_ERR_IO; goto cleanup;
         }
-        /* Large stdio buffer -- CSV writes dominate wall time otherwise. */
-        setvbuf(csv, NULL, _IOFBF, 1u << 20); // 1 MiB buffer --> 1u << 20
+        setvbuf(csv, NULL, _IOFBF, 1u << 20);
         if (write_csv_header(csv) < 0) {
             spody_error_set(err, SPODY_ERR_IO, "csv header write failed: '%s'",
                     cfg->csv_file);
@@ -109,15 +266,57 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             rc = SPODY_ERR_IO; goto cleanup;
         }
     }
+    if (cfg->accelerations_file[0]) {
+        acc = fopen(cfg->accelerations_file, "wb");
+        if (!acc) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "cannot open accelerations_file for write: '%s'",
+                    cfg->accelerations_file);
+            rc = SPODY_ERR_IO; goto cleanup;
+        }
+        setvbuf(acc, NULL, _IOFBF, 1u << 20);
+        if (write_acc_header(acc) < 0) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "accelerations header write failed: '%s'",
+                    cfg->accelerations_file);
+            rc = SPODY_ERR_IO; goto cleanup;
+        }
+    }
+    if (cfg->events_log[0]) {
+        evt = fopen(cfg->events_log, "wb");
+        if (!evt) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "cannot open events_log for write: '%s'", cfg->events_log);
+            rc = SPODY_ERR_IO; goto cleanup;
+        }
+        /* Events are rare (one per body, max) so no big buffer needed,
+         * but a small one keeps the syscall count down on writers. */
+        setvbuf(evt, NULL, _IOFBF, 4096);
+        if (write_evt_header(evt) < 0) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "events_log header write failed: '%s'", cfg->events_log);
+            rc = SPODY_ERR_IO; goto cleanup;
+        }
+    }
 
-    /* Initial state always lands in the output (both modes). */
-    if (emit_record(csv, bin, w->integ.t, w->integ.y) < 0) {
+    /* ----- multi-body IMPACT event list (always on) ----- */
+    if ((rc = build_impact_events(w, &events, &n_events, err)) != SPODY_OK) {
+        goto cleanup;
+    }
+
+    /* ----- initial sample (both modes) ----- */
+    if (emit_trajectory(csv, bin, w->integ.t, w->integ.y) < 0) {
         spody_error_set(err, SPODY_ERR_IO, "write failed on initial record");
+        rc = SPODY_ERR_IO; goto cleanup;
+    }
+    if (acc && emit_breakdown(acc, &w->ctx, w->integ.t, w->integ.y) < 0) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "write failed on initial accelerations record");
         rc = SPODY_ERR_IO; goto cleanup;
     }
 
     const double t_end = cfg->duration_s;
-    const double eps   = 1.0e-9;   /* absolute slack on grid-edge comparisons */
+    const double eps   = 1.0e-9;
 
     if (cfg->output_mode == SPODY_OUT_FIXED) {
         const double dt = cfg->output_interval_s;
@@ -125,8 +324,6 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
         double t_last_emitted = w->integ.t;
 
         while (w->integ.t < t_end - eps) {
-            /* Clip the proposed step so we never overshoot the endpoint --
-             * mirrors the behaviour of spody_propagate_untilend. */
             double h_remain = t_end - w->integ.t;
             if (w->integ.h > h_remain) w->integ.h = h_remain;
 
@@ -139,29 +336,75 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             }
 
             /* Drain every grid sample that fell into the just-completed
-             * interval [t_old, t]. Cubic Hermite on (r, v) via spody-core. */
+             * interval [t_old, t]. Hermite C^1 dense output on (r, v). */
             while (t_next <= w->integ.t + eps && t_next <= t_end + eps) {
                 double y_q[6];
                 spody_hermite_dense_rv6(t_next,
                                         w->integ.t_old, w->integ.y_old,
                                         w->integ.t,     w->integ.y,
                                         y_q);
-                if (emit_record(csv, bin, t_next, y_q) < 0) {
-                    spody_error_set(err, SPODY_ERR_IO, "write failed at t=%.6g s",
-                            t_next);
+                if (emit_trajectory(csv, bin, t_next, y_q) < 0) {
+                    spody_error_set(err, SPODY_ERR_IO,
+                            "trajectory write failed at t=%.6g s", t_next);
+                    rc = SPODY_ERR_IO; goto cleanup;
+                }
+                if (acc && emit_breakdown(acc, &w->ctx, t_next, y_q) < 0) {
+                    spody_error_set(err, SPODY_ERR_IO,
+                            "accelerations write failed at t=%.6g s", t_next);
                     rc = SPODY_ERR_IO; goto cleanup;
                 }
                 t_last_emitted = t_next;
                 t_next += dt;
+            }
+
+            /* IMPACT check on the just-completed step. Triggers stop the
+             * propagation immediately (after logging). */
+            int first = -1;
+            int ev_rc = check_impacts(events, n_events, &w->ctx, &w->integ,
+                                      evt, &first);
+            if (ev_rc < 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "events_log write failed at t=%.6g s", w->integ.t);
+                rc = SPODY_ERR_IO; goto cleanup;
+            }
+            if (ev_rc > 0) {
+                spody_log_printf(
+                    "  IMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
+                    events[first].naif_id, events[first].t_trigger,
+                    events[first].distance_at_trigger, events[first].radius_km);
+                /* Emit the trigger state as the trajectory endpoint so
+                 * the output always closes at the physical end of the
+                 * propagation. */
+                if (emit_trajectory(csv, bin,
+                                    events[first].t_trigger,
+                                    events[first].y_trigger) < 0) {
+                    spody_error_set(err, SPODY_ERR_IO,
+                            "trajectory write failed on impact record");
+                    rc = SPODY_ERR_IO; goto cleanup;
+                }
+                if (acc && emit_breakdown(acc, &w->ctx,
+                                          events[first].t_trigger,
+                                          events[first].y_trigger) < 0) {
+                    spody_error_set(err, SPODY_ERR_IO,
+                            "accelerations write failed on impact record");
+                    rc = SPODY_ERR_IO; goto cleanup;
+                }
+                goto cleanup;   /* normal termination via impact */
             }
         }
 
         /* If duration_s is not a clean multiple of dt, append the endpoint
          * so the user always sees the final integrator state. */
         if (t_end - t_last_emitted > eps) {
-            if (emit_record(csv, bin, w->integ.t, w->integ.y) < 0) {
+            if (emit_trajectory(csv, bin, w->integ.t, w->integ.y) < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
                         "write failed on endpoint record");
+                rc = SPODY_ERR_IO; goto cleanup;
+            }
+            if (acc && emit_breakdown(acc, &w->ctx,
+                                      w->integ.t, w->integ.y) < 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "accelerations write failed on endpoint record");
                 rc = SPODY_ERR_IO; goto cleanup;
             }
         }
@@ -178,10 +421,32 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                         s, w->integ.t, w->integ.h_old);
                 rc = SPODY_ERR_INTERNAL; goto cleanup;
             }
-            if (emit_record(csv, bin, w->integ.t, w->integ.y) < 0) {
-                spody_error_set(err, SPODY_ERR_IO, "write failed at t=%.6g s",
-                        w->integ.t);
+            if (emit_trajectory(csv, bin, w->integ.t, w->integ.y) < 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "trajectory write failed at t=%.6g s", w->integ.t);
                 rc = SPODY_ERR_IO; goto cleanup;
+            }
+            if (acc && emit_breakdown(acc, &w->ctx,
+                                      w->integ.t, w->integ.y) < 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "accelerations write failed at t=%.6g s", w->integ.t);
+                rc = SPODY_ERR_IO; goto cleanup;
+            }
+
+            int first = -1;
+            int ev_rc = check_impacts(events, n_events, &w->ctx, &w->integ,
+                                      evt, &first);
+            if (ev_rc < 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "events_log write failed at t=%.6g s", w->integ.t);
+                rc = SPODY_ERR_IO; goto cleanup;
+            }
+            if (ev_rc > 0) {
+                spody_log_printf(
+                    "  IMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
+                    events[first].naif_id, events[first].t_trigger,
+                    events[first].distance_at_trigger, events[first].radius_km);
+                goto cleanup;
             }
         }
     }
@@ -189,5 +454,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
 cleanup:
     if (csv) fclose(csv);
     if (bin) fclose(bin);
+    if (acc) fclose(acc);
+    if (evt) fclose(evt);
+    free(events);
     return rc;
 }

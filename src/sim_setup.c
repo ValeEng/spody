@@ -117,7 +117,8 @@ int spody_build_worker(const InputConfig *cfg,
         for (int i = 0; i < w->n_third; ++i) {
             if (spody_lookup_third_body(cfg->third_body_names[i],
                                         &w->third_naif[i],
-                                        &w->third_mu[i]) != 0) {
+                                        &w->third_mu[i],
+                                        NULL) != 0) {
                 /* Should have been caught by spody_validate_input -- treat
                  * as an internal error if it slips through. */
                 spody_error_set(err, SPODY_ERR_INTERNAL,

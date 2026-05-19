@@ -134,28 +134,50 @@ h_max_s  = 2700.0
 
 What to write and how often.
 
-| Key          | Type           | Notes                                                |
-|--------------|----------------|------------------------------------------------------|
-| `mode`       | string         | `"fixed"` (uniform grid) or `"step"` (one per integrator step) |
-| `interval_s` | float          | sampling cadence; required when `mode = "fixed"`     |
-| `csv_file`   | string (path)  | optional; **presence enables CSV output**            |
-| `bin_file`   | string (path)  | optional; **presence enables binary output**         |
-| `log_file`   | string (path)  | optional; **presence enables stdout/stderr tee**     |
+| Key                  | Type           | Notes                                                |
+|----------------------|----------------|------------------------------------------------------|
+| `mode`               | string         | `"fixed"` (uniform grid) or `"step"` (one per integrator step) |
+| `interval_s`         | float          | sampling cadence; required when `mode = "fixed"`     |
+| `csv_file`           | string (path)  | optional; **presence enables CSV trajectory**        |
+| `bin_file`           | string (path)  | optional; **presence enables binary trajectory**     |
+| `log_file`           | string (path)  | optional; **presence enables stdout/stderr tee**     |
+| `accelerations_file` | string (path)  | optional; **presence enables per-force breakdown** (binary) |
+| `events_log`         | string (path)  | optional; **presence enables event-trigger log** (binary)   |
 
-Omitting all three `*_file` keys is allowed -- the propagation runs and
+Omitting all `*_file` keys is allowed -- the propagation runs and
 prints only the final state on stdout. Useful for benchmarking or
 sanity-checking the config.
 
 `log_file` is timestamped at run-time: a TOML value of `run.log` becomes
 `run_2026-05-19T143022Z.log` so each invocation has a unique file.
 
+The **accelerations file** stores a `ForceBreakdown` struct per
+output sample (see `spody-core/include/spody_forcemodels.h`): total
+acceleration plus the per-force decomposition (2-body, spherical
+harmonics, third-body total and per-body, SRP, drag) and the eclipse
+fraction. Cadence matches the trajectory: per accepted step in `step`
+mode, per grid point in `fixed` mode (one extra RHS evaluation per
+grid sample -- typical overhead ~3% at 1-minute cadence on LRO).
+
+The **events log** stores `EventRecord` entries (see
+`spody-core/include/spody_events.h`): `t`, `kind`, `naif_id`,
+`radius_km`, `distance_km`, and the state `(r, v)` at the trigger.
+Today the runtime checks **IMPACT** against the central body plus every
+configured third body, always on. Localisation uses cubic Hermite +
+Brent root-finding, precision sub-millisecond on a 30 s step.
+On a trigger the propagation stops at the impact instant; the log
+records the trigger even when no impact ever fires (zero-record file,
+just the 24-byte header).
+
 ```toml
 [output]
-mode       = "fixed"
-interval_s = 60.0
-csv_file   = "output/lro_6day.csv"
-bin_file   = "output/lro_6day.bin"
-# log_file = "output/lro_6day.log"   # uncomment to capture banner+progress
+mode               = "fixed"
+interval_s         = 60.0
+csv_file           = "output/lro_6day.csv"
+bin_file           = "output/lro_6day.bin"
+# log_file           = "output/lro_6day.log"
+# accelerations_file = "output/lro_6day_acc.bin"
+# events_log         = "output/lro_6day_events.bin"
 ```
 
 ---

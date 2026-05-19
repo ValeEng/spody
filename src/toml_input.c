@@ -78,28 +78,44 @@ typedef struct {
     const char *name;
     int         naif_id;
     double      mu;
+    double      radius_km;   /* mean equatorial radius from spody_const.h */
 } BodyEntry;
 
 static const BodyEntry BODY_TABLE[] = {
-    { "Sun",     10,  SUN_MU     },
-    { "Mercury", 199, MERCURY_MU },
-    { "Venus",   299, VENUS_MU   },
-    { "Earth",   399, EARTH_MU   },
-    { "Moon",    301, MOON_MU    },
-    { "Mars",    499, MARS_MU    },
-    { "Jupiter", 599, JUPITER_MU },
-    { "Saturn",  699, SATURN_MU  },
-    { "Uranus",  799, URANUS_MU  },
-    { "Neptune", 899, NEPTUNE_MU }
+    { "Sun",     10,  SUN_MU,     SUN_RADIUS     },
+    { "Mercury", 199, MERCURY_MU, MERCURY_RADIUS },
+    { "Venus",   299, VENUS_MU,   VENUS_RADIUS   },
+    { "Earth",   399, EARTH_MU,   EARTH_RADIUS   },
+    { "Moon",    301, MOON_MU,    MOON_RADIUS    },
+    { "Mars",    499, MARS_MU,    MARS_RADIUS    },
+    { "Jupiter", 599, JUPITER_MU, JUPITER_RADIUS },
+    { "Saturn",  699, SATURN_MU,  SATURN_RADIUS  },
+    { "Uranus",  799, URANUS_MU,  URANUS_RADIUS  },
+    { "Neptune", 899, NEPTUNE_MU, NEPTUNE_RADIUS }
 };
 static const int N_BODY_TABLE = (int)(sizeof BODY_TABLE / sizeof BODY_TABLE[0]);
 
-int spody_lookup_third_body(const char *name, int *naif_id, double *mu) {
+int spody_lookup_third_body(const char *name, int *naif_id,
+                            double *mu, double *radius_km) {
     if (!name) return -1;
     for (int i = 0; i < N_BODY_TABLE; ++i) {
         if (strcmp(name, BODY_TABLE[i].name) == 0) {
-            if (naif_id) *naif_id = BODY_TABLE[i].naif_id;
-            if (mu)      *mu      = BODY_TABLE[i].mu;
+            if (naif_id)   *naif_id   = BODY_TABLE[i].naif_id;
+            if (mu)        *mu        = BODY_TABLE[i].mu;
+            if (radius_km) *radius_km = BODY_TABLE[i].radius_km;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int spody_lookup_body_by_naif(int naif_id, const char **name,
+                              double *mu, double *radius_km) {
+    for (int i = 0; i < N_BODY_TABLE; ++i) {
+        if (BODY_TABLE[i].naif_id == naif_id) {
+            if (name)      *name      = BODY_TABLE[i].name;
+            if (mu)        *mu        = BODY_TABLE[i].mu;
+            if (radius_km) *radius_km = BODY_TABLE[i].radius_km;
             return 0;
         }
     }
@@ -437,20 +453,30 @@ static int parse_output(toml_table_t *root, const char *toml_dir,
     char rel_csv[SPODY_MAX_PATH] = {0};
     char rel_bin[SPODY_MAX_PATH] = {0};
     char rel_log[SPODY_MAX_PATH] = {0};
-    int has_csv = 0, has_bin = 0, has_log = 0;
-    if ((rc = opt_string(t, "csv_file", rel_csv, sizeof rel_csv, &has_csv))) return rc;
-    if ((rc = opt_string(t, "bin_file", rel_bin, sizeof rel_bin, &has_bin))) return rc;
-    if ((rc = opt_string(t, "log_file", rel_log, sizeof rel_log, &has_log))) return rc;
+    char rel_acc[SPODY_MAX_PATH] = {0};
+    char rel_evt[SPODY_MAX_PATH] = {0};
+    int has_csv = 0, has_bin = 0, has_log = 0, has_acc = 0, has_evt = 0;
+    if ((rc = opt_string(t, "csv_file",           rel_csv, sizeof rel_csv, &has_csv))) return rc;
+    if ((rc = opt_string(t, "bin_file",           rel_bin, sizeof rel_bin, &has_bin))) return rc;
+    if ((rc = opt_string(t, "log_file",           rel_log, sizeof rel_log, &has_log))) return rc;
+    if ((rc = opt_string(t, "accelerations_file", rel_acc, sizeof rel_acc, &has_acc))) return rc;
+    if ((rc = opt_string(t, "events_log",         rel_evt, sizeof rel_evt, &has_evt))) return rc;
 
-    cfg->csv_file[0] = '\0';
-    cfg->bin_file[0] = '\0';
-    cfg->log_file[0] = '\0';
+    cfg->csv_file[0]           = '\0';
+    cfg->bin_file[0]           = '\0';
+    cfg->log_file[0]           = '\0';
+    cfg->accelerations_file[0] = '\0';
+    cfg->events_log[0]         = '\0';
     if (has_csv) resolve_path(toml_dir, rel_csv,
                               cfg->csv_file, sizeof cfg->csv_file);
     if (has_bin) resolve_path(toml_dir, rel_bin,
                               cfg->bin_file, sizeof cfg->bin_file);
     if (has_log) resolve_path(toml_dir, rel_log,
                               cfg->log_file, sizeof cfg->log_file);
+    if (has_acc) resolve_path(toml_dir, rel_acc,
+                              cfg->accelerations_file, sizeof cfg->accelerations_file);
+    if (has_evt) resolve_path(toml_dir, rel_evt,
+                              cfg->events_log, sizeof cfg->events_log);
     return SPODY_OK;
 }
 
@@ -1037,7 +1063,7 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
     /* Third bodies: known names, no duplicate with central body. */
     for (int i = 0; i < cfg->n_third_bodies; ++i) {
         int naif = 0; double mu = 0.0;
-        if (spody_lookup_third_body(cfg->third_body_names[i], &naif, &mu) != 0) {
+        if (spody_lookup_third_body(cfg->third_body_names[i], &naif, &mu, NULL) != 0) {
             spody_error_set(err, SPODY_ERR_BAD_VALUE,
                     "force_model.third_bodies[%d] = '%s' is not a known body",
                     i, cfg->third_body_names[i]);
