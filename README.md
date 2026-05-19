@@ -189,13 +189,7 @@ Apache License 2.0 — see [`LICENSE`](./LICENSE).
 
 ## Acknowledgements
 
-The core of SpOdy and `spody-core` — the C implementation, numerical methods,
-force models, integrator, and overall architecture — is the work of
-**Valerio (@ValeEng)**. The engineering polish that turns the research
-codebase into a shippable, production-grade tool (code structuring, naming
-conventions, error-handling patterns, CLI ergonomics, documentation,
-build-system hardening, CI matrix) was done in pair-programming with
-**Anthropic's Claude Opus 4.7**, accessed via the Claude Code CLI.
+The core of SpOdy (`spody-core`) is the work of **Valerio (@ValeEng)**. The engineering polish that turns the research codebase into a shippable, production-grade tool was done in pair-programming with **Anthropic's Claude Opus 4.7**.
 
 A few high-level patterns are inspired by established mission-analysis
 systems, notably **GMAT** (NASA, Apache 2.0). Validation work has been done
