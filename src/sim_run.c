@@ -200,28 +200,45 @@ static int build_impact_events(const SimulationWorker *w,
     return SPODY_OK;
 }
 
-/* Run the refined IMPACT check on every event after an accepted step.
+/* Run the refined check on every configured event after an accepted
+ * step. Kind-agnostic and action-aware:
+ *   - the per-kind latch lives inside spody_event_check_refined (this
+ *     loop has no special-case for already-fired events);
+ *   - the per-event action drives behaviour on a new fire:
+ *       LOG          -> write an EventRecord, keep propagating
+ *       STOP         -> stop, no log entry
+ *       LOG_AND_STOP -> write an EventRecord, stop
+ *
+ * Today the only kind is IMPACT, but altitude / eclipse / apsis entries
+ * plug in unchanged: ev->kind selects the predicate, ev->action selects
+ * the consequence.
+ *
  * Returns:
- *    0 -> nothing fired, keep propagating
- *    1 -> at least one trigger; events[*first_idx] is the first (lowest
- *         naif_id ordering, central first by construction)
+ *    0 -> nothing to do (no new fire, or all new fires were LOG-only)
+ *    1 -> a STOP-class event fired; events[*first_idx] is the first one
+ *         (in array order, central body first by construction)
  *   -1 -> I/O error while writing the events log */
-static int check_impacts(SpodyEvent *events, int n_events,
-                         const ForceModelContext *ctx,
-                         const IntegratorAllData *integ,
-                         FILE *evt_fp, int *first_idx) {
-    int any = 0;
+static int check_events(SpodyEvent *events, int n_events,
+                        const ForceModelContext *ctx,
+                        const IntegratorAllData *integ,
+                        FILE *evt_fp, int *first_idx) {
+    int stop = 0;
     for (int i = 0; i < n_events; ++i) {
-        if (events[i].triggered) continue;
-        if (spody_event_check_refined(&events[i], ctx, integ) == 1) {
-            if (!any) {
-                *first_idx = i;
-                any = 1;
-            }
-            if (evt_fp && emit_event(evt_fp, &events[i]) < 0) return -1;
+        if (spody_event_check_refined(&events[i], ctx, integ) != 1) continue;
+
+        const spody_event_action act = events[i].action;
+        const int do_log  = (act == SPODY_EVENT_ACTION_LOG
+                          || act == SPODY_EVENT_ACTION_LOG_AND_STOP);
+        const int do_stop = (act == SPODY_EVENT_ACTION_STOP
+                          || act == SPODY_EVENT_ACTION_LOG_AND_STOP);
+
+        if (do_log && evt_fp && emit_event(evt_fp, &events[i]) < 0) return -1;
+        if (do_stop && !stop) {
+            *first_idx = i;
+            stop = 1;
         }
     }
-    return any;
+    return stop;
 }
 
 /* --------------------------------------------------------------------------
@@ -360,7 +377,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             /* IMPACT check on the just-completed step. Triggers stop the
              * propagation immediately (after logging). */
             int first = -1;
-            int ev_rc = check_impacts(events, n_events, &w->ctx, &w->integ,
+            int ev_rc = check_events(events, n_events, &w->ctx, &w->integ,
                                       evt, &first);
             if (ev_rc < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
@@ -434,7 +451,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             }
 
             int first = -1;
-            int ev_rc = check_impacts(events, n_events, &w->ctx, &w->integ,
+            int ev_rc = check_events(events, n_events, &w->ctx, &w->integ,
                                       evt, &first);
             if (ev_rc < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
