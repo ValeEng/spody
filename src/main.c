@@ -166,6 +166,10 @@ static void print_config_summary(const InputConfig *cfg) {
         spody_log_printf("  accelerations    : %s\n", cfg->accelerations_file);
     if (cfg->events_log[0])
         spody_log_printf("  events log       : %s\n", cfg->events_log);
+    spody_log_printf("  events           : impact (always on)%s",
+           cfg->eclipse_event_enabled ? "" : "\n");
+    if (cfg->eclipse_event_enabled)
+        spody_log_printf(", eclipse (threshold %.3f)\n", cfg->eclipse_threshold);
     if (cfg->batch) {
         spody_log_printf("  batch            : %s  (%d cases x %d columns, threads=%d)\n",
                cfg->batch->name, cfg->batch->n_cases, cfg->batch->n_columns,

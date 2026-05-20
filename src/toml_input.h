@@ -158,6 +158,10 @@ typedef struct {
     char            accelerations_file[SPODY_MAX_PATH]; /* per-force acc binary; "" disables */
     char            events_log[SPODY_MAX_PATH];         /* event triggers binary; "" disables */
 
+    /* [events] -- IMPACT is always on (no config). Eclipse is opt-in. */
+    int    eclipse_event_enabled; /* 1 if [events].eclipse_threshold was set */
+    double eclipse_threshold;     /* fraction in [0,1]; crossing fires the event */
+
     /* [batch] -- NULL if absent in the TOML, heap-allocated otherwise.
      * Released by spody_free_input. */
     BatchConfig *batch;

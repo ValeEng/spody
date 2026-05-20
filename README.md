@@ -128,7 +128,8 @@ Ordered roughly by what unlocks the most for users.
       binary `ForceBreakdown` records; ~3% overhead at 1-minute cadence
       on LRO)
 - [x] Event detection (`output.events_log`): always-on multi-body
-      IMPACT with sub-millisecond Hermite + Brent localisation
+      IMPACT (stop) + opt-in ECLIPSE (`[events].eclipse_threshold`,
+      recurring), sub-millisecond Hermite + Brent localisation
 - [x] Examples: [`lro_6day/`](examples/lro_6day/),
       [`batch_demo/`](examples/batch_demo/)
 
@@ -136,7 +137,7 @@ Ordered roughly by what unlocks the most for users.
 
 - [ ] Atmospheric drag model in spody-core (placeholder today)
 - [ ] More central bodies (Earth, Mars) in addition to the Moon
-- [ ] More event kinds: altitude crossings, apsides, eclipse entry/exit
+- [ ] More event kinds: altitude crossings, apsides
 - [ ] Parallel batch via OpenMP (`thread_number > 1`)
 - [ ] Binary `.spody` variant of `cases_file` (CSV-only today)
 - [ ] Additional examples: ISS LEO with drag, GEO with SRP

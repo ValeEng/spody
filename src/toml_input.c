@@ -480,6 +480,30 @@ static int parse_output(toml_table_t *root, const char *toml_dir,
     return SPODY_OK;
 }
 
+/* Optional [events] section. IMPACT is always on and needs no config;
+ * eclipse is opt-in. If the section is present, `eclipse_threshold` is
+ * required inside it (fraction in [0, 1]); the occulter defaults to the
+ * central body. Absent section -> eclipse disabled. */
+static int parse_events(toml_table_t *root, InputConfig *cfg, SpodyError *err) {
+    cfg->eclipse_event_enabled = 0;
+    cfg->eclipse_threshold     = 0.0;
+
+    toml_table_t *t = toml_table_in(root, "events");
+    if (!t) return SPODY_OK;   /* no [events] -> only the always-on IMPACT */
+
+    int rc;
+    if ((rc = req_double(t, "events", "eclipse_threshold",
+                         &cfg->eclipse_threshold, err))) return rc;
+    if (cfg->eclipse_threshold < 0.0 || cfg->eclipse_threshold > 1.0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "events.eclipse_threshold must be in [0, 1] (got %g)",
+                cfg->eclipse_threshold);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    cfg->eclipse_event_enabled = 1;
+    return SPODY_OK;
+}
+
 /* --------------------------------------------------------------------------
  * [batch] section -- CSV cases-file loader and TOML parser
  *
@@ -952,6 +976,7 @@ int spody_load_input(const char *toml_path, InputConfig *cfg, SpodyError *err) {
     if ((rc = parse_ephemeris    (root, toml_dir,  cfg, err))) goto out;
     if ((rc = parse_integrator   (root,            cfg, err))) goto out;
     if ((rc = parse_output       (root, toml_dir,  cfg, err))) goto out;
+    if ((rc = parse_events       (root,            cfg, err))) goto out;
     if ((rc = parse_batch        (root, toml_dir,  cfg, err))) goto out;
 
 out:

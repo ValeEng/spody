@@ -161,13 +161,11 @@ grid sample -- typical overhead ~3% at 1-minute cadence on LRO).
 
 The **events log** stores `EventRecord` entries (see
 `spody-core/include/spody_events.h`): `t`, `kind`, `naif_id`,
-`radius_km`, `distance_km`, and the state `(r, v)` at the trigger.
-Today the runtime checks **IMPACT** against the central body plus every
-configured third body, always on. Localisation uses cubic Hermite +
-Brent root-finding, precision sub-millisecond on a 30 s step.
-On a trigger the propagation stops at the impact instant; the log
-records the trigger even when no impact ever fires (zero-record file,
-just the 24-byte header).
+`radius_km`, `distance_km`, and the state `(r, v)` at the trigger. The
+file holds the triggers of every configured event (see [`[events]`](#events)
+below); writing it is enabled by setting `events_log`. Localisation
+uses cubic Hermite + Brent root-finding, precision sub-millisecond on a
+30 s step.
 
 ```toml
 [output]
@@ -179,6 +177,39 @@ bin_file           = "output/lro_6day.bin"
 # accelerations_file = "output/lro_6day_acc.bin"
 # events_log         = "output/lro_6day_events.bin"
 ```
+
+### `[events]`
+
+Optional. Configures the orbital events checked after every accepted
+step. **IMPACT is always on and needs no configuration** -- the runtime
+checks the satellite against the central body and every third body, and
+stops the propagation at the first impact. The `[events]` section only
+adds the opt-in **eclipse** detection.
+
+| Key                 | Type  | Notes                                                       |
+|---------------------|-------|-------------------------------------------------------------|
+| `eclipse_threshold` | float | enables eclipse events; sun-lit fraction in `[0, 1]` whose crossing fires the event |
+
+The occulting body is the central body. The eclipse fraction is the
+Montenbruck & Gill sun-lit fraction (`1.0` = full sun, `0.0` = full
+umbra). The event fires on **every** crossing of the threshold -- both
+entering and leaving shadow -- and only logs (it does not stop the run).
+Typical thresholds:
+
+- `1.0` -> any loss of sunlight (penumbra entry / exit)
+- `0.5` -> middle of the penumbra
+- `0.0` -> full-umbra entry / exit
+
+```toml
+[events]
+eclipse_threshold = 0.5
+```
+
+Each eclipse trigger writes an `EventRecord` with `kind = 1`,
+`naif_id` = the occulter, and `distance_km` repurposed to hold the
+eclipse fraction at the trigger (which equals `eclipse_threshold` up to
+the root-finder tolerance). Requires `events_log` to be set in
+`[output]` for the triggers to be recorded.
 
 ---
 

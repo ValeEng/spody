@@ -151,47 +151,57 @@ static int emit_event(FILE *fp, const SpodyEvent *ev) {
 }
 
 /* --------------------------------------------------------------------------
- * Multi-body IMPACT event list
+ * Event list
  *
- * Always-on policy: one SpodyEvent per body in the force model
+ * IMPACT is always on: one SpodyEvent per body in the force model
  *   - central body : threshold = ctx->R_central
  *   - each third   : threshold from BODY_TABLE (mean equatorial radius)
+ * action = LOG_AND_STOP (an impact ends the propagation).
  *
- * The third bodies whose radius is not known to the table (shouldn't
- * happen with the names the validator accepts, but defensive) are
- * skipped silently. Heap-owned array, freed in cleanup.
+ * ECLIPSE is opt-in (cfg->eclipse_event_enabled): one SpodyEvent on the
+ * central body as occulter, threshold = cfg->eclipse_threshold,
+ * action = LOG (informational, propagation continues).
+ *
+ * Third bodies with no known radius are skipped silently (the validator
+ * already gates names against BODY_TABLE). Heap-owned, freed in cleanup.
  * -------------------------------------------------------------------------- */
-static int build_impact_events(const SimulationWorker *w,
-                               SpodyEvent **out_events, int *out_n,
-                               SpodyError *err) {
+static int build_events(const InputConfig *cfg, const SimulationWorker *w,
+                        SpodyEvent **out_events, int *out_n,
+                        SpodyError *err) {
     *out_events = NULL;
     *out_n      = 0;
 
-    int cap = 1 + w->n_third;
+    int cap = 1 + w->n_third + (cfg->eclipse_event_enabled ? 1 : 0);
     SpodyEvent *ev = (SpodyEvent *)calloc((size_t)cap, sizeof *ev);
     if (!ev) {
         spody_error_set(err, SPODY_ERR_INTERNAL,
-                "out of memory allocating impact event array (%d entries)", cap);
+                "out of memory allocating event array (%d entries)", cap);
         return SPODY_ERR_INTERNAL;
     }
 
     int n = 0;
-    /* Central body. */
+    /* IMPACT: central body. */
     ev[n] = spody_event_impact(w->ctx.naif_central, w->ctx.R_central,
                                SPODY_EVENT_ACTION_LOG_AND_STOP);
     n++;
 
-    /* Third bodies. */
+    /* IMPACT: third bodies. */
     for (int i = 0; i < w->n_third; ++i) {
         double r_km = 0.0;
         if (spody_lookup_body_by_naif(w->third_naif[i], NULL, NULL, &r_km) != 0
             || r_km <= 0.0) {
-            /* Unknown body -- shouldn't happen since the validator gates
-             * on BODY_TABLE; skip rather than spamming errors. */
             continue;
         }
         ev[n] = spody_event_impact(w->third_naif[i], r_km,
                                    SPODY_EVENT_ACTION_LOG_AND_STOP);
+        n++;
+    }
+
+    /* ECLIPSE: central body as occulter, informational (LOG only). */
+    if (cfg->eclipse_event_enabled) {
+        ev[n] = spody_event_eclipse(w->ctx.naif_central, w->ctx.R_central,
+                                    cfg->eclipse_threshold,
+                                    SPODY_EVENT_ACTION_LOG);
         n++;
     }
 
@@ -316,8 +326,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
         }
     }
 
-    /* ----- multi-body IMPACT event list (always on) ----- */
-    if ((rc = build_impact_events(w, &events, &n_events, err)) != SPODY_OK) {
+    /* ----- event list: always-on IMPACT + opt-in ECLIPSE ----- */
+    if ((rc = build_events(cfg, w, &events, &n_events, err)) != SPODY_OK) {
         goto cleanup;
     }
 
