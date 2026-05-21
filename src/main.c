@@ -13,114 +13,17 @@
  *
  * This is the initial scaffolding -- each handler is a stub.
  */
-#include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
-
-#ifdef _WIN32
-#  include <direct.h>
-#  define SPODY_MKDIR(p) _mkdir(p)
-#else
-#  include <sys/stat.h>
-#  define SPODY_MKDIR(p) mkdir((p), 0755)
-#endif
 
 #include "spody_core.h"
 #include "app_diagnostics.h"
+#include "app_io.h"
 #include "toml_input.h"
 #include "sim_setup.h"
 #include "sim_run.h"
 
 #define SPODY_APP_VERSION "0.1.0"
-
-/* Strip the directory portion of `path`, keep only the trailing
- * filename component. Handles both '/' and '\\' separators so it
- * works for paths produced on either platform. */
-static const char *basename_of(const char *path) {
-    const char *last = path;
-    for (const char *p = path; *p; ++p) {
-        if (*p == '/' || *p == '\\') last = p + 1;
-    }
-    return last;
-}
-
-/* Compose <output_dir>/batch and create it if missing. Returns SPODY_OK
- * on success (including when the directory already existed). Errors if
- * output_dir itself does not exist (mkdir would fail with ENOENT). */
-static int prepare_batch_subdir(const char *output_dir,
-                                char *batch_subdir_out, size_t out_sz,
-                                SpodyError *err) {
-    snprintf(batch_subdir_out, out_sz, "%s/batch", output_dir);
-    if (SPODY_MKDIR(batch_subdir_out) == 0) return SPODY_OK;
-    if (errno == EEXIST) return SPODY_OK;
-    spody_error_set(err, SPODY_ERR_IO,
-            "cannot create batch output dir '%s' (errno %d): "
-            "verify that output_dir '%s' exists",
-            batch_subdir_out, errno, output_dir);
-    return SPODY_ERR_IO;
-}
-
-/* Inject a UTC timestamp before the extension of `base`. If `base` has
- * no extension, append the timestamp. Format: ISO 8601 compact UTC,
- * e.g. "run.log" -> "run_2026-05-19T143022Z.log". The "last dot" search
- * is scoped to the basename so paths like "/a.b/log" keep the timestamp
- * appended (no fake extension). */
-static void timestamp_filename(const char *base, char *out, size_t out_sz) {
-    time_t now = time(NULL);
-    struct tm *tm = gmtime(&now);
-    char ts[32];
-    strftime(ts, sizeof ts, "%Y-%m-%dT%H%M%SZ", tm);
-
-    const char *dot = NULL;
-    for (const char *p = base; *p; ++p) {
-        if (*p == '/' || *p == '\\') dot = NULL;
-        else if (*p == '.')          dot = p;
-    }
-    if (!dot || dot == base) {
-        snprintf(out, out_sz, "%s_%s", base, ts);
-    } else {
-        size_t len = (size_t)(dot - base);
-        snprintf(out, out_sz, "%.*s_%s%s", (int)len, base, ts, dot);
-    }
-}
-
-/* Compose the batch-level log path: <batch_subdir>/<batch.name>_<ts>.log
- * Regardless of what cfg.log_file's value was, the batch log path is
- * derived from the batch name + timestamp inside output_dir/batch/. */
-static void compose_batch_log_path(const BatchConfig *batch,
-                                   const char *batch_subdir,
-                                   char *out, size_t out_sz) {
-    time_t now = time(NULL);
-    struct tm *tm = gmtime(&now);
-    char ts[32];
-    strftime(ts, sizeof ts, "%Y-%m-%dT%H%M%SZ", tm);
-    snprintf(out, out_sz, "%s/%s_%s.log", batch_subdir, batch->name, ts);
-}
-
-/* Build per-case output paths inside batch_subdir using <name>_<id>.<ext>.
- * Each output toggle is presence-driven: only paths that were set in the
- * base TOML are rewritten -- empty stays empty. */
-static void compose_case_output_paths(InputConfig *cfg, const BatchConfig *batch,
-                                      const char *batch_subdir, int case_idx) {
-    const char *id = batch->case_ids[case_idx];
-    if (cfg->csv_file[0]) {
-        snprintf(cfg->csv_file, sizeof cfg->csv_file, "%s/%s_%s.csv",
-                 batch_subdir, batch->name, id);
-    }
-    if (cfg->bin_file[0]) {
-        snprintf(cfg->bin_file, sizeof cfg->bin_file, "%s/%s_%s.bin",
-                 batch_subdir, batch->name, id);
-    }
-    if (cfg->accelerations_file[0]) {
-        snprintf(cfg->accelerations_file, sizeof cfg->accelerations_file,
-                 "%s/%s_%s_acc.bin", batch_subdir, batch->name, id);
-    }
-    if (cfg->events_log[0]) {
-        snprintf(cfg->events_log, sizeof cfg->events_log,
-                 "%s/%s_%s_events.bin", batch_subdir, batch->name, id);
-    }
-}
 
 /* One-screen summary of a parsed config, printed after a successful validate.
  * Useful as a sanity check that the file says what the user thinks it says. */
@@ -239,7 +142,7 @@ static int cmd_propagate(int argc, char **argv) {
             if (slots[i].dst[0]) {
                 char tmp[SPODY_MAX_PATH];
                 snprintf(tmp, sizeof tmp, "%s/%s",
-                         out_dir, basename_of(slots[i].dst));
+                         out_dir, spody_io_basename(slots[i].dst));
                 snprintf(slots[i].dst, slots[i].cap, "%s", tmp);
             }
         }
@@ -249,7 +152,7 @@ static int cmd_propagate(int argc, char **argv) {
      * "spody propagate: ..." line and everything that follows is captured. */
     if (cfg.log_file[0]) {
         char log_path[SPODY_MAX_PATH];
-        timestamp_filename(cfg.log_file, log_path, sizeof log_path);
+        spody_io_timestamp_filename(cfg.log_file, log_path, sizeof log_path);
         if (spody_log_open_mirror(log_path) != 0) {
             spody_error_set(&err, SPODY_ERR_IO,
                     "cannot open log_file '%s'", log_path);
@@ -383,8 +286,8 @@ static int cmd_batch(int argc, char **argv) {
 
     /* Create <output_dir>/batch (output_dir itself must already exist). */
     char batch_subdir[SPODY_MAX_PATH];
-    if (prepare_batch_subdir(cfg.batch->output_dir, batch_subdir,
-                             sizeof batch_subdir, &err) != SPODY_OK) {
+    if (spody_io_prepare_batch_subdir(cfg.batch->output_dir, batch_subdir,
+                                      sizeof batch_subdir, &err) != SPODY_OK) {
         if (err.file[0] == '\0') {
             snprintf(err.file, sizeof err.file, "%s", toml_path);
         }
@@ -398,7 +301,7 @@ static int cmd_batch(int argc, char **argv) {
      * (presence as toggle, same convention as csv/bin). */
     if (cfg.log_file[0]) {
         char log_path[SPODY_MAX_PATH];
-        compose_batch_log_path(cfg.batch, batch_subdir, log_path, sizeof log_path);
+        spody_io_batch_log_path(cfg.batch, batch_subdir, log_path, sizeof log_path);
         if (spody_log_open_mirror(log_path) != 0) {
             spody_error_set(&err, SPODY_ERR_IO,
                     "cannot open batch log_file '%s'", log_path);
@@ -432,7 +335,7 @@ static int cmd_batch(int argc, char **argv) {
         const char *id = cfg.batch->case_ids[i];
         InputConfig  cfg_i;
         spody_apply_batch_case(&cfg, cfg.batch, i, &cfg_i);
-        compose_case_output_paths(&cfg_i, cfg.batch, batch_subdir, i);
+        spody_io_case_output_paths(&cfg_i, cfg.batch, batch_subdir, i);
 
         spody_log_printf("  [%d/%d] %s: ", i + 1, cfg.batch->n_cases, id);
         fflush(stdout);
