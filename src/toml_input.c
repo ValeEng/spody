@@ -820,8 +820,9 @@ static void free_batch_contents(BatchConfig *b) {
         free(b->case_ids);
         b->case_ids = NULL;
     }
-    free(b->values);             b->values         = NULL;
-    free(b->column_targets);     b->column_targets = NULL;
+    free(b->values);             b->values          = NULL;
+    free(b->column_targets);     b->column_targets  = NULL;
+    free(b->column_is_delta);    b->column_is_delta = NULL;
     b->n_cases   = 0;
     b->n_columns = 0;
 }
@@ -888,31 +889,69 @@ static int parse_batch(toml_table_t *root, const char *toml_dir,
 
     batch->column_targets = (const SpodyFieldDesc **)calloc(
             (size_t)batch->n_columns, sizeof(SpodyFieldDesc *));
-    if (!batch->column_targets) {
+    batch->column_is_delta = (int *)calloc(
+            (size_t)batch->n_columns, sizeof(int));
+    if (!batch->column_targets || !batch->column_is_delta) {
         spody_error_set(err, SPODY_ERR_INTERNAL,
-                "out of memory allocating batch.column_targets");
+                "out of memory allocating batch column metadata");
         rc = SPODY_ERR_INTERNAL; goto fail;
     }
 
     for (int j = 0; j < batch->n_columns; ++j) {
         const char *col = batch->column_names[j];
+
+        /* A column entry is either a plain string (override target) or
+         * an inline table { target = "...", mode = "override"|"delta" }. */
+        char target_path[SPODY_MAX_PATH] = {0};
+        int  is_delta = 0;
+
         toml_datum_t d = toml_string_in(cols, col);
-        if (!d.ok) {
-            spody_error_set(err, SPODY_ERR_MISSING_KEY,
-                    "cases_file column '%s' has no entry in [batch.columns]",
-                    col);
-            rc = SPODY_ERR_MISSING_KEY; goto fail;
+        if (d.ok) {
+            snprintf(target_path, sizeof target_path, "%s", d.u.s);
+            free(d.u.s);
+        } else {
+            toml_table_t *ct = toml_table_in(cols, col);
+            if (!ct) {
+                spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                        "cases_file column '%s' has no entry in [batch.columns]",
+                        col);
+                rc = SPODY_ERR_MISSING_KEY; goto fail;
+            }
+            toml_datum_t td = toml_string_in(ct, "target");
+            if (!td.ok) {
+                spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                        "[batch.columns].%s is a table but has no 'target' key",
+                        col);
+                rc = SPODY_ERR_MISSING_KEY; goto fail;
+            }
+            snprintf(target_path, sizeof target_path, "%s", td.u.s);
+            free(td.u.s);
+
+            toml_datum_t md = toml_string_in(ct, "mode");
+            if (md.ok) {
+                if      (strcmp(md.u.s, "delta")    == 0) is_delta = 1;
+                else if (strcmp(md.u.s, "override") == 0) is_delta = 0;
+                else {
+                    spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                            "[batch.columns].%s.mode = '%s' is invalid "
+                            "(expected 'override' or 'delta')", col, md.u.s);
+                    free(md.u.s);
+                    rc = SPODY_ERR_BAD_VALUE; goto fail;
+                }
+                free(md.u.s);
+            }
+            /* mode absent -> override (default) */
         }
-        const SpodyFieldDesc *fd = resolve_field(d.u.s);
+
+        const SpodyFieldDesc *fd = resolve_field(target_path);
         if (!fd) {
             spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                    "[batch.columns].%s = '%s' is not a recognised "
-                    "per-case override target", col, d.u.s);
-            free(d.u.s);
+                    "[batch.columns].%s target '%s' is not a recognised "
+                    "per-case override target", col, target_path);
             rc = SPODY_ERR_BAD_VALUE; goto fail;
         }
-        free(d.u.s);
-        batch->column_targets[j] = fd;
+        batch->column_targets[j]  = fd;
+        batch->column_is_delta[j] = is_delta;
     }
 
     /* Reject mappings in [batch.columns] that have no corresponding CSV
@@ -1005,17 +1044,20 @@ void spody_apply_batch_case(const InputConfig *base, const BatchConfig *batch,
         const SpodyFieldDesc *fd = batch->column_targets[j];
         if (!fd) continue;
         double v = batch->values[case_idx * batch->n_columns + j];
+        int is_delta = batch->column_is_delta ? batch->column_is_delta[j] : 0;
         char *base_ptr = (char *)out + fd->offset;
         switch (fd->kind) {
             case SPODY_FIELD_DOUBLE:
-                *(double *)base_ptr = v;
+                *(double *)base_ptr = is_delta ? *(double *)base_ptr + v : v;
                 break;
             case SPODY_FIELD_INT:
-                *(int *)base_ptr = (int)v;
+                *(int *)base_ptr = is_delta ? *(int *)base_ptr + (int)v : (int)v;
                 break;
-            case SPODY_FIELD_VEC3_AT:
-                ((double *)base_ptr)[fd->vec_idx] = v;
+            case SPODY_FIELD_VEC3_AT: {
+                double *slot = &((double *)base_ptr)[fd->vec_idx];
+                *slot = is_delta ? *slot + v : v;
                 break;
+            }
         }
     }
 }
@@ -1179,6 +1221,12 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                             id, fd->path, v);
                     return SPODY_ERR_BAD_VALUE;
                 }
+                /* Delta columns are additive offsets, not absolute values:
+                 * the per-field rule (POSITIVE, NON_NEG, ...) applies to
+                 * base + delta, not to the raw cell, so a negative delta
+                 * is legitimate. They are left unchecked here (only the
+                 * finiteness guard above applies). */
+                if (b->column_is_delta && b->column_is_delta[j]) continue;
                 switch (fd->rule) {
                     case SPODY_VAL_ANY:
                         break;

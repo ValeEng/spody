@@ -239,16 +239,31 @@ cases_file    = "cases.csv"
 
 ### `[batch.columns]`
 
-Maps each numeric column of `cases_file` to a dotted path of the base
-config that this column will override. Required if `[batch]` is present.
+Maps each numeric column of `cases_file` to a field of the base config.
+Required if `[batch]` is present. Two forms per column:
+
+- **plain string** -> *override*: the cell value replaces the base
+  value (`out = cell`).
+- **inline table** `{ target = "...", mode = "delta" }` -> *delta*: the
+  cell value is added to the base value (`out = base + cell`,
+  additive). `mode = "override"` is also accepted and is the default,
+  so the string form and the table form with `mode = "override"` are
+  equivalent.
 
 ```toml
 [batch.columns]
-mass_kg = "spacecraft.mass_kg"
-Cr      = "spacecraft.srp.Cr"
+mass_kg = "spacecraft.mass_kg"                                      # override
+Cr      = "spacecraft.srp.Cr"                                       # override
+dx      = { target = "initial_state.position_km[0]", mode = "delta" }  # base + cell
 ```
 
-**Overridable paths** (numeric, per-case):
+Delta columns are meant for perturbations around a nominal scenario
+(e.g. dispersing the initial state). Because a delta is an offset, its
+cell may be negative; **delta cells are not range-checked** (only the
+finiteness guard applies). Override cells keep their normal per-field
+validation (see [Per-case validation](#per-case-validation)).
+
+**Targetable paths** (numeric, per-case):
 
 - `simulation.et_start_s` / `simulation.duration_s`
 - `spacecraft.mass_kg`
@@ -283,7 +298,8 @@ Output for each case is written as
 
 ### Per-case validation
 
-The validator checks every CSV cell against a per-field rule:
+The validator checks every **override** CSV cell against a per-field
+rule (delta cells are exempt -- see [`[batch.columns]`](#batchcolumns)):
 
 | Path                                | Rule        |
 |-------------------------------------|-------------|
@@ -292,7 +308,8 @@ The validator checks every CSV cell against a per-field rule:
 | `force_model.srp`                   | must be `0` or `1` |
 | `*.position_km[i]`, `*.velocity_kms[i]`, `et_start_s` | any finite double |
 
-Errors are reported with the case id, the dotted path, and the value:
+Every cell (override or delta) must be a finite number. Errors are
+reported with the case id, the dotted path, and the value:
 
 ```
 error: input.toml: batch case 'B': spacecraft.mass_kg must be > 0 (got -100)

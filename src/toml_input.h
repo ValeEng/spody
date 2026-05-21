@@ -112,6 +112,12 @@ typedef struct {
      * [batch.columns]. Entries point into a private static table in
      * toml_input.c -- do NOT free individual entries, only the array. */
     const SpodyFieldDesc **column_targets;   /* n_columns entries */
+
+    /* Per-column apply mode: 0 = override (out = cell), 1 = delta
+     * (out = base + cell, additive). Set from [batch.columns]: a plain
+     * string is override; an inline table { target = "...", mode =
+     * "delta" } selects delta. Delta cells are NOT range-checked. */
+    int *column_is_delta;                    /* n_columns entries */
 } BatchConfig;
 
 typedef struct {
