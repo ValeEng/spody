@@ -334,8 +334,31 @@ static int parse_spacecraft(toml_table_t *root, InputConfig *cfg,
     toml_table_t *srp = toml_table_in(t, "srp");
     if (srp) {
         cfg->has_srp_block = 1;
-        if ((rc = req_double(srp, "spacecraft.srp", "area_m2",
-                             &cfg->srp_area_m2, err))) return rc;
+        /* SRP only ever needs A/m. The user supplies exactly one of:
+         *   area_m2 -> A/m derived as area / mass_kg, or
+         *   am_srp  -> A/m given directly [m^2/kg].
+         * am_srp is converted to its equivalent area here so the rest of
+         * the pipeline (validator, sim_setup, batch) sees one area-based
+         * representation. Value ranges are checked in spody_validate_input. */
+        int has_area = toml_double_in(srp, "area_m2").ok ||
+                       toml_int_in   (srp, "area_m2").ok;
+        int has_am   = toml_double_in(srp, "am_srp").ok ||
+                       toml_int_in   (srp, "am_srp").ok;
+        if (has_area == has_am) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "[spacecraft.srp] needs exactly one of 'area_m2' or "
+                    "'am_srp' (got %s)", has_area ? "both" : "neither");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (has_am) {
+            double am;
+            if ((rc = req_double(srp, "spacecraft.srp", "am_srp", &am, err)))
+                return rc;
+            cfg->srp_area_m2 = am * cfg->mass_kg;
+        } else {
+            if ((rc = req_double(srp, "spacecraft.srp", "area_m2",
+                                 &cfg->srp_area_m2, err))) return rc;
+        }
         if ((rc = req_double(srp, "spacecraft.srp", "Cr",
                              &cfg->srp_cr, err))) return rc;
     } else {

@@ -40,18 +40,28 @@ duration_s  = 5.184e+05               # 6 days
 | Key                    | Type   | Notes                                          |
 |------------------------|--------|------------------------------------------------|
 | `spacecraft.mass_kg`   | float  | dry mass, must be > 0                          |
-| `spacecraft.srp.area_m2` | float | cross-section for SRP (only if SRP enabled)    |
+| `spacecraft.srp.area_m2` | float | SRP cross-section [m²]; A/m derived as `area_m2 / mass_kg` |
+| `spacecraft.srp.am_srp`  | float | A/m directly [m²/kg]; alternative to `area_m2` |
 | `spacecraft.srp.Cr`    | float  | reflectivity coefficient (1 = absorb, 2 = mirror) |
 
 The `[spacecraft.srp]` table is **required** when `force_model.srp = true`
-and **optional** otherwise.
+and **optional** otherwise. SRP only depends on the area-to-mass ratio, so
+supply **exactly one** of `area_m2` or `am_srp` (giving both, or neither, is
+an error). An `am_srp` value is stored internally as the equivalent area
+(`am_srp * mass_kg`).
+
+> **Batch note.** `am_srp` is a single-input convenience for `[spacecraft]`;
+> it is **not** a valid `[batch.columns]` target — only `area_m2` is. If you
+> batch `mass_kg`, the effective A/m varies across cases (area stays fixed).
+> A proper A/m-native batch workflow (sample over A/m, no nominal mass) will
+> land with the future debris propagation mode.
 
 ```toml
 [spacecraft]
 mass_kg = 1916.0
 
   [spacecraft.srp]
-  area_m2 = 20.0
+  area_m2 = 20.0    # or, equivalently: am_srp = 0.010438
   Cr      = 1.3
 ```
 
