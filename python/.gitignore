@@ -1,0 +1,7 @@
+# PyInstaller bundle outputs
+build/
+dist/
+*.spec
+
+# Package metadata
+*.egg-info/
