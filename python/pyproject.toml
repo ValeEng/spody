@@ -19,7 +19,8 @@ authors = [{ name = "Valerio (@ValeEng)" }]
 dependencies = [
     "PySide6    >= 6.5, < 7",
     "numpy      >= 1.20",
-    "matplotlib >= 3.5",   # Qt6 (QtAgg) backend lives here
+    "matplotlib >= 3.5",   # QtAgg backend for embedded 2D plots
+    "vtk        >= 9.2",   # 3D scene (QVTKRenderWindowInteractor)
 ]
 
 [project.optional-dependencies]

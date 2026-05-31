@@ -20,6 +20,7 @@ changed manually with the Change button.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -57,6 +59,7 @@ from spody_io import (
     read_events,
     read_trajectory,
 )
+from .vtk_canvas import VtkCanvas
 
 # Recurse this many levels under the working dir when scanning for
 # *.bin files. 3 covers the common `output/batch/<case>.bin` pattern
@@ -69,9 +72,20 @@ _PATH_ROLE = Qt.ItemDataRole.UserRole
 
 
 # ----------------------------------------------------------------------
-# Plot function signature + per-kind plot registry
+# Plot function signatures + per-kind plot registry
 # ----------------------------------------------------------------------
-PlotFn = Callable[[Axes, np.ndarray], None]
+# 2D plots receive a matplotlib Axes; 3D plots receive a VtkCanvas to
+# add actors onto. The dispatcher (`AnalysisPanel._on_plot`) handles
+# clear/reset/render so the plot fn only needs to express its content.
+PlotFn2D = Callable[[Axes,      np.ndarray], None]
+PlotFn3D = Callable[[VtkCanvas, np.ndarray], None]
+
+
+@dataclass(frozen=True)
+class PlotSpec:
+    label: str
+    dim:   str           # "2d" or "3d" -- selects which canvas page is shown
+    fn:    Callable      # PlotFn2D for dim == "2d", PlotFn3D for dim == "3d"
 
 
 def _plot_traj_r(ax: Axes, d: np.ndarray) -> None:
@@ -163,23 +177,35 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
     ax.grid(True, axis="x", alpha=0.3)
 
 
-PLOTS: dict[str, list[tuple[str, PlotFn]]] = {
+# ----------------------------------------------------------------------
+# 3D plots
+# ----------------------------------------------------------------------
+def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray) -> None:
+    """Moon-centred view: grey sphere + yellow trajectory polyline +
+    green/red start/end markers. Camera fitted to the trajectory."""
+    canvas.add_central_body()
+    pts = np.column_stack([d["x"], d["y"], d["z"]])
+    canvas.add_trajectory(pts)
+
+
+PLOTS: dict[str, list[PlotSpec]] = {
     "traj": [
-        ("|r|(t) -- radial distance",   _plot_traj_r),
-        ("|v|(t) -- speed",             _plot_traj_v),
-        ("x, y, z (t) -- position",     _plot_traj_xyz),
-        ("vx, vy, vz (t) -- velocity",  _plot_traj_vxyz),
-        ("orbit projection XY",         lambda ax, d: _plot_traj_projection(ax, d, "x", "y")),
-        ("orbit projection XZ",         lambda ax, d: _plot_traj_projection(ax, d, "x", "z")),
-        ("orbit projection YZ",         lambda ax, d: _plot_traj_projection(ax, d, "y", "z")),
+        PlotSpec("|r|(t) -- radial distance",   "2d", _plot_traj_r),
+        PlotSpec("|v|(t) -- speed",             "2d", _plot_traj_v),
+        PlotSpec("x, y, z (t) -- position",     "2d", _plot_traj_xyz),
+        PlotSpec("vx, vy, vz (t) -- velocity",  "2d", _plot_traj_vxyz),
+        PlotSpec("orbit projection XY",         "2d", lambda ax, d: _plot_traj_projection(ax, d, "x", "y")),
+        PlotSpec("orbit projection XZ",         "2d", lambda ax, d: _plot_traj_projection(ax, d, "x", "z")),
+        PlotSpec("orbit projection YZ",         "2d", lambda ax, d: _plot_traj_projection(ax, d, "y", "z")),
+        PlotSpec("3D orbit + Moon",             "3d", _plot_traj_3d_orbit),
     ],
     "accel": [
-        ("|a_total|(t)",                _plot_acc_total),
-        ("per-force breakdown (log y)", _plot_acc_breakdown),
-        ("eclipse fraction (t)",        _plot_acc_eclipse),
+        PlotSpec("|a_total|(t)",                "2d", _plot_acc_total),
+        PlotSpec("per-force breakdown (log y)", "2d", _plot_acc_breakdown),
+        PlotSpec("eclipse fraction (t)",        "2d", _plot_acc_eclipse),
     ],
     "events": [
-        ("events timeline",             _plot_events_timeline),
+        PlotSpec("events timeline",             "2d", _plot_events_timeline),
     ],
 }
 
@@ -283,7 +309,7 @@ class AnalysisPanel(QWidget):
         left_lay.addWidget(self._tree, 1)
         left_lay.addWidget(btn_add)
 
-        # Right pane: plot controls + canvas + info label --------------
+        # Right pane: plot controls + stacked 2D/3D canvas + info ----
         self._plot_combo = QComboBox()
         self._plot_combo.setEnabled(False)
         self._plot_btn = QPushButton("Plot")
@@ -295,9 +321,24 @@ class AnalysisPanel(QWidget):
         plot_row.addWidget(self._plot_combo, 1)
         plot_row.addWidget(self._plot_btn)
 
+        # 2D page: matplotlib canvas + toolbar in a sub-widget.
         self._figure  = Figure(figsize=(6, 4))
         self._canvas  = FigureCanvasQTAgg(self._figure)
         self._toolbar = NavigationToolbar2QT(self._canvas, self)
+        mpl_page = QWidget()
+        mpl_lay = QVBoxLayout(mpl_page)
+        mpl_lay.setContentsMargins(0, 0, 0, 0)
+        mpl_lay.addWidget(self._toolbar)
+        mpl_lay.addWidget(self._canvas, 1)
+
+        # 3D page: VTK widget with its own built-in mouse controls.
+        self._vtk = VtkCanvas()
+
+        # Stack switched by the dispatcher in `_on_plot` based on
+        # PlotSpec.dim. Index 0 = 2D, index 1 = 3D.
+        self._stack = QStackedWidget()
+        self._stack.addWidget(mpl_page)
+        self._stack.addWidget(self._vtk)
 
         self._info_label = QLabel("(no file loaded)")
         self._info_label.setStyleSheet("color: gray;")
@@ -307,8 +348,7 @@ class AnalysisPanel(QWidget):
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.addLayout(plot_row)
-        right_lay.addWidget(self._toolbar)
-        right_lay.addWidget(self._canvas, 1)
+        right_lay.addWidget(self._stack, 1)
         right_lay.addWidget(self._info_label)
 
         # Body splitter: left files | right plot ----------------------
@@ -445,8 +485,8 @@ class AnalysisPanel(QWidget):
         # Repopulate the plot menu; auto-plot the first option.
         self._plot_combo.blockSignals(True)
         self._plot_combo.clear()
-        for label, _fn in PLOTS.get(kind, []):
-            self._plot_combo.addItem(label)
+        for spec in PLOTS.get(kind, []):
+            self._plot_combo.addItem(spec.label)
         self._plot_combo.blockSignals(False)
         has_plots = self._plot_combo.count() > 0
         self._plot_combo.setEnabled(has_plots)
@@ -456,18 +496,29 @@ class AnalysisPanel(QWidget):
             self._on_plot()
 
     def _on_plot(self) -> None:
+        """Dispatch the selected plot to the right canvas. 2D plots are
+        drawn into the matplotlib figure; 3D plots into the VTK scene.
+        Each branch is fully responsible for its canvas lifecycle
+        (clear, draw, render) so individual plot functions stay tiny."""
         if self._data is None or self._kind is None:
             return
         idx = self._plot_combo.currentIndex()
         if idx < 0:
             return
-        _label, fn = PLOTS[self._kind][idx]
-        self._figure.clear()
-        ax = self._figure.add_subplot(111)
+        spec = PLOTS[self._kind][idx]
         try:
-            fn(ax, self._data)
+            if spec.dim == "2d":
+                self._stack.setCurrentIndex(0)
+                self._figure.clear()
+                ax = self._figure.add_subplot(111)
+                spec.fn(ax, self._data)
+                self._figure.tight_layout()
+                self._canvas.draw_idle()
+            else:  # "3d"
+                self._stack.setCurrentIndex(1)
+                self._vtk.clear_scene()
+                spec.fn(self._vtk, self._data)
+                self._vtk.reset_camera()
+                self._vtk.render()
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
             QMessageBox.critical(self, "Plot failed", repr(exc))
-            return
-        self._figure.tight_layout()
-        self._canvas.draw_idle()
