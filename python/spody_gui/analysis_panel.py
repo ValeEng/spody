@@ -84,12 +84,23 @@ _PATH_ROLE = Qt.ItemDataRole.UserRole
 PlotFn2D = Callable[[Axes,      np.ndarray], None]
 PlotFn3D = Callable[[VtkCanvas, np.ndarray], None]
 
+# Overlay variants take a list of (source path, data array) so they
+# can render N files together with a legend. Signature mirrors the
+# single-file ones modulo the items list.
+OverlayFn2D = Callable[[Axes,      list[tuple[Path, np.ndarray]]], None]
+OverlayFn3D = Callable[[VtkCanvas, list[tuple[Path, np.ndarray]]], None]
+
 
 @dataclass(frozen=True)
 class PlotSpec:
-    label: str
-    dim:   str           # "2d" or "3d" -- selects which canvas page is shown
-    fn:    Callable      # PlotFn2D for dim == "2d", PlotFn3D for dim == "3d"
+    label:      str
+    dim:        str           # "2d" or "3d" -- selects which canvas page is shown
+    fn:         Callable      # PlotFn2D for dim == "2d", PlotFn3D for dim == "3d"
+    overlay_fn: Callable | None = None
+    """Optional N-file overlay variant. None means the plot is single-
+    file only (e.g. it draws multiple lines per file -- overlaying it
+    would produce 3N or 5N illegible lines). The Overlay button is
+    disabled with an explanation when the active spec lacks it."""
 
 
 def _plot_traj_r(ax: Axes, d: np.ndarray) -> None:
@@ -194,21 +205,95 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray) -> None:
     canvas.add_trajectory(pts)
 
 
+# ----------------------------------------------------------------------
+# Overlay variants
+# ----------------------------------------------------------------------
+def _turbo_color(i: int, n: int) -> tuple[float, float, float]:
+    """Evenly-spaced colour from the matplotlib 'turbo' palette so the
+    extremes (low/high cases) don't both pin to the cmap endpoints when
+    only two files are overlaid."""
+    cmap = mpl_colormaps["turbo"]
+    t = 0.5 if n <= 1 else i / (n - 1)
+    r, g, b, _a = cmap(t)
+    return (r, g, b)
+
+
+def _make_2d_overlay(single_fn: PlotFn2D) -> OverlayFn2D:
+    """Lift a single-file 2D plot to an N-file overlay. Pre-seeds the
+    axes colour cycle so each `single_fn` call picks the next slot of
+    the turbo palette; after each call we attach the file basename as
+    the line label so the final `ax.legend()` lists them in order.
+
+    Only safe for plots that add **one** line per call (otherwise the
+    label tagging picks the wrong line). The registry annotates which
+    `PlotSpec` entries qualify."""
+    def overlay(ax: Axes, items: list[tuple[Path, np.ndarray]]) -> None:
+        n = len(items)
+        colors = [_turbo_color(i, n) for i in range(n)]
+        ax.set_prop_cycle(color=colors)
+        for path, data in items:
+            single_fn(ax, data)
+            lines = ax.get_lines()
+            if lines:
+                lines[-1].set_label(path.name)
+        # Decorate the title set by the single-file fn so the overlay
+        # nature is visible without us re-implementing the title text.
+        ax.set_title(f"{ax.get_title()}  --  {n} files")
+        ax.legend(loc="best", fontsize="small")
+    return overlay
+
+
+def _overlay_3d_orbit(canvas: VtkCanvas,
+                       items: list[tuple[Path, np.ndarray]]) -> None:
+    """3D Moon scene with N trajectories stacked, each in its own
+    turbo colour, plus a viewport legend and Ctrl+click picking
+    enabled on every polyline (via `source_path`)."""
+    canvas.add_central_body()
+    n = len(items)
+    legend_items: list[tuple[str, tuple[float, float, float]]] = []
+    for i, (path, data) in enumerate(items):
+        color = _turbo_color(i, n)
+        pts = np.column_stack([data["x"], data["y"], data["z"]])
+        canvas.add_trajectory(
+            pts, color=color, endpoint_markers=False, source_path=path,
+        )
+        legend_items.append((path.name, color))
+    canvas.add_legend(legend_items)
+
+
+# Inline lambdas wrapping `_plot_traj_projection` for the XY / XZ / YZ
+# variants -- kept as named locals so they can be reused by their
+# matching overlay helpers.
+_p_xy = lambda ax, d: _plot_traj_projection(ax, d, "x", "y")
+_p_xz = lambda ax, d: _plot_traj_projection(ax, d, "x", "z")
+_p_yz = lambda ax, d: _plot_traj_projection(ax, d, "y", "z")
+
+
 PLOTS: dict[str, list[PlotSpec]] = {
     "traj": [
-        PlotSpec("|r|(t) -- radial distance",   "2d", _plot_traj_r),
-        PlotSpec("|v|(t) -- speed",             "2d", _plot_traj_v),
+        PlotSpec("|r|(t) -- radial distance",   "2d", _plot_traj_r,
+                 overlay_fn=_make_2d_overlay(_plot_traj_r)),
+        PlotSpec("|v|(t) -- speed",             "2d", _plot_traj_v,
+                 overlay_fn=_make_2d_overlay(_plot_traj_v)),
+        # XYZ / VxVyVz draw 3 lines per file: not overlay-safe (would
+        # produce 3N illegible lines). Same for the accel breakdown.
         PlotSpec("x, y, z (t) -- position",     "2d", _plot_traj_xyz),
         PlotSpec("vx, vy, vz (t) -- velocity",  "2d", _plot_traj_vxyz),
-        PlotSpec("orbit projection XY",         "2d", lambda ax, d: _plot_traj_projection(ax, d, "x", "y")),
-        PlotSpec("orbit projection XZ",         "2d", lambda ax, d: _plot_traj_projection(ax, d, "x", "z")),
-        PlotSpec("orbit projection YZ",         "2d", lambda ax, d: _plot_traj_projection(ax, d, "y", "z")),
-        PlotSpec("3D orbit + Moon",             "3d", _plot_traj_3d_orbit),
+        PlotSpec("orbit projection XY",         "2d", _p_xy,
+                 overlay_fn=_make_2d_overlay(_p_xy)),
+        PlotSpec("orbit projection XZ",         "2d", _p_xz,
+                 overlay_fn=_make_2d_overlay(_p_xz)),
+        PlotSpec("orbit projection YZ",         "2d", _p_yz,
+                 overlay_fn=_make_2d_overlay(_p_yz)),
+        PlotSpec("3D orbit + Moon",             "3d", _plot_traj_3d_orbit,
+                 overlay_fn=_overlay_3d_orbit),
     ],
     "accel": [
-        PlotSpec("|a_total|(t)",                "2d", _plot_acc_total),
+        PlotSpec("|a_total|(t)",                "2d", _plot_acc_total,
+                 overlay_fn=_make_2d_overlay(_plot_acc_total)),
         PlotSpec("per-force breakdown (log y)", "2d", _plot_acc_breakdown),
-        PlotSpec("eclipse fraction (t)",        "2d", _plot_acc_eclipse),
+        PlotSpec("eclipse fraction (t)",        "2d", _plot_acc_eclipse,
+                 overlay_fn=_make_2d_overlay(_plot_acc_eclipse)),
     ],
     "events": [
         PlotSpec("events timeline",             "2d", _plot_events_timeline),
@@ -315,7 +400,10 @@ class AnalysisPanel(QWidget):
 
         btn_add = QPushButton("+ Add external file...")
         btn_add.clicked.connect(self._on_add_external)
-        btn_overlay = QPushButton("→ Overlay selected (3D)")
+        # Overlay button works on the active plot in the combo: it
+        # produces a 2D overlay when a 2D plot is selected and a 3D
+        # overlay when a 3D plot is selected (subject to spec.overlay_fn).
+        btn_overlay = QPushButton("→ Overlay selected")
         btn_overlay.clicked.connect(self._on_overlay_selected)
 
         left = QWidget()
@@ -498,11 +586,35 @@ class AnalysisPanel(QWidget):
         self.load_file(Path(raw))
 
     def _on_overlay_selected(self) -> None:
-        """Take every selected trajectory binary, render them together
-        in the 3D view around the Moon, one colour per file from the
-        'turbo' colormap (max distinguishability for small N). Non-
-        trajectory selections are skipped with a single warning at the
-        end -- overlay only makes sense for traj data."""
+        """Overlay all selected files (matching the currently-loaded
+        kind) using the plot picked in the combo. Works for 2D and 3D
+        depending on `spec.dim`; specs without an `overlay_fn` (e.g.
+        per-component plots that draw 3 lines per file) trigger an
+        explanatory message instead of an unreadable overlay."""
+        if self._kind is None:
+            QMessageBox.information(
+                self, "Pick a file first",
+                "Click a file in the tree to set the kind, then Ctrl/Shift-"
+                "click the others you want to overlay."
+            )
+            return
+        idx = self._plot_combo.currentIndex()
+        if idx < 0:
+            return
+        spec = PLOTS[self._kind][idx]
+        if spec.overlay_fn is None:
+            QMessageBox.information(
+                self, "Overlay not supported",
+                f"'{spec.label}' draws multiple lines per file, so an "
+                "overlay would not be legible. Pick a single-series plot "
+                "(e.g. |r|(t), |v|(t), an orbit projection, |a_total|, "
+                "eclipse fraction, or '3D orbit + Moon') and try again."
+            )
+            return
+
+        # Collect selected files that match the loaded kind; the
+        # mismatch case (mixed kinds) is reported at the end so users
+        # see exactly which files were skipped.
         paths: list[Path] = []
         skipped: list[str] = []
         for item in self._tree.selectedItems():
@@ -511,62 +623,56 @@ class AnalysisPanel(QWidget):
                 continue
             p = Path(raw)
             kind = _detect_kind(p)
-            if kind == "traj":
+            if kind == self._kind:
                 paths.append(p)
             else:
                 skipped.append(f"{p.name} ({kind or 'unknown'})")
         if not paths:
             QMessageBox.information(
                 self, "Nothing to overlay",
-                "Select one or more trajectory (.bin / SPDYOUT_) files in "
-                "the tree first."
+                f"Select one or more {self._kind} binaries in the tree first."
             )
             return
 
-        # Read all selected trajectories, then push them onto a single
-        # VTK scene with the Moon sphere added once.
-        self._stack.setCurrentIndex(1)   # 3D page
-        self._vtk.set_central_body_texture(self._configured_moon_texture())
-        self._vtk.clear_scene()
-        self._vtk.add_central_body()
-
-        cmap = mpl_colormaps["turbo"]
-        n = len(paths)
-        legend_items: list[tuple[str, tuple[float, float, float]]] = []
-        for i, p in enumerate(paths):
+        # Read all selected files up front so a malformed one is
+        # surfaced cleanly rather than mid-render.
+        items: list[tuple[Path, np.ndarray]] = []
+        reader = _READERS[self._kind]
+        for p in paths:
             try:
-                d = read_trajectory(p)
+                items.append((p, reader(p)))
             except (OSError, ValueError) as exc:
                 skipped.append(f"{p.name} ({exc})")
-                continue
-            # Sample the colormap to spread colours evenly even for n=2
-            # (endpoints of 'turbo' alone would land on extremes).
-            t = 0.5 if n == 1 else i / (n - 1)
-            r, g, b, _a = cmap(t)
-            pts = np.column_stack([d["x"], d["y"], d["z"]])
-            self._vtk.add_trajectory(
-                pts, color=(r, g, b), endpoint_markers=False, source_path=p,
-            )
-            legend_items.append((p.name, (r, g, b)))
+        if not items:
+            QMessageBox.critical(self, "Overlay failed",
+                                 "None of the selected files could be read.")
+            return
 
-        self._vtk.add_legend(legend_items)
-        self._vtk.reset_camera()
-        self._vtk.render()
+        try:
+            if spec.dim == "2d":
+                self._stack.setCurrentIndex(0)
+                self._figure.clear()
+                ax = self._figure.add_subplot(111)
+                spec.overlay_fn(ax, items)
+                self._figure.tight_layout()
+                self._canvas.draw_idle()
+            else:  # "3d"
+                self._stack.setCurrentIndex(1)
+                self._vtk.set_central_body_texture(self._configured_moon_texture())
+                self._vtk.clear_scene()
+                spec.overlay_fn(self._vtk, items)
+                self._vtk.reset_camera()
+                self._vtk.render()
+        except Exception as exc:  # noqa: BLE001 -- surface anything to user
+            QMessageBox.critical(self, "Overlay failed", repr(exc))
+            return
 
-        # Update the info label so the user sees what was overlaid.
-        msg = f"3D overlay: {len(paths)} trajectories\n" + \
-              "\n".join(str(p) for p in paths)
+        msg = (f"{spec.dim.upper()} overlay: {len(items)} files "
+               f"({spec.label})\n" + "\n".join(str(p) for p, _ in items))
         if skipped:
             msg += "\n\nSkipped:\n" + "\n".join(skipped)
         self._info_label.setText(msg)
         self._info_label.setStyleSheet("")
-        # Reset the kind/data so the per-file plot menu won't act on
-        # stale single-file state until the user clicks a row again.
-        self._kind = None
-        self._data = None
-        self._plot_combo.clear()
-        self._plot_combo.setEnabled(False)
-        self._plot_btn.setEnabled(False)
 
     def load_file(self, path: Path) -> None:
         """Load a binary into the canvas. Auto-detects the kind from
