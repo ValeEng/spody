@@ -17,12 +17,13 @@ graphical front-end, both fed by a plain-text input file.
 ## Status
 
 **Alpha — functional, rough edges.** Single-scenario propagation, schema
-validation, and multi-case batch runs all work end-to-end against the
-[LRO 6-day reference](examples/lro_6day/) and a
-[batch smoke test](examples/batch_demo/). The Python GUI, events, and
-parallel batch (OpenMP) are still on the roadmap below. The library
-underneath (`spody-core`) is validated against SPICE LRO POD ephemerides
-with sub-km position drift over the 6-day window.
+validation, multi-case batch runs, event detection (impact + eclipse),
+and a PySide6 desktop GUI shell (TOML editor + runner) all work
+end-to-end against the [LRO 6-day reference](examples/lro_6day/) and
+the smoke-test batches under [`examples/`](examples/). Parallel batch
+(OpenMP) and the GUI's result viewer are still on the roadmap below.
+The library underneath (`spody-core`) is validated against SPICE LRO
+POD ephemerides with sub-km position drift over the 6-day window.
 
 ---
 
@@ -45,7 +46,7 @@ with sub-km position drift over the 6-day window.
         [CSV / binary output files]
                 |
                 v
-        [Python GUI / web frontend]   <- planned, file-based, no C bindings
+        [Python GUI (PySide6)]   <- shell shipped, result viewer planned
 ```
 
 The split is deliberate:
@@ -53,9 +54,9 @@ The split is deliberate:
 - **spody-core** is a clean C99 library, fully reusable on its own.
 - **spody** is the executable that turns it into a complete tool: input
   parsing, simulation orchestration, output formatting.
-- The future Python GUI (under `python/`) will follow the **Patran/Nastran**
+- The Python GUI (under [`python/`](python/)) follows the **Patran/Nastran**
   pattern — it generates the TOML, invokes the binary, and parses the output
-  files. It will not link C code directly. The same binary therefore serves
+  files. It does not link C code directly. The same binary therefore serves
   desktop, batch HPC, and (eventually) a web backend with no source changes.
 
 ---
@@ -130,8 +131,18 @@ Ordered roughly by what unlocks the most for users.
 - [x] Event detection (`output.events_log`): always-on multi-body
       IMPACT (stop) + opt-in ECLIPSE (`[events].eclipse_threshold`,
       recurring), sub-millisecond Hermite + Brent localisation
+- [x] Two object schemas: `[spacecraft]` (mass + area) and `[debris]`
+      (A/m only, mass-irrelevant); mutually exclusive at parse with
+      mode-tagged batch targets
+- [x] Per-column batch modes: plain `target = "..."` (override) and
+      inline `{ target = "...", mode = "delta" }` (additive perturbation)
+- [x] Python GUI shell (PySide6) under [`python/`](python/): TOML editor
+      with syntax highlighting + context-aware autocompletion + snippet
+      templates, embedded terminal pane streaming `spody`'s stdout/stderr
+      live, Settings dialog for persisted asset paths
 - [x] Examples: [`lro_6day/`](examples/lro_6day/),
-      [`batch_demo/`](examples/batch_demo/)
+      [`batch_demo/`](examples/batch_demo/),
+      [`debris_demo/`](examples/debris_demo/)
 
 **Pending**
 
@@ -141,8 +152,12 @@ Ordered roughly by what unlocks the most for users.
 - [ ] Parallel batch via OpenMP (`thread_number > 1`)
 - [ ] Binary `.spody` variant of `cases_file` (CSV-only today)
 - [ ] Additional examples: ISS LEO with drag, GEO with SRP
-- [ ] Python GUI prototype under `python/` — TOML editor + result viewer
-- [ ] Web frontend wrapping the same binary
+- [ ] GUI result viewer: read `output.bin` / `_acc.bin` / `_evt.bin`
+      back, plot trajectories, force breakdown, and event timeline; 3D
+      Moon-centred view (rendering stack TBD: matplotlib first, then
+      VTK or embedded Cesium)
+- [ ] Standalone GUI distributable via PyInstaller (`build_exe.ps1`
+      stub already in place)
 
 ---
 
@@ -157,14 +172,19 @@ spody/
 ├── src/
 │   ├── main.c                # CLI entry point + subcommand dispatch
 │   ├── app_diagnostics.{c,h} # SpodyError + tee log mirror
+│   ├── app_io.{c,h}          # filesystem / timestamp / path helpers
 │   ├── toml_input.{c,h}      # TOML parser, validator, batch matrix loader
 │   ├── sim_setup.{c,h}       # InputConfig -> SimulationShared + SimulationWorker
 │   └── sim_run.{c,h}         # propagation loop, CSV / binary writers
 ├── examples/                 # input TOML examples (schema guide in examples/README.md)
 │   ├── lro_6day/             # reference: NASA LRO 6-day propagation
-│   └── batch_demo/           # smoke test: 3-case mass + SRP sweep
+│   ├── batch_demo/           # smoke test: 3-case mass + SRP sweep
+│   └── debris_demo/          # debris-mode A/m sweep
 ├── tests/                    # end-to-end CLI tests (planned)
-├── python/                   # GUI prototype (planned, file-based IO)
+├── python/                   # PySide6 desktop GUI (file-based IO, no C bindings)
+│   ├── spody_gui/            # editor + completer + terminal + runner + settings
+│   ├── pyproject.toml
+│   └── build_exe.ps1         # PyInstaller bundle (planned standalone .exe)
 ├── CMakeLists.txt
 ├── LICENSE
 └── README.md
@@ -196,6 +216,5 @@ Apache License 2.0 — see [`LICENSE`](./LICENSE).
 The core of SpOdy (`spody-core`) is the work of **Valerio (@ValeEng)**. The engineering polish that turns the research codebase into a shippable, production-grade tool was done in pair-programming with **Anthropic's Claude Opus 4.7**.
 
 A few high-level patterns are inspired by established mission-analysis
-systems, notably **GMAT** (NASA, Apache 2.0). Validation work has been done
-against external references including SPICE LRO POD products and side-by-side
-benchmarks vs **Tudat** (TU Delft) and **Orekit** (CS Group / ESA).
+systems, notably **GMAT** (NASA, Apache 2.0). Validation work uses SPICE
+LRO POD ephemerides as the ground-truth reference.
