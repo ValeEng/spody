@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
         run_splitter.setStretchFactor(1, 1)
         run_splitter.setSizes([640, 640])
 
-        self._analysis = AnalysisPanel()
+        self._analysis = AnalysisPanel(self._store)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(run_splitter,    "Run")

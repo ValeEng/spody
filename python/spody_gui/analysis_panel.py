@@ -62,6 +62,7 @@ from spody_io import (
     read_trajectory,
 )
 from .astronomy import sun_direction_j2000
+from .settings import SettingsStore
 from .vtk_canvas import VtkCanvas
 
 # Recurse this many levels under the working dir when scanning for
@@ -275,8 +276,12 @@ class AnalysisPanel(QWidget):
       * _kind/_data  : currently loaded binary's type tag + numpy array
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store: SettingsStore | None = None) -> None:
         super().__init__()
+        # Settings store is used to look up the configured Moon-texture
+        # path on every 3D plot dispatch (live, so changes via the
+        # Settings dialog take effect on the next plot without restart).
+        self._store = store if store is not None else SettingsStore()
         self._working_dir: Path | None = None
         self._external:    list[Path] = []
         self._kind: str | None = None
@@ -521,6 +526,7 @@ class AnalysisPanel(QWidget):
         # Read all selected trajectories, then push them onto a single
         # VTK scene with the Moon sphere added once.
         self._stack.setCurrentIndex(1)   # 3D page
+        self._vtk.set_central_body_texture(self._configured_moon_texture())
         self._vtk.clear_scene()
         self._vtk.add_central_body()
 
@@ -664,6 +670,14 @@ class AnalysisPanel(QWidget):
                         self._loading_item = False
                     return
 
+    def _configured_moon_texture(self) -> Path | None:
+        """Look up the Moon texture path from Settings on demand so
+        edits via the Settings dialog take effect on the next 3D plot
+        without restarting. Returns None when unset, so VtkCanvas
+        falls back to the flat-grey sphere."""
+        raw = self._store.moon_texture()
+        return Path(raw) if raw else None
+
     def _on_plot(self) -> None:
         """Dispatch the selected plot to the right canvas. 2D plots are
         drawn into the matplotlib figure; 3D plots into the VTK scene.
@@ -685,6 +699,7 @@ class AnalysisPanel(QWidget):
                 self._canvas.draw_idle()
             else:  # "3d"
                 self._stack.setCurrentIndex(1)
+                self._vtk.set_central_body_texture(self._configured_moon_texture())
                 self._vtk.clear_scene()
                 spec.fn(self._vtk, self._data)
                 self._vtk.reset_camera()

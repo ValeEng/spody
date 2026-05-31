@@ -35,7 +35,12 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData, vtkPolyLine
-from vtkmodules.vtkFiltersSources import vtkArrowSource, vtkSphereSource
+from vtkmodules.vtkFiltersSources import (
+    vtkArrowSource,
+    vtkSphereSource,
+    vtkTexturedSphereSource,
+)
+from vtkmodules.vtkIOImage import vtkJPEGReader, vtkPNGReader
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
@@ -45,6 +50,7 @@ from vtkmodules.vtkRenderingCore import (
     vtkPropPicker,
     vtkRenderer,
     vtkTextActor,
+    vtkTexture,
 )
 # Importing the OpenGL rendering backend registers the implementation
 # behind vtkRenderer / vtkRenderWindow; without it VTK silently fails
@@ -96,6 +102,11 @@ class VtkCanvas(QWidget):
             "LeftButtonReleaseEvent", self._on_left_button_release
         )
 
+        # Default equirectangular texture for the central body, applied
+        # by add_central_body() when no explicit texture_path is given.
+        # The panel sets this from Settings on every plot dispatch.
+        self._default_central_texture: Path | None = None
+
         # The interactor must be initialised before the first render; it
         # is safe to call again later, so we do it once here.
         self._interactor.Initialize()
@@ -115,27 +126,77 @@ class VtkCanvas(QWidget):
         self._trajectory_actors.clear()
         self._highlighted_actor = None
 
+    def set_central_body_texture(self, path: Path | None) -> None:
+        """Default equirectangular texture used by subsequent
+        add_central_body() calls when no explicit `texture_path` is
+        passed. None reverts to the flat-grey sphere."""
+        self._default_central_texture = path
+
     def add_central_body(self, radius_km: float = MOON_RADIUS_KM,
                           color: tuple[float, float, float] = (0.55, 0.55, 0.58),
-                          resolution: int = 64) -> None:
-        """Add a solid sphere centred at the origin -- the central body
-        the trajectories are referenced to. Resolution is the number of
-        latitude/longitude bands; 64 is smooth-enough without being
-        wasteful."""
-        sphere = vtkSphereSource()
-        sphere.SetRadius(radius_km)
-        sphere.SetThetaResolution(resolution)
-        sphere.SetPhiResolution(resolution // 2)
+                          resolution: int = 64,
+                          texture_path: Path | None = None) -> None:
+        """Add a sphere centred at the origin. If `texture_path`
+        resolves to a readable JPEG / PNG (or the default set via
+        `set_central_body_texture` does), the sphere is uv-mapped with
+        that equirectangular image; otherwise a flat-colour sphere is
+        drawn. Resolution is the number of latitude / longitude bands.
 
-        mapper = vtkPolyDataMapper()
-        mapper.SetInputConnection(sphere.GetOutputPort())
+        `vtkTexturedSphereSource` is used for the textured case
+        because it already generates the equirectangular UV coords
+        spody-friendly Moon mosaics expect (longitude 0..360 mapped
+        to u 0..1, latitude -90..+90 to v 0..1)."""
+        chosen = texture_path if texture_path is not None else self._default_central_texture
+        reader = self._make_image_reader(chosen) if chosen else None
 
-        actor = vtkActor()
-        actor.SetMapper(mapper)
-        actor.GetProperty().SetColor(*color)
-        actor.GetProperty().SetAmbient(0.30)
-        actor.GetProperty().SetDiffuse(0.70)
+        if reader is not None:
+            sphere = vtkTexturedSphereSource()
+            sphere.SetRadius(radius_km)
+            sphere.SetThetaResolution(resolution)
+            sphere.SetPhiResolution(resolution // 2)
+
+            texture = vtkTexture()
+            texture.SetInputConnection(reader.GetOutputPort())
+            texture.InterpolateOn()
+
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.SetTexture(texture)
+            actor.GetProperty().SetAmbient(0.50)
+            actor.GetProperty().SetDiffuse(0.55)
+        else:
+            sphere = vtkSphereSource()
+            sphere.SetRadius(radius_km)
+            sphere.SetThetaResolution(resolution)
+            sphere.SetPhiResolution(resolution // 2)
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetAmbient(0.30)
+            actor.GetProperty().SetDiffuse(0.70)
         self._renderer.AddActor(actor)
+
+    @staticmethod
+    def _make_image_reader(path: Path):
+        """Pick a vtk image reader based on the file extension. Returns
+        None if the file is missing or the extension is unsupported --
+        the caller then falls back to the flat-colour sphere."""
+        path = Path(path)
+        if not path.is_file():
+            return None
+        ext = path.suffix.lower()
+        if ext in {".jpg", ".jpeg"}:
+            reader = vtkJPEGReader()
+        elif ext == ".png":
+            reader = vtkPNGReader()
+        else:
+            return None
+        reader.SetFileName(str(path))
+        return reader
 
     def add_trajectory(self, points_km: np.ndarray,
                         color: tuple[float, float, float] = (1.0, 0.85, 0.20),

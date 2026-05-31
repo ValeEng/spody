@@ -50,9 +50,33 @@ The window has a top-level **Run / Analysis** tab switch.
   * events: timeline scatter (IMPACT / ECLIPSE markers along the
     time axis).
 
-3D viewers (Moon-centred globe, debris cloud) are deferred -- the
-rendering stack (VTK vs embedded Cesium via QWebEngineView) will be
-chosen when the data-cloud volumes justify the dependency.
+**3D viewer** -- VTK widget embedded in the Analysis tab, switched in
+automatically when a 3D plot is selected. Built-in mouse controls
+(left-drag rotate, scroll zoom, middle pan, `r` reset). Today:
+- `3D orbit + Moon` per trajectory binary
+- `→ Overlay selected (3D)` button on the file list -- pick N
+  trajectories with Ctrl/Shift, get a coloured overlay with a legend
+- `+ Sun arrow` -- direction to the Sun at the typed epoch (auto-
+  filled from the loaded TOML; low-precision analytic ephemeris,
+  arcminute-class)
+- **Ctrl+left-click** on an overlaid trajectory picks it: the
+  polyline is highlighted, the matching file is selected in the tree
+  and shown in the info label below the canvas.
+
+**Moon texture (3D view).** The central body sphere is grey by
+default; configure **Settings > Paths > Moon texture (3D view)** with
+an equirectangular Moon image (JPEG or PNG) and the sphere is uv-
+mapped automatically on the next plot. Suggested sources, all public
+domain / CC, equirectangular projection:
+- NASA SVS CGI Moon Kit -- <https://svs.gsfc.nasa.gov/4720> (2k / 8k
+  / 24k variants; 2k JPEG is ~600 KB)
+- USGS Astrogeology LRO WAC Mosaic, equirectangular tile
+- Solar System Scope -- <https://www.solarsystemscope.com/textures/>
+  (CC BY 4.0, 2k / 4k / 8k)
+
+The texture is loaded from disk every time a 3D plot is dispatched
+(VTK caches internally), so changing the Settings path takes effect
+on the next **Plot** click without restarting the GUI.
 
 ## Dev setup
 
@@ -132,5 +156,7 @@ spody_gui/               # PySide6 desktop app (depends on spody_io)
   terminal.py            # TerminalView (read-only output pane)
   runner.py              # SpodyRunner (QProcess wrapper)
   settings.py            # SettingsStore (QSettings) + SettingsDialog
-  analysis_panel.py      # Analysis tab: file picker + plot dispatch + mpl canvas
+  analysis_panel.py      # Analysis tab: file picker + plot dispatch + 2D/3D canvases
+  vtk_canvas.py          # VtkCanvas: QVTKRenderWindowInteractor + Moon + traj + sun
+  astronomy.py           # low-precision Sun direction (analytic, ~arcmin)
 ```

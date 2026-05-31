@@ -22,11 +22,12 @@ from PySide6.QtWidgets import (
 
 # Names under which paths are stored in QSettings. Centralised so the
 # dialog and the runner agree on the spelling.
-KEY_SPODY_BIN  = "paths/spody_binary"
-KEY_HARMONICS  = "paths/harmonics_file"
-KEY_EPHEMERIS  = "paths/ephemeris_file"
-KEY_OUTPUT_DIR = "paths/output_dir"
-KEY_RECENT     = "files/recent"
+KEY_SPODY_BIN     = "paths/spody_binary"
+KEY_HARMONICS     = "paths/harmonics_file"
+KEY_EPHEMERIS     = "paths/ephemeris_file"
+KEY_OUTPUT_DIR    = "paths/output_dir"
+KEY_MOON_TEXTURE  = "paths/moon_texture"
+KEY_RECENT        = "files/recent"
 
 
 class SettingsStore:
@@ -37,17 +38,19 @@ class SettingsStore:
         self._qs = QSettings()  # uses QApplication organisationName/applicationName
 
     # Paths ------------------------------------------------------------
-    def spody_binary(self) -> str:    return self._qs.value(KEY_SPODY_BIN,  "", type=str)
-    def harmonics_file(self) -> str:  return self._qs.value(KEY_HARMONICS,  "", type=str)
-    def ephemeris_file(self) -> str:  return self._qs.value(KEY_EPHEMERIS,  "", type=str)
-    def output_dir(self) -> str:      return self._qs.value(KEY_OUTPUT_DIR, "", type=str)
+    def spody_binary(self) -> str:    return self._qs.value(KEY_SPODY_BIN,     "", type=str)
+    def harmonics_file(self) -> str:  return self._qs.value(KEY_HARMONICS,     "", type=str)
+    def ephemeris_file(self) -> str:  return self._qs.value(KEY_EPHEMERIS,     "", type=str)
+    def output_dir(self) -> str:      return self._qs.value(KEY_OUTPUT_DIR,    "", type=str)
+    def moon_texture(self) -> str:    return self._qs.value(KEY_MOON_TEXTURE,  "", type=str)
 
-    def set_paths(self, *, spody_bin: str, harmonics: str,
-                  ephemeris: str, output_dir: str) -> None:
-        self._qs.setValue(KEY_SPODY_BIN,  spody_bin)
-        self._qs.setValue(KEY_HARMONICS,  harmonics)
-        self._qs.setValue(KEY_EPHEMERIS,  ephemeris)
-        self._qs.setValue(KEY_OUTPUT_DIR, output_dir)
+    def set_paths(self, *, spody_bin: str, harmonics: str, ephemeris: str,
+                  output_dir: str, moon_texture: str) -> None:
+        self._qs.setValue(KEY_SPODY_BIN,    spody_bin)
+        self._qs.setValue(KEY_HARMONICS,    harmonics)
+        self._qs.setValue(KEY_EPHEMERIS,    ephemeris)
+        self._qs.setValue(KEY_OUTPUT_DIR,   output_dir)
+        self._qs.setValue(KEY_MOON_TEXTURE, moon_texture)
 
     # Recent files -----------------------------------------------------
     def recent_files(self) -> list[str]:
@@ -105,6 +108,7 @@ class SettingsDialog(QDialog):
         self._e_harmonics = QLineEdit(store.harmonics_file())
         self._e_ephemeris = QLineEdit(store.ephemeris_file())
         self._e_output    = QLineEdit(store.output_dir())
+        self._e_moon      = QLineEdit(store.moon_texture())
 
         form = QFormLayout()
         form.addRow("spody binary",  _path_picker_row(self._e_spody,
@@ -115,6 +119,9 @@ class SettingsDialog(QDialog):
                     "Locate ephemeris file", "Ephemeris (*.spody *.bsp);;All files (*)"))
         form.addRow("default output dir", _path_picker_row(self._e_output,
                     "Choose output directory", "", pick_dir=True))
+        form.addRow("Moon texture (3D view)", _path_picker_row(self._e_moon,
+                    "Locate Moon equirectangular texture",
+                    "Images (*.jpg *.jpeg *.png);;All files (*)"))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -132,5 +139,6 @@ class SettingsDialog(QDialog):
             harmonics=self._e_harmonics.text().strip(),
             ephemeris=self._e_ephemeris.text().strip(),
             output_dir=self._e_output.text().strip(),
+            moon_texture=self._e_moon.text().strip(),
         )
         self.accept()
