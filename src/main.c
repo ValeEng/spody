@@ -50,10 +50,21 @@ static void print_config_summary(const InputConfig *cfg) {
     spody_log_printf("  SRP              : %s",
            cfg->enable_srp ? "enabled" : "disabled");
     if (cfg->enable_srp) {
-        spody_log_printf("  (A=%.3f m^2, Cr=%.3f)", cfg->srp_area_m2, cfg->srp_cr);
+        if (cfg->debris_mode) {
+            spody_log_printf("  (A/m=%.6f m^2/kg, Cr=%.3f)",
+                   cfg->srp_area_m2, cfg->srp_cr);
+        } else {
+            spody_log_printf("  (A=%.3f m^2, Cr=%.3f)",
+                   cfg->srp_area_m2, cfg->srp_cr);
+        }
     }
     spody_log_printf("\n");
-    spody_log_printf("  spacecraft mass  : %.3f kg\n", cfg->mass_kg);
+    if (cfg->debris_mode) {
+        spody_log_printf("  object           : debris (A/m=%.6f m^2/kg)\n",
+               cfg->srp_area_m2);
+    } else {
+        spody_log_printf("  spacecraft mass  : %.3f kg\n", cfg->mass_kg);
+    }
     spody_log_printf("  integrator       : rkdp45  rel_tol=%.0e  h=[%.1e, %.1e] s "
            "(init %.3f s)\n",
            cfg->rel_tol, cfg->h_min_s, cfg->h_max_s, cfg->h_init_s);

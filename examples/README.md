@@ -8,8 +8,9 @@ without copying-and-tweaking from an existing one.
 
 | Directory       | Mode    | Purpose                                              |
 |-----------------|---------|------------------------------------------------------|
-| [`lro_6day/`](lro_6day/)     | propagate | NASA LRO 6-day reference -- the validation scenario   |
-| [`batch_demo/`](batch_demo/) | batch     | Smoke test: 3-case mass + SRP sweep over 1 hour       |
+| [`lro_6day/`](lro_6day/)         | propagate | NASA LRO 6-day reference -- the validation scenario     |
+| [`batch_demo/`](batch_demo/)     | batch     | Smoke test: 3-case mass + SRP sweep over 1 hour         |
+| [`debris_demo/`](debris_demo/)   | batch     | Debris-mode A/m sweep -- 3 cases, 1 hour                |
 
 ---
 
@@ -35,7 +36,15 @@ et_start_s  = 3.065472661824111e+08   # 2009-09-18 12:00 UTC TDB
 duration_s  = 5.184e+05               # 6 days
 ```
 
-### `[spacecraft]` and optional `[spacecraft.srp]`
+### Object: `[spacecraft]` or `[debris]` (exactly one)
+
+The TOML must define the propagated object via **either** `[spacecraft]`
+(named vehicle, mass + area known) **or** `[debris]` (A/m-driven fragment,
+mass irrelevant). Having both, or neither, is a parse error. The rest of
+the schema (`[initial_state]`, `[force_model]`, `[integrator]`, `[output]`,
+`[events]`, `[batch]`) is shared.
+
+#### `[spacecraft]` + optional `[spacecraft.srp]`
 
 | Key                    | Type   | Notes                                          |
 |------------------------|--------|------------------------------------------------|
@@ -46,15 +55,14 @@ duration_s  = 5.184e+05               # 6 days
 
 The `[spacecraft.srp]` table is **required** when `force_model.srp = true`
 and **optional** otherwise. SRP only depends on the area-to-mass ratio, so
-supply **exactly one** of `area_m2` or `am_srp` (giving both, or neither, is
-an error). An `am_srp` value is stored internally as the equivalent area
+supply **exactly one** of `area_m2` or `am_srp` (both, or neither, is an
+error). An `am_srp` value is stored internally as the equivalent area
 (`am_srp * mass_kg`).
 
-> **Batch note.** `am_srp` is a single-input convenience for `[spacecraft]`;
-> it is **not** a valid `[batch.columns]` target — only `area_m2` is. If you
-> batch `mass_kg`, the effective A/m varies across cases (area stays fixed).
-> A proper A/m-native batch workflow (sample over A/m, no nominal mass) will
-> land with the future debris propagation mode.
+> **Batch note.** `am_srp` here is a single-input convenience for
+> `[spacecraft]`; it is **not** a valid `[batch.columns]` target — only
+> `area_m2` is. If you batch `mass_kg`, the effective A/m varies across
+> cases (area stays fixed). For native A/m sweeps use `[debris]` instead.
 
 ```toml
 [spacecraft]
@@ -63,6 +71,38 @@ mass_kg = 1916.0
   [spacecraft.srp]
   area_m2 = 20.0    # or, equivalently: am_srp = 0.010438
   Cr      = 1.3
+```
+
+#### `[debris]`
+
+For SRP-driven workflows where A/m is the natural primary parameter
+(debris fragments, non-cooperative objects). Mass is not part of the
+schema — the parser pins it to `1.0` internally so `srp_area_m2`
+numerically equals `am_srp`, and the rest of the pipeline runs unchanged.
+
+| Key             | Type  | Notes                                              |
+|-----------------|-------|----------------------------------------------------|
+| `debris.am_srp` | float | area-to-mass ratio [m²/kg], must be > 0            |
+| `debris.Cr`     | float | reflectivity coefficient (only used if SRP is on)  |
+
+`force_model.srp` is **not** forced to true in debris mode — you can run a
+purely gravitational propagation of a debris fragment and `am_srp` / `Cr`
+simply go unused.
+
+```toml
+[debris]
+am_srp = 0.02       # m²/kg
+Cr     = 1.3
+```
+
+In batch mode the natural targets are `debris.am_srp` and `debris.Cr`;
+cross-mode targets are rejected at parse (`spacecraft.*` paths in a
+`[debris]` file, and vice versa).
+
+```toml
+[batch.columns]
+am_srp = "debris.am_srp"
+Cr     = "debris.Cr"
 ```
 
 ### `[initial_state]`
@@ -276,13 +316,17 @@ validation (see [Per-case validation](#per-case-validation)).
 **Targetable paths** (numeric, per-case):
 
 - `simulation.et_start_s` / `simulation.duration_s`
-- `spacecraft.mass_kg`
-- `spacecraft.srp.area_m2` / `spacecraft.srp.Cr`
+- `spacecraft.mass_kg` *(spacecraft mode only)*
+- `spacecraft.srp.area_m2` / `spacecraft.srp.Cr` *(spacecraft mode only)*
+- `debris.am_srp` / `debris.Cr` *(debris mode only)*
 - `initial_state.position_km[0..2]`
 - `initial_state.velocity_kms[0..2]`
 - `force_model.srp` (0 or 1)
 - `integrator.rel_tol`, `h_init_s`, `h_min_s`, `h_max_s`
 - `output.interval_s`
+
+Mode-tagged paths are cross-validated at parse: a `[debris]` file cannot
+target `spacecraft.*`, and a `[spacecraft]` file cannot target `debris.*`.
 
 **Not overridable** (these belong to the shared part loaded once):
 `force_model.central_body`, `force_model.harmonics_file`,

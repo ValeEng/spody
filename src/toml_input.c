@@ -369,6 +369,31 @@ static int parse_spacecraft(toml_table_t *root, InputConfig *cfg,
     return SPODY_OK;
 }
 
+/* [debris] -- alternative to [spacecraft] for SRP-driven workflows where
+ * A/m is the natural primary parameter (debris fragments, non-cooperative
+ * objects). Mass is irrelevant for SRP-only physics, so [debris] does not
+ * take one; the parser sets mass_kg=1.0 internally and stores am_srp
+ * directly in srp_area_m2 so srp_area_m2 numerically equals A/m and
+ * spody_init_Spacecraft recomputes am_srp = area_srp / 1 = am_srp.
+ * Batch targets are debris.am_srp / debris.Cr. */
+static int parse_debris(toml_table_t *root, InputConfig *cfg, SpodyError *err) {
+    toml_table_t *t = toml_table_in(root, "debris");
+    if (!t) {
+        spody_error_set(err, SPODY_ERR_MISSING_KEY, "missing section [debris]");
+        return SPODY_ERR_MISSING_KEY;
+    }
+    int rc;
+    double am;
+    if ((rc = req_double(t, "debris", "am_srp", &am,           err))) return rc;
+    if ((rc = req_double(t, "debris", "Cr",     &cfg->srp_cr, err))) return rc;
+
+    cfg->debris_mode   = 1;
+    cfg->mass_kg       = 1.0;     /* fictitious; only A/m matters */
+    cfg->has_srp_block = 1;       /* debris implies SRP is the point */
+    cfg->srp_area_m2   = am;      /* am * mass = am * 1 = am */
+    return SPODY_OK;
+}
+
 static int parse_initial_state(toml_table_t *root, InputConfig *cfg,
                                SpodyError *err) {
     toml_table_t *t = toml_table_in(root, "initial_state");
@@ -784,6 +809,14 @@ static const SpodyFieldDesc FIELD_TABLE[] = {
     { "spacecraft.srp.Cr",               SPODY_FIELD_DOUBLE,
       offsetof(InputConfig, srp_cr),             0, SPODY_VAL_NON_NEG  },
 
+    /* debris -- am_srp/Cr alias srp_area_m2/srp_cr (debris mode forces
+     * mass=1 so srp_area_m2 numerically equals A/m). Mutually exclusive
+     * with the spacecraft.* paths; cross-validated against debris_mode. */
+    { "debris.am_srp",                   SPODY_FIELD_DOUBLE,
+      offsetof(InputConfig, srp_area_m2),        0, SPODY_VAL_POSITIVE },
+    { "debris.Cr",                       SPODY_FIELD_DOUBLE,
+      offsetof(InputConfig, srp_cr),             0, SPODY_VAL_NON_NEG  },
+
     /* initial_state (vec3 elements) -- |r|, |v| cross-field, not per-cell */
     { "initial_state.position_km[0]",    SPODY_FIELD_VEC3_AT,
       offsetof(InputConfig, position_km),        0, SPODY_VAL_ANY      },
@@ -973,6 +1006,25 @@ static int parse_batch(toml_table_t *root, const char *toml_dir,
                     "per-case override target", col, target_path);
             rc = SPODY_ERR_BAD_VALUE; goto fail;
         }
+        /* Cross-validate target against the object mode: spacecraft.* paths
+         * make no sense in debris mode (massa irrelevant; would corrupt A/m
+         * via spody_init_Spacecraft), and debris.* paths likewise belong
+         * only to debris mode. Catches typos and copy-pasted batch tables. */
+        int target_is_debris = strncmp(fd->path, "debris.", 7) == 0;
+        int target_is_spc    = strncmp(fd->path, "spacecraft.", 11) == 0;
+        if (cfg->debris_mode && target_is_spc) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "[batch.columns].%s targets '%s' but the TOML uses [debris] "
+                    "(use debris.am_srp / debris.Cr instead)", col, fd->path);
+            rc = SPODY_ERR_BAD_VALUE; goto fail;
+        }
+        if (!cfg->debris_mode && target_is_debris) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "[batch.columns].%s targets '%s' but the TOML uses "
+                    "[spacecraft] (use spacecraft.srp.area_m2 / spacecraft.srp.Cr "
+                    "instead)", col, fd->path);
+            rc = SPODY_ERR_BAD_VALUE; goto fail;
+        }
         batch->column_targets[j]  = fd;
         batch->column_is_delta[j] = is_delta;
     }
@@ -1032,7 +1084,23 @@ int spody_load_input(const char *toml_path, InputConfig *cfg, SpodyError *err) {
 
     int rc;
     if ((rc = parse_simulation   (root,            cfg, err))) goto out;
-    if ((rc = parse_spacecraft   (root,            cfg, err))) goto out;
+
+    /* [spacecraft] XOR [debris]: exactly one selects the object
+     * parameterisation. Spacecraft = named vehicle (mass + area), debris =
+     * A/m-driven fragment (mass irrelevant). */
+    toml_table_t *sc_t = toml_table_in(root, "spacecraft");
+    toml_table_t *db_t = toml_table_in(root, "debris");
+    if (!sc_t == !db_t) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "TOML must contain exactly one of [spacecraft] or [debris] "
+                "(got %s)", sc_t ? "both" : "neither");
+        rc = SPODY_ERR_BAD_VALUE; goto out;
+    }
+    if (db_t) {
+        if ((rc = parse_debris       (root,            cfg, err))) goto out;
+    } else {
+        if ((rc = parse_spacecraft   (root,            cfg, err))) goto out;
+    }
     if ((rc = parse_initial_state(root,            cfg, err))) goto out;
     if ((rc = parse_force_model  (root, toml_dir,  cfg, err))) goto out;
     if ((rc = parse_ephemeris    (root, toml_dir,  cfg, err))) goto out;
@@ -1096,28 +1164,37 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
         return SPODY_ERR_BAD_VALUE;
     }
 
-    /* Spacecraft */
-    if (cfg->mass_kg <= 0.0) {
-        spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "spacecraft.mass_kg must be positive (got %.6g)",
-                cfg->mass_kg);
-        return SPODY_ERR_BAD_VALUE;
-    }
-    if (cfg->enable_srp && !cfg->has_srp_block) {
-        spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "force_model.srp = true but [spacecraft.srp] is missing");
-        return SPODY_ERR_BAD_VALUE;
+    /* Object parameterisation. In debris mode mass is forced to 1.0 by the
+     * parser so the mass check is skipped; the spacecraft.srp-missing check
+     * only fires for spacecraft mode (debris always has has_srp_block=1).
+     * Value ranges apply to both modes (srp_area_m2 == am_srp numerically
+     * in debris mode); messages are mode-aware. */
+    if (!cfg->debris_mode) {
+        if (cfg->mass_kg <= 0.0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "spacecraft.mass_kg must be positive (got %.6g)",
+                    cfg->mass_kg);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->enable_srp && !cfg->has_srp_block) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.srp = true but [spacecraft.srp] is missing");
+            return SPODY_ERR_BAD_VALUE;
+        }
     }
     if (cfg->has_srp_block) {
         if (cfg->srp_area_m2 <= 0.0) {
             spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                    "spacecraft.srp.area_m2 must be positive (got %.6g)",
+                    "%s must be positive (got %.6g)",
+                    cfg->debris_mode ? "debris.am_srp"
+                                     : "spacecraft.srp.area_m2",
                     cfg->srp_area_m2);
             return SPODY_ERR_BAD_VALUE;
         }
         if (cfg->srp_cr < 0.0) {
             spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                    "spacecraft.srp.Cr must be non-negative (got %.6g)",
+                    "%s must be non-negative (got %.6g)",
+                    cfg->debris_mode ? "debris.Cr" : "spacecraft.srp.Cr",
                     cfg->srp_cr);
             return SPODY_ERR_BAD_VALUE;
         }

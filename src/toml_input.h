@@ -126,10 +126,13 @@ typedef struct {
     double et_start_s;
     double duration_s;
 
-    /* [spacecraft] */
+    /* [spacecraft] OR [debris] -- exactly one is present (XOR at parse).
+     * In debris mode the parser sets mass_kg=1.0 so srp_area_m2 numerically
+     * equals A/m; sim_setup and spody-core stay unaware of the distinction. */
+    int    debris_mode;          /* 1 if [debris] was used instead of [spacecraft] */
     double mass_kg;
-    int    has_srp_block;        /* 1 if [spacecraft.srp] is present     */
-    double srp_area_m2;          /* valid iff has_srp_block              */
+    int    has_srp_block;        /* 1 if [spacecraft.srp] is present, always 1 in debris mode */
+    double srp_area_m2;          /* valid iff has_srp_block; A/m numerically when debris_mode */
     double srp_cr;               /* valid iff has_srp_block              */
 
     /* [initial_state] */

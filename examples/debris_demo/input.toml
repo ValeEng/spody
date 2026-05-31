@@ -1,0 +1,60 @@
+# SpOdy debris-mode batch -- A/m sweep around a lunar debris fragment.
+#
+# Demonstrates the [debris] object schema (A/m + Cr, no mass) and a batch
+# whose primary parameter is the area-to-mass ratio itself. Three cases
+# span a representative range for tumbling lunar debris.
+#
+# Run with:    spody batch examples/debris_demo/input.toml
+# Expected:    examples/debris_demo/output/batch/debris_am_sweep_*.bin
+#
+# Notes:
+#   - mass_kg does NOT appear (debris mode pins it to 1.0 internally so
+#     debris.am_srp is stored directly as the equivalent area).
+#   - Targets must use the debris.* prefix; a spacecraft.* target here
+#     would be rejected at parse.
+
+[simulation]
+name       = "debris_am_sweep"
+et_start_s = 3.065472661824111e+08      # 2009-09-18 12:00 UTC (TDB)
+duration_s = 3600.0                     # 1 hour
+
+[debris]
+am_srp = 0.02                           # m^2/kg -- overridden per case
+Cr     = 1.3                            # overridden per case
+
+[initial_state]
+frame        = "central_inertial"
+position_km  = [ 1622.030233600,  512.084982400, -529.342614300]
+velocity_kms = [    0.648832282,   -0.519033001,    1.440002498]
+
+[force_model]
+central_body     = "Moon"
+harmonics_file   = "../../external/spody-core/raw_data/GRGM1200B/gggrx_1200b_sha.tab"
+harmonics_degree = 20
+third_bodies     = ["Earth", "Sun"]
+srp              = true
+
+[ephemeris]
+file = "../../external/spody-core/raw_data/DE440/de440.spody"
+
+[integrator]
+type     = "rkdp45"
+rel_tol  = 1.0e-9
+h_init_s = 60.0
+h_min_s  = 1.0e-5
+h_max_s  = 600.0
+
+[output]
+mode       = "fixed"
+interval_s = 60.0
+bin_file   = "ignored_in_batch.bin"     # presence = "emit binary per case"
+
+[batch]
+name          = "debris_am_sweep"
+output_dir    = "output"                # must EXIST; batch/ subdir is auto-created
+thread_number = 1
+cases_file    = "cases.csv"
+
+[batch.columns]
+am_srp = "debris.am_srp"
+Cr     = "debris.Cr"

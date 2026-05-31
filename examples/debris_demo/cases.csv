@@ -1,0 +1,6 @@
+# A/m sweep for tumbling lunar debris. Cr varies across plausible values
+# for a partly specular fragment.
+id,    am_srp, Cr
+low,   0.005,  1.3
+mid,   0.020,  1.5
+high,  0.050,  1.8
