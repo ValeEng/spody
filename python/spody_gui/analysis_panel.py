@@ -34,6 +34,7 @@ from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -48,6 +49,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from matplotlib import colormaps as mpl_colormaps
 
 from spody_io import (
     EVENT_KIND_ECLIPSE,
@@ -294,20 +296,26 @@ class AnalysisPanel(QWidget):
         dir_row.addWidget(btn_change)
         dir_row.addWidget(btn_refresh)
 
-        # Left pane: file tree + Add button ---------------------------
+        # Left pane: file tree + action buttons ----------------------
+        # Multi-selection (Ctrl/Shift-click) feeds the overlay button;
+        # single-click still triggers single-file load via itemClicked.
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
         self._tree.setRootIsDecorated(False)
+        self._tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree.itemClicked.connect(self._on_tree_item_clicked)
 
         btn_add = QPushButton("+ Add external file...")
         btn_add.clicked.connect(self._on_add_external)
+        btn_overlay = QPushButton("→ Overlay selected (3D)")
+        btn_overlay.clicked.connect(self._on_overlay_selected)
 
         left = QWidget()
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.addWidget(self._tree, 1)
         left_lay.addWidget(btn_add)
+        left_lay.addWidget(btn_overlay)
 
         # Right pane: plot controls + stacked 2D/3D canvas + info ----
         self._plot_combo = QComboBox()
@@ -455,6 +463,71 @@ class AnalysisPanel(QWidget):
         if not raw:
             return   # header item, ignore
         self.load_file(Path(raw))
+
+    def _on_overlay_selected(self) -> None:
+        """Take every selected trajectory binary, render them together
+        in the 3D view around the Moon, one colour per file from the
+        'turbo' colormap (max distinguishability for small N). Non-
+        trajectory selections are skipped with a single warning at the
+        end -- overlay only makes sense for traj data."""
+        paths: list[Path] = []
+        skipped: list[str] = []
+        for item in self._tree.selectedItems():
+            raw = item.data(0, _PATH_ROLE)
+            if not raw:
+                continue
+            p = Path(raw)
+            kind = _detect_kind(p)
+            if kind == "traj":
+                paths.append(p)
+            else:
+                skipped.append(f"{p.name} ({kind or 'unknown'})")
+        if not paths:
+            QMessageBox.information(
+                self, "Nothing to overlay",
+                "Select one or more trajectory (.bin / SPDYOUT_) files in "
+                "the tree first."
+            )
+            return
+
+        # Read all selected trajectories, then push them onto a single
+        # VTK scene with the Moon sphere added once.
+        self._stack.setCurrentIndex(1)   # 3D page
+        self._vtk.clear_scene()
+        self._vtk.add_central_body()
+
+        cmap = mpl_colormaps["turbo"]
+        n = len(paths)
+        for i, p in enumerate(paths):
+            try:
+                d = read_trajectory(p)
+            except (OSError, ValueError) as exc:
+                skipped.append(f"{p.name} ({exc})")
+                continue
+            # Sample the colormap to spread colours evenly even for n=2
+            # (endpoints of 'turbo' alone would land on extremes).
+            t = 0.5 if n == 1 else i / (n - 1)
+            r, g, b, _a = cmap(t)
+            pts = np.column_stack([d["x"], d["y"], d["z"]])
+            self._vtk.add_trajectory(pts, color=(r, g, b), endpoint_markers=False)
+
+        self._vtk.reset_camera()
+        self._vtk.render()
+
+        # Update the info label so the user sees what was overlaid.
+        msg = f"3D overlay: {len(paths)} trajectories\n" + \
+              "\n".join(str(p) for p in paths)
+        if skipped:
+            msg += "\n\nSkipped:\n" + "\n".join(skipped)
+        self._info_label.setText(msg)
+        self._info_label.setStyleSheet("")
+        # Reset the kind/data so the per-file plot menu won't act on
+        # stale single-file state until the user clicks a row again.
+        self._kind = None
+        self._data = None
+        self._plot_combo.clear()
+        self._plot_combo.setEnabled(False)
+        self._plot_btn.setEnabled(False)
 
     def load_file(self, path: Path) -> None:
         """Load a binary into the canvas. Auto-detects the kind from
