@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QSplitter,
 )
 
+from . import schema
 from .editor import TomlEditor
 from .runner import SpodyRunner
 from .settings import SettingsDialog, SettingsStore
@@ -84,6 +85,15 @@ class MainWindow(QMainWindow):
         m_file.addAction(self._make_action("Save &As...", self._action_save_as, QKeySequence.StandardKey.SaveAs))
         m_file.addSeparator()
         m_file.addAction(self._make_action("&Quit",       self.close,          QKeySequence.StandardKey.Quit))
+
+        # Insert -------------------------------------------------------
+        # One menu item per snippet template. Inserting also serves as a
+        # discoverable list of the available top-level sections.
+        m_ins = mb.addMenu("&Insert")
+        for name in schema.SNIPPETS.keys():
+            a = QAction(f"[{name}] template", self)
+            a.triggered.connect(lambda _checked=False, n=name: self._editor.insert_snippet(n))
+            m_ins.addAction(a)
 
         # Run ----------------------------------------------------------
         m_run = mb.addMenu("&Run")
