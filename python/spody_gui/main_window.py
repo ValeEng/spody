@@ -182,6 +182,10 @@ class MainWindow(QMainWindow):
         self._store.add_recent_file(str(path), RECENT_FILES_MAX)
         self._refresh_recent_menu()
         self._refresh_title()
+        # The TOML's directory is the canonical "working dir" for outputs
+        # (spody resolves relative paths there); seed the Analysis tab so
+        # switching to it immediately shows any binaries already present.
+        self._analysis.set_working_dir(path.parent)
 
     def _action_save(self) -> bool:
         if self._current_path is None:
@@ -208,6 +212,7 @@ class MainWindow(QMainWindow):
         self._store.add_recent_file(str(path), RECENT_FILES_MAX)
         self._refresh_recent_menu()
         self._refresh_title()
+        self._analysis.set_working_dir(path.parent)
         return True
 
     def _maybe_save(self) -> bool:
@@ -270,6 +275,11 @@ class MainWindow(QMainWindow):
         verdict = "OK" if exit_code == 0 else f"exit {exit_code}"
         self._status_run.setText(f"{verdict} ({elapsed:.1f}s)")
         self._terminal.append_line(f"[{verdict} in {elapsed:.1f}s]")
+        # Refresh the Analysis tree so any new outputs from this run
+        # appear without the user having to hit Refresh manually. The
+        # working dir was already seeded on Open / Save.
+        if self._current_path is not None:
+            self._analysis.set_working_dir(self._current_path.parent)
 
     def _on_run_error(self, message: str) -> None:
         self._terminal.append_line(f"[runner error: {message}]")
