@@ -68,15 +68,47 @@ The output `dist/spody-gui.exe` is self-contained (Python interpreter +
 PySide6 + Qt all embedded). Ship it alongside the `spody.exe` binary
 and the user is set.
 
+## Output binary readers (`spody_io`)
+
+Sibling package to `spody_gui`, no Qt dependency -- pure NumPy. Use
+from scripts, notebooks, or the GUI:
+
+```python
+from spody_io import read_trajectory, read_accelerations, read_events
+import numpy as np
+
+traj = read_trajectory("output/run.bin")     # SPDYOUT_  -> ndarray (N, 7 fields)
+acc  = read_accelerations("output/run_acc.bin")  # SPDYACC_  -> per-force breakdown
+ev   = read_events("output/run_evt.bin")     # SPDYEVT_  -> impact / eclipse triggers
+
+# columns by name -- t, x, y, z, vx, vy, vz on trajectories
+r = np.sqrt(traj["x"]**2 + traj["y"]**2 + traj["z"]**2)
+```
+
+Header on every file is fixed at 24 bytes (8-byte ASCII magic + four
+little-endian uint32). The reader validates the magic and the record
+size encoded in the header, so an ABI change in spody-core
+(`ForceBreakdown` / `EventRecord` size drift) is detected loudly
+instead of silently misread.
+
 ## Layout
 
 ```
-spody_gui/
-  __main__.py         # `python -m spody_gui`
-  main.py             # QApplication entry
-  main_window.py      # MainWindow: layout, menus, status bar, wiring
-  editor.py           # TomlEditor + TomlHighlighter
-  terminal.py         # TerminalView (read-only output pane)
-  runner.py           # SpodyRunner (QProcess wrapper)
-  settings.py         # SettingsStore (QSettings) + SettingsDialog
+spody_io/                # binary readers (NumPy only)
+  __init__.py            # re-exports of read_*
+  headers.py             # magic constants + 24-byte preamble parser
+  traj.py                # read_trajectory(path) -> structured ndarray
+  accel.py               # read_accelerations(path)
+  events.py              # read_events(path) + EVENT_KIND_* constants
+
+spody_gui/               # PySide6 desktop app (depends on spody_io)
+  __main__.py            # `python -m spody_gui`
+  main.py                # QApplication entry
+  main_window.py         # MainWindow: layout, menus, status bar, wiring
+  editor.py              # TomlEditor + TomlHighlighter
+  completer.py           # context-aware TOML autocomplete
+  schema.py              # sections / keys / enum values / snippet templates
+  terminal.py            # TerminalView (read-only output pane)
+  runner.py              # SpodyRunner (QProcess wrapper)
+  settings.py            # SettingsStore (QSettings) + SettingsDialog
 ```
