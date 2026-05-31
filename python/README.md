@@ -13,13 +13,19 @@ output into an embedded pane.
 └──────────────────────────┴──────────────────────────────┘
 ```
 
-## What it does today (Phase 0)
+## What it does today
 
-- Open / edit / save TOML input files with syntax highlighting.
+The window has a top-level **Run / Analysis** tab switch.
+
+**Run mode** -- shell around the `spody` binary:
+- Open / edit / save TOML input files with syntax highlighting and
+  context-aware autocompletion (sections, keys, enum values, target
+  paths for `[batch.columns]`); snippet templates via Tab on a known
+  section keyword or via the **Insert** menu.
 - Launch `spody validate`, `spody propagate`, or `spody batch` as a
   subprocess against the current file.
 - Stream the subprocess's stdout/stderr live into a read-only terminal
-  pane (no ANSI escapes — `spody` emits plain text).
+  pane (no ANSI escapes -- `spody` emits plain text).
 - Stop the run from the UI (`Ctrl+.` or **Run > Stop**), with a
   graceful terminate-then-kill timeout.
 - Remember the path to `spody.exe`, the harmonics file, the ephemeris
@@ -29,9 +35,24 @@ output into an embedded pane.
   prompt on close/new/open, status bar with elapsed time and exit
   code.
 
-Visualisation (3D Moon + trajectory, batch overlay, event markers) is
-**not in this phase**. The Cesium-or-VTK frontend lands separately once
-the shell is solid.
+**Analysis mode** -- inspect the spody output binaries:
+- Pick any `.bin` file produced by spody; the magic header is
+  auto-detected (`SPDYOUT_` trajectory / `SPDYACC_` accelerations /
+  `SPDYEVT_` events) and a kind-specific set of 2D plots becomes
+  available.
+- Plots are rendered into an embedded **matplotlib** canvas with the
+  standard zoom / pan / save toolbar:
+  * trajectory: `|r|(t)`, `|v|(t)`, position / velocity components,
+    XY / XZ / YZ orbit projections;
+  * accelerations: total magnitude, per-force breakdown on a log
+    y-axis (shows which force dominates when), eclipse fraction
+    over time;
+  * events: timeline scatter (IMPACT / ECLIPSE markers along the
+    time axis).
+
+3D viewers (Moon-centred globe, debris cloud) are deferred -- the
+rendering stack (VTK vs embedded Cesium via QWebEngineView) will be
+chosen when the data-cloud volumes justify the dependency.
 
 ## Dev setup
 
@@ -111,4 +132,5 @@ spody_gui/               # PySide6 desktop app (depends on spody_io)
   terminal.py            # TerminalView (read-only output pane)
   runner.py              # SpodyRunner (QProcess wrapper)
   settings.py            # SettingsStore (QSettings) + SettingsDialog
+  analysis_panel.py      # Analysis tab: file picker + plot dispatch + mpl canvas
 ```

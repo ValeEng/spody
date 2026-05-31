@@ -11,9 +11,11 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
+    QTabWidget,
 )
 
 from . import schema
+from .analysis_panel import AnalysisPanel
 from .editor import TomlEditor
 from .runner import SpodyRunner
 from .settings import SettingsDialog, SettingsStore
@@ -34,16 +36,25 @@ class MainWindow(QMainWindow):
         self._store = SettingsStore()
         self._current_path: Path | None = None
 
-        # Central layout: horizontal splitter with editor + terminal.
+        # Central layout: top-level mode switch between Run (editor +
+        # terminal) and Analysis (file picker + plots). The two modes
+        # are completely independent widgets; the menu bar stays shared
+        # but Run-only actions are no-ops while the Analysis tab is up.
         self._editor = TomlEditor()
         self._terminal = TerminalView()
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._editor)
-        splitter.addWidget(self._terminal)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([640, 640])
-        self.setCentralWidget(splitter)
+        run_splitter = QSplitter(Qt.Orientation.Horizontal)
+        run_splitter.addWidget(self._editor)
+        run_splitter.addWidget(self._terminal)
+        run_splitter.setStretchFactor(0, 1)
+        run_splitter.setStretchFactor(1, 1)
+        run_splitter.setSizes([640, 640])
+
+        self._analysis = AnalysisPanel()
+
+        self._tabs = QTabWidget()
+        self._tabs.addTab(run_splitter,    "Run")
+        self._tabs.addTab(self._analysis,  "Analysis")
+        self.setCentralWidget(self._tabs)
 
         # Runner: QProcess wrapper. Wired to the terminal and status bar.
         self._runner = SpodyRunner(self)
