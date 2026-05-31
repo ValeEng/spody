@@ -1,6 +1,7 @@
 """Main application window: TOML editor, terminal pane, menus, status bar."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -23,6 +24,24 @@ from .terminal import TerminalView
 
 # How many entries to keep in the File > Recent menu.
 RECENT_FILES_MAX = 8
+
+# Grep for simulation.et_start_s in the TOML text. A real TOML parser
+# would be cleaner but tomllib is 3.11+ and tomli is one more dep we
+# don't otherwise need -- a one-line regex covers the canonical
+# `et_start_s = <number>` form spody examples use.
+_RE_ET_START = re.compile(
+    r"^\s*et_start_s\s*=\s*([\d.+\-eE]+)\s*(?:#.*)?$", re.MULTILINE
+)
+
+
+def _extract_et_start_s(toml_text: str) -> float | None:
+    m = _RE_ET_START.search(toml_text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
 
 
 class MainWindow(QMainWindow):
@@ -185,7 +204,10 @@ class MainWindow(QMainWindow):
         # The TOML's directory is the canonical "working dir" for outputs
         # (spody resolves relative paths there); seed the Analysis tab so
         # switching to it immediately shows any binaries already present.
+        # Also pre-fill the Sun-arrow epoch so the user does not have to
+        # retype the same number they have in their TOML.
         self._analysis.set_working_dir(path.parent)
+        self._analysis.set_default_epoch(_extract_et_start_s(text))
 
     def _action_save(self) -> bool:
         if self._current_path is None:

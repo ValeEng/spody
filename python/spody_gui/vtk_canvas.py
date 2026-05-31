@@ -20,7 +20,10 @@ A corner triad shows the ICRF-aligned axes (X red, Y green, Z blue).
 """
 from __future__ import annotations
 
+import math
 import os
+from pathlib import Path
+from typing import Callable
 
 # QVTKRenderWindowInteractor sniffs the active Qt binding from QT_API;
 # force PySide6 so it does not accidentally pull in PyQt5/PyQt6 if they
@@ -32,14 +35,16 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData, vtkPolyLine
-from vtkmodules.vtkFiltersSources import vtkSphereSource
+from vtkmodules.vtkFiltersSources import vtkArrowSource, vtkSphereSource
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
     vtkPolyDataMapper,
+    vtkPropPicker,
     vtkRenderer,
+    vtkTextActor,
 )
 # Importing the OpenGL rendering backend registers the implementation
 # behind vtkRenderer / vtkRenderWindow; without it VTK silently fails
@@ -80,6 +85,17 @@ class VtkCanvas(QWidget):
         self._axes_widget.SetEnabled(1)
         self._axes_widget.InteractiveOff()
 
+        # Picking state. Trajectories registered via add_trajectory
+        # (with a source_path) become pickable on Ctrl+left-click; the
+        # callback fires with the matching path or None on a miss.
+        self._trajectory_actors: list[tuple[vtkActor, Path]] = []
+        self._highlighted_actor: vtkActor | None = None
+        self._highlight_extra_lw = 4.0
+        self._pick_callback: Callable[[Path | None], None] | None = None
+        self._interactor.AddObserver(
+            "LeftButtonReleaseEvent", self._on_left_button_release
+        )
+
         # The interactor must be initialised before the first render; it
         # is safe to call again later, so we do it once here.
         self._interactor.Initialize()
@@ -93,8 +109,11 @@ class VtkCanvas(QWidget):
     # ------------------------------------------------------------------
     def clear_scene(self) -> None:
         """Remove every actor added via add_* methods. The corner triad
-        (which lives on a separate marker widget) is preserved."""
+        (which lives on a separate marker widget) is preserved.
+        Picking state is also cleared so stale actor refs don't leak."""
         self._renderer.RemoveAllViewProps()
+        self._trajectory_actors.clear()
+        self._highlighted_actor = None
 
     def add_central_body(self, radius_km: float = MOON_RADIUS_KM,
                           color: tuple[float, float, float] = (0.55, 0.55, 0.58),
@@ -121,11 +140,16 @@ class VtkCanvas(QWidget):
     def add_trajectory(self, points_km: np.ndarray,
                         color: tuple[float, float, float] = (1.0, 0.85, 0.20),
                         line_width: float = 2.0,
-                        endpoint_markers: bool = True) -> None:
+                        endpoint_markers: bool = True,
+                        source_path: Path | None = None) -> None:
         """Add a 3D polyline through `points_km` (Nx3, km in the
         central-body inertial frame). If `endpoint_markers` is true,
         a green sphere is placed at the first point and a red one at
-        the last (sized to ~0.5% of the trajectory bounding diagonal)."""
+        the last (sized to ~0.5% of the trajectory bounding diagonal).
+
+        `source_path` (optional) registers the polyline actor as a
+        pickable target. On Ctrl+left-click the registered pick
+        callback receives this path."""
         n = len(points_km)
         if n < 2:
             return
@@ -158,11 +182,85 @@ class VtkCanvas(QWidget):
         actor.GetProperty().SetLineWidth(line_width)
         self._renderer.AddActor(actor)
 
+        if source_path is not None:
+            self._trajectory_actors.append((actor, source_path))
+
         if endpoint_markers:
             diag = float(np.linalg.norm(points_km.max(axis=0) - points_km.min(axis=0)))
             marker_r = max(diag * 0.005, 1.0)   # ≥ 1 km even on tiny arcs
             self._add_marker_sphere(points_km[0],  marker_r, color=(0.0, 0.9, 0.0))
             self._add_marker_sphere(points_km[-1], marker_r, color=(0.95, 0.2, 0.2))
+
+    def add_sun_arrow(self, direction: tuple[float, float, float],
+                       length_km: float = 5.0 * MOON_RADIUS_KM,
+                       color: tuple[float, float, float] = (1.0, 0.85, 0.20)) -> None:
+        """Add an arrow originating at the scene origin and pointing
+        toward `direction` (unit vector). The arrow length is fixed in
+        km (default ~5 Moon radii) so it stays visible regardless of
+        the trajectory scale.
+
+        `vtkArrowSource` produces a unit arrow along +X; we rotate it
+        with `RotateWXYZ(angle, axis)` where the axis is (1,0,0) × dir.
+        """
+        arrow = vtkArrowSource()
+        arrow.SetTipResolution(24)
+        arrow.SetShaftResolution(24)
+        arrow.SetShaftRadius(0.015)
+        arrow.SetTipRadius(0.045)
+        arrow.SetTipLength(0.18)
+
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputConnection(arrow.GetOutputPort())
+
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(*color)
+        actor.GetProperty().SetAmbient(0.5)
+
+        # Rotation from +X to `direction`. Axis = (1,0,0) × d = (0, -d_z, d_y).
+        # Angle = acos(d_x). Edge cases: d ∥ +X (axis is zero), d ∥ -X.
+        dx, dy, dz = direction
+        axis_y, axis_z = -dz, dy
+        axis_len = math.hypot(axis_y, axis_z)
+        if axis_len < 1.0e-12:
+            if dx < 0.0:
+                actor.RotateWXYZ(180.0, 0.0, 1.0, 0.0)
+        else:
+            angle = math.degrees(math.acos(max(-1.0, min(1.0, dx))))
+            actor.RotateWXYZ(angle, 0.0, axis_y, axis_z)
+
+        actor.SetScale(length_km, length_km, length_km)
+        self._renderer.AddActor(actor)
+
+    def add_legend(self, items: list[tuple[str, tuple[float, float, float]]],
+                    max_label_chars: int = 36) -> None:
+        """Multi-line legend in the top-left corner of the viewport.
+
+        `items` is a list of `(label, (r, g, b))`. Each line is rendered
+        in its own colour with a 2D text actor positioned in
+        normalised-viewport coordinates so it stays put on resize.
+        Long labels are middle-truncated to `max_label_chars` for
+        readability."""
+        if not items:
+            return
+        for i, (label, (r, g, b)) in enumerate(items):
+            text = label
+            if len(text) > max_label_chars:
+                # Keep the last ~12 chars (usually the most informative
+                # part of a filename) plus an ellipsis from the start.
+                tail = max_label_chars - 4
+                text = "..." + text[-tail:]
+            actor = vtkTextActor()
+            actor.SetInput(text)
+            prop = actor.GetTextProperty()
+            prop.SetColor(r, g, b)
+            prop.SetFontSize(12)
+            prop.SetFontFamilyToCourier()
+            prop.SetBold(True)
+            coord = actor.GetPositionCoordinate()
+            coord.SetCoordinateSystemToNormalizedViewport()
+            coord.SetValue(0.015, 0.97 - i * 0.035)
+            self._renderer.AddActor2D(actor)
 
     # ------------------------------------------------------------------
     # Camera
@@ -175,6 +273,49 @@ class VtkCanvas(QWidget):
     def render(self) -> None:
         """Trigger a repaint. Call once after a batch of add_* calls."""
         self._render_window.Render()
+
+    # ------------------------------------------------------------------
+    # Picking
+    # ------------------------------------------------------------------
+    def set_pick_callback(self, cb: Callable[[Path | None], None] | None) -> None:
+        """Register a function invoked when the user Ctrl+left-clicks
+        on a pickable trajectory. The argument is the source path of
+        the picked trajectory, or `None` if the click missed all
+        registered actors."""
+        self._pick_callback = cb
+
+    def _on_left_button_release(self, caller, _event) -> None:
+        """VTK observer: Ctrl+left-click runs a prop pick and notifies
+        the registered callback. Without Ctrl this is a no-op so the
+        trackball camera keeps its normal rotate-on-drag behaviour."""
+        if not caller.GetControlKey():
+            return
+        x, y = caller.GetEventPosition()
+        picker = vtkPropPicker()
+        picker.Pick(x, y, 0, self._renderer)
+        prop = picker.GetViewProp()
+        found_path: Path | None = None
+        found_actor: vtkActor | None = None
+        for actor, p in self._trajectory_actors:
+            if actor is prop:
+                found_actor = actor
+                found_path = p
+                break
+        self._set_highlighted(found_actor)
+        if self._pick_callback is not None:
+            self._pick_callback(found_path)
+
+    def _set_highlighted(self, actor: vtkActor | None) -> None:
+        """Bump the line width of the picked actor and restore the
+        previously highlighted one."""
+        if self._highlighted_actor is not None:
+            prop = self._highlighted_actor.GetProperty()
+            prop.SetLineWidth(prop.GetLineWidth() - self._highlight_extra_lw)
+        self._highlighted_actor = actor
+        if actor is not None:
+            prop = actor.GetProperty()
+            prop.SetLineWidth(prop.GetLineWidth() + self._highlight_extra_lw)
+        self.render()
 
     # ------------------------------------------------------------------
     # Internals

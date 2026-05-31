@@ -61,6 +61,7 @@ from spody_io import (
     read_events,
     read_trajectory,
 )
+from .astronomy import sun_direction_j2000
 from .vtk_canvas import VtkCanvas
 
 # Recurse this many levels under the working dir when scanning for
@@ -184,7 +185,9 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
 # ----------------------------------------------------------------------
 def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray) -> None:
     """Moon-centred view: grey sphere + yellow trajectory polyline +
-    green/red start/end markers. Camera fitted to the trajectory."""
+    green/red start/end markers. Camera fitted to the trajectory.
+    The polyline is *not* registered as pickable here because picking
+    one of one trajectory adds no information."""
     canvas.add_central_body()
     pts = np.column_stack([d["x"], d["y"], d["z"]])
     canvas.add_trajectory(pts)
@@ -329,6 +332,17 @@ class AnalysisPanel(QWidget):
         plot_row.addWidget(self._plot_combo, 1)
         plot_row.addWidget(self._plot_btn)
 
+        # Sun-arrow controls (3D only). The epoch field auto-fills from
+        # the TOML currently open in the Run tab; user can override.
+        self._epoch_edit = QLineEdit()
+        self._epoch_edit.setPlaceholderText("et_start_s (TDB sec past J2000)")
+        btn_sun = QPushButton("+ Sun arrow")
+        btn_sun.clicked.connect(self._on_add_sun)
+        sun_row = QHBoxLayout()
+        sun_row.addWidget(QLabel("Epoch:"))
+        sun_row.addWidget(self._epoch_edit, 1)
+        sun_row.addWidget(btn_sun)
+
         # 2D page: matplotlib canvas + toolbar in a sub-widget.
         self._figure  = Figure(figsize=(6, 4))
         self._canvas  = FigureCanvasQTAgg(self._figure)
@@ -339,8 +353,11 @@ class AnalysisPanel(QWidget):
         mpl_lay.addWidget(self._toolbar)
         mpl_lay.addWidget(self._canvas, 1)
 
-        # 3D page: VTK widget with its own built-in mouse controls.
+        # 3D page: VTK widget with its own built-in mouse controls,
+        # plus Ctrl+left-click picking wired to highlight the source
+        # file in the tree and the info label.
         self._vtk = VtkCanvas()
+        self._vtk.set_pick_callback(self._on_pick)
 
         # Stack switched by the dispatcher in `_on_plot` based on
         # PlotSpec.dim. Index 0 = 2D, index 1 = 3D.
@@ -356,6 +373,7 @@ class AnalysisPanel(QWidget):
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.addLayout(plot_row)
+        right_lay.addLayout(sun_row)
         right_lay.addWidget(self._stack, 1)
         right_lay.addWidget(self._info_label)
 
@@ -385,6 +403,16 @@ class AnalysisPanel(QWidget):
             self._working_dir = Path(path)
         self._dir_edit.setText(str(self._working_dir) if self._working_dir else "")
         self._refresh_tree()
+
+    def set_default_epoch(self, et_seconds: float | None) -> None:
+        """Pre-fill the Sun-arrow epoch from the currently-open TOML.
+        Called by MainWindow on Open / Save. Does not overwrite a value
+        the user has already typed manually."""
+        if et_seconds is None:
+            return
+        if self._epoch_edit.text().strip():
+            return
+        self._epoch_edit.setText(repr(float(et_seconds)))
 
     # ------------------------------------------------------------------
     # Tree management
@@ -498,6 +526,7 @@ class AnalysisPanel(QWidget):
 
         cmap = mpl_colormaps["turbo"]
         n = len(paths)
+        legend_items: list[tuple[str, tuple[float, float, float]]] = []
         for i, p in enumerate(paths):
             try:
                 d = read_trajectory(p)
@@ -509,8 +538,12 @@ class AnalysisPanel(QWidget):
             t = 0.5 if n == 1 else i / (n - 1)
             r, g, b, _a = cmap(t)
             pts = np.column_stack([d["x"], d["y"], d["z"]])
-            self._vtk.add_trajectory(pts, color=(r, g, b), endpoint_markers=False)
+            self._vtk.add_trajectory(
+                pts, color=(r, g, b), endpoint_markers=False, source_path=p,
+            )
+            legend_items.append((p.name, (r, g, b)))
 
+        self._vtk.add_legend(legend_items)
         self._vtk.reset_camera()
         self._vtk.render()
 
@@ -567,6 +600,69 @@ class AnalysisPanel(QWidget):
         if has_plots:
             self._plot_combo.setCurrentIndex(0)
             self._on_plot()
+
+    # ------------------------------------------------------------------
+    # Sun arrow
+    # ------------------------------------------------------------------
+    def _on_add_sun(self) -> None:
+        """Compute the Sun direction at the typed epoch and add an
+        arrow to the 3D scene. Requires the 3D canvas to be active
+        and a valid numeric epoch in the field. Re-plotting (Plot /
+        Overlay) clears the arrow as part of `clear_scene()`."""
+        text = self._epoch_edit.text().strip()
+        if not text:
+            QMessageBox.information(
+                self, "Sun arrow",
+                "Type an epoch (TDB seconds past J2000) first; usually the "
+                "same value as your TOML's simulation.et_start_s."
+            )
+            return
+        try:
+            et = float(text)
+        except ValueError:
+            QMessageBox.warning(self, "Sun arrow",
+                                f"'{text}' is not a valid number.")
+            return
+        if self._stack.currentIndex() != 1:
+            QMessageBox.information(
+                self, "Sun arrow",
+                "The Sun arrow is rendered in the 3D scene. Pick a 3D plot "
+                "(e.g. '3D orbit + Moon' or '→ Overlay selected (3D)') first."
+            )
+            return
+        d = sun_direction_j2000(et)
+        self._vtk.add_sun_arrow(d)
+        self._vtk.render()
+
+    # ------------------------------------------------------------------
+    # Picking (Ctrl+left-click on a trajectory in the 3D scene)
+    # ------------------------------------------------------------------
+    def _on_pick(self, path: Path | None) -> None:
+        """Callback for VtkCanvas: the user Ctrl+left-clicked an
+        overlaid trajectory. Update the info label and reflect the
+        selection in the tree on the left so the user can immediately
+        recognise which file the picked polyline came from."""
+        if path is None:
+            return
+        self._info_label.setText(f"Picked: {path}")
+        self._info_label.setStyleSheet("")
+        self._highlight_path_in_tree(path)
+
+    def _highlight_path_in_tree(self, path: Path) -> None:
+        """Find the tree item whose UserRole matches `path` and make it
+        the current item (without firing a load)."""
+        target = str(path)
+        for i in range(self._tree.topLevelItemCount()):
+            header = self._tree.topLevelItem(i)
+            for j in range(header.childCount()):
+                child = header.child(j)
+                if child.data(0, _PATH_ROLE) == target:
+                    self._loading_item = True
+                    try:
+                        self._tree.setCurrentItem(child)
+                    finally:
+                        self._loading_item = False
+                    return
 
     def _on_plot(self) -> None:
         """Dispatch the selected plot to the right canvas. 2D plots are
