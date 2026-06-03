@@ -6,15 +6,23 @@
  * The Python GUI under python/ generates the input TOML and parses the
  * output files; it never calls into spody-core directly.
  *
- * Subcommands (planned):
+ * Subcommands:
  *   spody propagate  <input.toml> [--out <dir>]
+ *   spody batch      <input.toml> [--out <dir>]
  *   spody validate   <input.toml>
+ *   spody convert    ephemeris <dir> <de> <date1> [date2 ...]
  *   spody info
- *
- * This is the initial scaffolding -- each handler is a stub.
  */
 #include <stdio.h>
 #include <string.h>
+
+#ifdef _WIN32
+  #include <direct.h>
+  #define spody_chdir _chdir
+#else
+  #include <unistd.h>
+  #define spody_chdir chdir
+#endif
 
 #include "spody_core.h"
 #include "app_diagnostics.h"
@@ -424,6 +432,66 @@ static int cmd_info(int argc, char **argv) {
     return 0;
 }
 
+/* Convert raw external data into spody's native binary format.
+ *
+ * Subform:
+ *   spody convert ephemeris <folder> <de_family> <date1> [date2 ...]
+ *
+ * `folder` holds the JPL ASCII chunks (header.<de_family> +
+ * ascpXXXXX.<de_family>); the output `de<de_family>.spody` is written
+ * back into the same folder. The list of dates names the chunks to
+ * include (without the "ascp" prefix and ".<de>" suffix), e.g.
+ *   spody convert ephemeris ./data/DE440 440 01950 02050
+ *
+ * Exposed primarily so the Python setup wizard can produce the
+ * ephemeris binary without shipping its own converter.
+ */
+static int cmd_convert(int argc, char **argv) {
+    if (argc < 2 || strcmp(argv[1], "ephemeris") != 0) {
+        fprintf(stderr,
+            "usage: spody convert ephemeris <folder> <de_family> "
+            "<date1> [date2 ...]\n"
+            "  e.g. spody convert ephemeris ./data/DE440 440 01950\n");
+        return 1;
+    }
+    if (argc < 5) {
+        fprintf(stderr,
+            "convert ephemeris: need <folder>, <de_family>, and >= 1 date.\n");
+        return 1;
+    }
+    const char *folder = argv[2];
+    const char *de     = argv[3];
+    int n_files        = argc - 4;
+    const char **dates = (const char **)(argv + 4);
+
+    spody_log_printf("spody convert ephemeris: %s (DE%s, %d chunk%s)\n",
+        folder, de, n_files, n_files == 1 ? "" : "s");
+    for (int i = 0; i < n_files; ++i) {
+        spody_log_printf("  - ascp%s.%s\n", dates[i], de);
+    }
+
+    /* `spody_createfile_MappedEphemerisData` builds its file paths as
+     * `./<path>/...` (CWD-relative by design, see the function in
+     * spody-core/src/spody_ephemeris.c). That breaks when `folder` is
+     * absolute or contains a drive letter. Sidestep by chdir'ing INTO
+     * the folder and passing "." -- works for both relative and
+     * absolute inputs without touching spody-core. */
+    if (spody_chdir(folder) != 0) {
+        fprintf(stderr,
+            "convert ephemeris: cannot enter folder '%s'\n", folder);
+        return 1;
+    }
+    int rc = spody_createfile_MappedEphemerisData(".", dates, n_files, de);
+    if (rc != 0) {
+        fprintf(stderr,
+            "convert ephemeris: spody_createfile_MappedEphemerisData "
+            "returned %d\n", rc);
+        return 1;
+    }
+    spody_log_printf("OK -- wrote %s/de%s.spody\n", folder, de);
+    return 0;
+}
+
 static void usage(const char *prog) {
     fprintf(stderr,
         "SpOdy %s -- Simultaneous Propagation of Orbital DYnamics\n"
@@ -434,6 +502,8 @@ static void usage(const char *prog) {
         "  propagate  <input.toml> [--out <dir>]   run a single simulation\n"
         "  batch      <input.toml>                 run a batch of simulations\n"
         "  validate   <input.toml>                 check input file (no run)\n"
+        "  convert    ephemeris <dir> <de> <date1> [date2 ...]\n"
+        "                                          DE ASCII -> de<X>.spody\n"
         "  info                                    print version and capabilities\n"
         "\n",
         SPODY_APP_VERSION, prog);
@@ -448,6 +518,7 @@ int main(int argc, char **argv) {
     if      (strcmp(cmd, "propagate") == 0) return cmd_propagate(argc - 1, argv + 1);
     else if (strcmp(cmd, "batch")     == 0) return cmd_batch    (argc - 1, argv + 1);
     else if (strcmp(cmd, "validate")  == 0) return cmd_validate (argc - 1, argv + 1);
+    else if (strcmp(cmd, "convert")   == 0) return cmd_convert  (argc - 1, argv + 1);
     else if (strcmp(cmd, "info")      == 0) return cmd_info     (argc - 1, argv + 1);
     else if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
         usage(argv[0]);
