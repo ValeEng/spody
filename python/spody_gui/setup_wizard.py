@@ -1,30 +1,30 @@
 """First-launch / on-demand data setup dialog.
 
-The dialog has a single pane (no QWizard step-flow) because the user
-mostly wants to see *everything that's missing* at a glance, fix one
-URL or two, hit Download, and then Convert. Step-by-step wizards
-hide that state.
+Single-pane layout (no QWizard step-flow): the user mostly wants to see
+*everything that's missing* at a glance, fix one URL or two, hit
+Download all, and let the conversion happen.
 
 Layout (top -> bottom):
 
-    Data dir:  <path>                          [Open folder]
+    Data dir:  <path>                       [Open folder] [Change...]
+    Coverage:  (•) modern (1950-2050)
+               ( ) full   (1550-2650)
     +-------------------------------------------------------+
-    | Per-asset row (one card each):                        |
+    | Per-asset card (one each):                            |
     |   status icon | name (size) | URL editor              |
     |   [progress bar]           [Download]                 |
     +-------------------------------------------------------+
-    Conversion: DE440 ASCII -> de440.spody                  |
-    [Run conversion]   status text                          |
+    Conversion (auto): <status text>
     -------------------------------------------------------- |
-                                          [Refresh] [Close]
+                          [Download all missing] [Refresh] [Close]
 
 Downloads use `QNetworkAccessManager` so they integrate cleanly with
 the Qt event loop -- no extra thread, no extra dependency.
 
 Conversion shells out to `spody.exe convert ephemeris <folder> <de>
-<date1> [date2 ...]` (added in the same change set). If the spody
-binary is not configured, the dialog tells the user to set it via
-Settings > Paths first.
+<date1> [date2 ...]`. It runs *automatically* whenever the raw DE440
+chunks are complete and the derived `de440.spody` is missing or
+older than the newest raw input -- the user never has to click it.
 """
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ from PySide6.QtNetwork import (
     QNetworkRequest,
 )
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QDialog,
     QFileDialog,
     QFrame,
@@ -55,6 +56,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -104,19 +106,22 @@ class SetupWizard(QDialog):
     def __init__(self, store: SettingsStore, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("SpOdy -- Setup")
-        self.setMinimumSize(820, 600)
+        self.setMinimumSize(820, 640)
 
         self._store = store
         self._nam   = QNetworkAccessManager(self)
         self._changed = False
-        # One row widget per asset, keyed by relpath. Rows manage their
-        # own URL edit + progress bar + Download button, and call back
-        # into the wizard to start/cancel downloads through self._nam.
+        # One row widget per asset, rebuilt whenever the coverage
+        # profile changes.
         self._rows: dict[str, _AssetRow] = {}
         # Track the active conversion process so we can cancel it cleanly.
         self._convert_proc: QProcess | None = None
+        # Suppress auto-conversion during the user's destructive
+        # operations (e.g. switching coverage rebuilds the row list).
+        self._suspend_auto_convert = False
 
         self._build_ui()
+        self._rebuild_rows()
         self.refresh_status()
 
     # ------------------------------------------------------------------
@@ -147,11 +152,36 @@ class SetupWizard(QDialog):
         head.addWidget(btn_change)
         outer.addLayout(head)
 
+        # ---- coverage profile selector ---------------------------------
+        cov_row = QHBoxLayout()
+        cov_row.addWidget(QLabel("DE440 coverage:"))
+        self._rb_modern = QRadioButton("Modern era (1950-2050, ~30 MB)")
+        self._rb_full   = QRadioButton("Full pack (1550-2650, ~340 MB)")
+        # Default from QSettings; tooltips remind the user what each implies.
+        if assets.coverage() == "full":
+            self._rb_full.setChecked(True)
+        else:
+            self._rb_modern.setChecked(True)
+        self._rb_modern.setToolTip(
+            "One DE440 ASCII chunk (ascp01950.440). Right default for "
+            "anyone running near-present epochs.")
+        self._rb_full.setToolTip(
+            "All 11 DE440 ASCII chunks (1550..2650). Needed only for "
+            "historical / far-future scenarios.")
+        cov_group = QButtonGroup(self)
+        cov_group.addButton(self._rb_modern)
+        cov_group.addButton(self._rb_full)
+        self._rb_modern.toggled.connect(self._on_coverage_changed)
+        cov_row.addWidget(self._rb_modern)
+        cov_row.addWidget(self._rb_full)
+        cov_row.addStretch(1)
+        outer.addLayout(cov_row)
+
         intro = QLabel(
             "Spody needs an external planetary ephemeris (JPL DE440) and a "
             "lunar harmonic-gravity model (GRGM1200B). The wizard downloads "
             "the raw files into the data dir, then converts the DE440 ASCII "
-            "chunks into spody's binary format (`de440.spody`).\n\n"
+            "chunks into spody's binary format (`de440.spody`) automatically.\n\n"
             "URLs below are editable: if a download fails, fix the URL and "
             "try again. The wizard does not store overrides -- once we know "
             "the right link we'll bake it into the next release."
@@ -163,86 +193,157 @@ class SetupWizard(QDialog):
         # ---- asset rows in a scroll area -------------------------------
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        body = QWidget()
-        body_lay = QVBoxLayout(body)
-        body_lay.setSpacing(4)
-        for a in assets.ASSETS:
-            row = _AssetRow(a, self._nam, self._store, self)
-            row.downloaded.connect(self._on_asset_arrived)
-            self._rows[a.relpath] = row
-            body_lay.addWidget(row)
-        body_lay.addStretch(1)
-        scroll.setWidget(body)
+        self._rows_host = QWidget()
+        self._rows_lay  = QVBoxLayout(self._rows_host)
+        self._rows_lay.setSpacing(4)
+        # A bottom stretch so cards stack at the top; the stretch index
+        # stays as the last child after every _rebuild_rows.
+        self._rows_lay.addStretch(1)
+        scroll.setWidget(self._rows_host)
         outer.addWidget(scroll, 1)
 
-        # ---- conversion section ----------------------------------------
+        # ---- conversion status (no manual trigger button) --------------
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
         outer.addWidget(sep)
 
         conv_lay = QHBoxLayout()
-        self._btn_convert = QPushButton("Run conversion (DE440 ASCII -> de440.spody)")
-        self._btn_convert.clicked.connect(self._on_convert)
+        conv_lay.addWidget(QLabel("Conversion (auto):"))
         self._convert_status = QLabel("")
         self._convert_status.setStyleSheet("color: gray;")
-        conv_lay.addWidget(self._btn_convert)
         conv_lay.addWidget(self._convert_status, 1)
         outer.addLayout(conv_lay)
 
-        # ---- footer: refresh + close -----------------------------------
+        # ---- footer: download-all + refresh + close --------------------
         foot = QHBoxLayout()
+        self._btn_download_all = QPushButton("Download all missing")
+        self._btn_download_all.clicked.connect(self._on_download_all)
         btn_refresh = QPushButton("Refresh")
         btn_refresh.clicked.connect(self.refresh_status)
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.accept)
+        foot.addWidget(self._btn_download_all)
         foot.addStretch(1)
         foot.addWidget(btn_refresh)
         foot.addWidget(btn_close)
         outer.addLayout(foot)
 
     # ------------------------------------------------------------------
+    # Row management
+    # ------------------------------------------------------------------
+    def _rebuild_rows(self) -> None:
+        """Tear down the current asset rows and rebuild from the
+        current coverage profile. Called on init and whenever the
+        coverage radio changes."""
+        # Pop everything but the trailing stretch.
+        while self._rows_lay.count() > 1:
+            item = self._rows_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._rows.clear()
+
+        for a in assets.required_assets():
+            row = _AssetRow(a, self._nam, self._store, self)
+            row.downloaded.connect(self._on_asset_arrived)
+            self._rows[a.relpath] = row
+            # Insert before the stretch (index = count - 1).
+            self._rows_lay.insertWidget(self._rows_lay.count() - 1, row)
+
+    def _on_coverage_changed(self, _checked: bool) -> None:
+        """Radio toggled. Persist + rebuild rows + refresh status."""
+        new = "modern" if self._rb_modern.isChecked() else "full"
+        if new == assets.coverage():
+            return
+        # While the rows are being torn down, no asset-arrived signal
+        # should sneak in and trigger conversion against a transient
+        # state.
+        self._suspend_auto_convert = True
+        try:
+            assets.set_coverage(new)
+            self._rebuild_rows()
+            self.refresh_status()
+        finally:
+            self._suspend_auto_convert = False
+
+    # ------------------------------------------------------------------
     # Status refresh
     # ------------------------------------------------------------------
     def refresh_status(self) -> None:
         """Recompute the per-asset 'present?' badge from disk and update
-        the conversion section. Called on open, after each download, and
-        from the Refresh button."""
+        the conversion status. Called on open, after each download, on
+        coverage change, and from the Refresh button."""
         root = self._store.data_dir()
         self._data_dir_label.setText(str(root))
-        for relpath, row in self._rows.items():
+        for row in self._rows.values():
             row.refresh(root)
         self._refresh_convert_status(root)
+        self._refresh_download_all_button(root)
+
+    def _refresh_download_all_button(self, root: Path) -> None:
+        """Enable Download-all iff there's at least one *raw* required
+        asset that isn't present yet (and no download is in flight)."""
+        any_missing = any(
+            r.is_missing() and not r.is_busy()
+            for r in self._rows.values()
+            if r.asset.kind == "raw"
+        )
+        self._btn_download_all.setEnabled(any_missing)
 
     def _refresh_convert_status(self, root: Path) -> None:
-        """Enable the Run-conversion button only when the raw DE440 files
-        are present, and tell the user what's missing otherwise."""
+        """Single status label for the conversion: pending / running /
+        ok / stale. No buttons -- conversion is automatic."""
+        if self._convert_proc is not None:
+            return  # status was set when we launched
         out_file = root / "DE440" / "de440.spody"
-        raw = [a for a in assets.ASSETS
-               if a.kind == "raw" and a.relpath.startswith("DE440/")]
-        missing = [a.name for a in raw if not assets.is_present(a, root)]
+        raw_required = [
+            a for a in assets.required_assets()
+            if a.kind == "raw" and a.relpath.startswith("DE440/")
+        ]
+        missing = [a.name for a in raw_required if not assets.is_present(a, root)]
         if missing:
-            self._btn_convert.setEnabled(False)
             self._convert_status.setText(
-                "needs raw DE440 first: " + ", ".join(missing))
+                "waiting on raw DE440 (" + ", ".join(missing) + ")")
             return
-        self._btn_convert.setEnabled(True)
-        if out_file.is_file():
-            mb = out_file.stat().st_size / (1024 * 1024)
+        if not out_file.is_file():
+            self._convert_status.setText("ready to convert (will run automatically)")
+            return
+        # Output present: check freshness against on-disk chunks (we
+        # consider any chunk in the folder, not just the required ones,
+        # so switching to "modern" after a full convert doesn't claim
+        # the .spody is stale).
+        de_folder = root / "DE440"
+        chunks = list(de_folder.glob("ascp*.440"))
+        newest = max((p.stat().st_mtime for p in chunks), default=0.0)
+        mb = out_file.stat().st_size / (1024 * 1024)
+        if out_file.stat().st_mtime < newest:
             self._convert_status.setText(
-                f"de440.spody present ({mb:.1f} MB) -- safe to re-run to overwrite")
+                f"de440.spody is stale ({mb:.1f} MB) -- new chunks present, "
+                "will re-convert")
         else:
-            self._convert_status.setText("ready -- click to convert")
+            self._convert_status.setText(f"de440.spody ready ({mb:.1f} MB)")
 
     # ------------------------------------------------------------------
     # Download callbacks
     # ------------------------------------------------------------------
     def _on_asset_arrived(self, relpath: str) -> None:
-        """A row finished writing its file. Refresh the world and
-        remember we changed something."""
+        """A row finished writing its file."""
         self._changed = True
         self.refresh_status()
         self.assets_changed.emit()
+        # Maybe everything DE440-raw is now present and we can convert.
+        self._maybe_auto_convert()
+
+    def _on_download_all(self) -> None:
+        """Kick off every missing raw download in one click. Rows handle
+        the actual networking, including URL validation."""
+        for row in self._rows.values():
+            if row.asset.kind != "raw":
+                continue
+            if row.is_missing() and not row.is_busy():
+                row.start_download()
+        self._refresh_download_all_button(self._store.data_dir())
 
     # ------------------------------------------------------------------
     # Header buttons
@@ -264,22 +365,45 @@ class SetupWizard(QDialog):
         self.refresh_status()
 
     # ------------------------------------------------------------------
-    # Conversion
+    # Conversion (automatic)
     # ------------------------------------------------------------------
-    def _on_convert(self) -> None:
-        """Shell out to `spody.exe convert ephemeris <DE440 folder> 440
-        <date1> [date2 ...]`. The list of dates is derived from the
-        ascpXXXXX.440 files actually present in the folder, so re-runs
-        with extra chunks Just Work."""
-        spody_bin = self._store.spody_binary()
-        if not spody_bin or not Path(spody_bin).exists():
-            QMessageBox.warning(
-                self, "spody binary not set",
-                "Configure the spody binary in Settings > Paths first, "
-                "then re-open this wizard.")
+    def _maybe_auto_convert(self) -> None:
+        """Decide whether to fire the conversion subprocess. Trigger
+        when all required raw chunks are present AND the derived
+        de440.spody is either missing or older than the newest raw
+        input. Bails out silently in any other case so this method is
+        safe to call after every download."""
+        if self._suspend_auto_convert:
             return
         if self._convert_proc is not None:
             return  # already running
+        root = self._store.data_dir()
+        # Need every REQUIRED raw DE440 chunk present (and the header).
+        raw_required = [
+            a for a in assets.required_assets()
+            if a.kind == "raw" and a.relpath.startswith("DE440/")
+        ]
+        if any(not assets.is_present(a, root) for a in raw_required):
+            return
+        out_file = root / "DE440" / "de440.spody"
+        if out_file.is_file():
+            chunks = list((root / "DE440").glob("ascp*.440"))
+            newest = max((p.stat().st_mtime for p in chunks), default=0.0)
+            if out_file.stat().st_mtime >= newest:
+                return  # up to date
+        self._run_conversion()
+
+    def _run_conversion(self) -> None:
+        """Launch `spody.exe convert ephemeris <DE440 folder> 440
+        <date1> [date2 ...]`. The list of dates is the union of every
+        ascpXXXXX.440 actually present in the folder (not just the
+        required ones), so a `.spody` produced here always covers as
+        much epoch range as the user has downloaded."""
+        spody_bin = self._store.spody_binary()
+        if not spody_bin or not Path(spody_bin).exists():
+            self._convert_status.setText(
+                "auto-convert blocked: configure spody binary in Settings > Paths")
+            return
 
         de_folder = self._store.data_dir() / "DE440"
         date_ids = sorted({
@@ -288,13 +412,11 @@ class SetupWizard(QDialog):
             if len(p.stem) == 9
         })
         if not date_ids:
-            QMessageBox.warning(self, "No DE440 chunks",
-                                f"No ascpXXXXX.440 files found in {de_folder}.")
-            return
+            return  # nothing to convert
 
         argv = ["convert", "ephemeris", str(de_folder), "440", *date_ids]
-        self._convert_status.setText("running... " + " ".join(date_ids))
-        self._btn_convert.setEnabled(False)
+        self._convert_status.setText(
+            "converting... " + " ".join(date_ids))
 
         proc = QProcess(self)
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -315,24 +437,15 @@ class SetupWizard(QDialog):
             self._changed = True
             self.refresh_status()
             self.assets_changed.emit()
-            if out:
-                # Print only the last line on the status label, full text
-                # in a message box for the curious.
-                tail = out.splitlines()[-1]
-                self._convert_status.setText(f"OK -- {tail}")
-            else:
-                self._convert_status.setText("OK")
         else:
-            self._convert_status.setText(f"failed (exit {exit_code})")
+            self._convert_status.setText(f"conversion failed (exit {exit_code})")
             QMessageBox.critical(self, "Conversion failed",
                                  out or f"spody convert exited with code {exit_code}")
-            self._btn_convert.setEnabled(True)
 
     def _on_convert_error(self, err: QProcess.ProcessError) -> None:
         if self._convert_proc is None:
             return
-        self._convert_status.setText(f"launch failed ({err.name})")
-        self._btn_convert.setEnabled(True)
+        self._convert_status.setText(f"conversion launch failed ({err.name})")
         self._convert_proc = None
 
 
@@ -348,13 +461,18 @@ class _AssetRow(QWidget):
     def __init__(self, asset: Asset, nam: QNetworkAccessManager,
                  store: SettingsStore, parent: QWidget) -> None:
         super().__init__(parent)
-        self._asset = asset
+        self.asset = asset
         self._nam = nam
         self._store = store
         self._reply: QNetworkReply | None = None
         # The on-disk file we stream the body into. Kept open for the
         # duration of the download and closed in _on_finished.
         self._sink: QFile | None = None
+        self._dest: Path | None = None
+        self._part: Path | None = None
+        # Cached "present" state from the last refresh(); cheap source
+        # of truth for is_missing() / wizard button gating.
+        self._present = False
 
         # Layout: two rows -- header (icon | name | URL editor) and
         # action (progress bar | Download button).
@@ -405,32 +523,41 @@ class _AssetRow(QWidget):
         outer.addWidget(sep)
 
     # ------------------------------------------------------------------
+    # State queries (used by SetupWizard for the Download-all button)
+    # ------------------------------------------------------------------
+    def is_missing(self) -> bool:
+        return not self._present
+
+    def is_busy(self) -> bool:
+        return self._reply is not None
+
+    # ------------------------------------------------------------------
     # Refresh from disk
     # ------------------------------------------------------------------
     def refresh(self, root: Path) -> None:
-        present = assets.is_present(self._asset, root)
-        p = root / self._asset.relpath
-        if present:
-            self._icon.setText("✓")  # check
+        self._present = assets.is_present(self.asset, root)
+        p = root / self.asset.relpath
+        if self._present:
+            self._icon.setText("✓")  # check mark
             self._icon.setStyleSheet("color: #1a7f37; font-weight: bold;")
             mb = p.stat().st_size / (1024 * 1024)
             self._size.setText(f"({mb:.1f} MB on disk)")
             self._btn.setText("Re-download")
-            if self._asset.kind == "derived":
+            if self.asset.kind == "derived":
                 self._btn.setText("(derived)")
         elif p.is_file():
-            self._icon.setText("⚠")  # warning
+            self._icon.setText("⚠")  # warning sign
             self._icon.setStyleSheet("color: #b58900; font-weight: bold;")
             self._size.setText(
-                f"({p.stat().st_size} B; expected >= {self._asset.min_bytes:,})")
-            self._btn.setText("Download" if self._asset.kind == "raw" else "(derived)")
+                f"({p.stat().st_size} B; expected >= {self.asset.min_bytes:,})")
+            self._btn.setText("Download" if self.asset.kind == "raw" else "(derived)")
         else:
             self._icon.setText("✗")  # cross
             self._icon.setStyleSheet("color: #cf222e; font-weight: bold;")
             self._size.setText("(missing)")
-            self._btn.setText("Download" if self._asset.kind == "raw" else "(derived)")
+            self._btn.setText("Download" if self.asset.kind == "raw" else "(derived)")
         # Always re-enable so the user can retry; only derived stays disabled.
-        if self._asset.kind == "raw":
+        if self.asset.kind == "raw":
             self._btn.setEnabled(True)
 
     # ------------------------------------------------------------------
@@ -438,8 +565,14 @@ class _AssetRow(QWidget):
     # ------------------------------------------------------------------
     def _on_button(self) -> None:
         if self._reply is not None:
-            # In-flight: button acts as Cancel.
-            self._reply.abort()
+            self._reply.abort()             # acts as Cancel while in-flight
+            return
+        self.start_download()
+
+    def start_download(self) -> None:
+        """Begin a download for this row. No-op if already in flight or
+        if this is a derived asset. Validates the URL field first."""
+        if self._reply is not None or self.asset.kind != "raw":
             return
         url_text = self._url_edit.text().strip()
         if not url_text:
@@ -450,8 +583,7 @@ class _AssetRow(QWidget):
                                 f"Not a valid http(s) URL:\n{url_text}")
             return
 
-        # Prepare destination: <data dir>/<relpath>.
-        dest = self._store.data_dir() / self._asset.relpath
+        dest = self._store.data_dir() / self.asset.relpath
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Write to a .part file and rename on success so an aborted
         # download never leaves a corrupted "real" file behind.
@@ -470,7 +602,6 @@ class _AssetRow(QWidget):
             QNetworkRequest.Attribute.RedirectPolicyAttribute,
             QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy,
         )
-        # Identify ourselves so anti-scraping middleware lets us through.
         req.setHeader(
             QNetworkRequest.KnownHeaders.UserAgentHeader,
             "spody-gui-setup/0.1",
@@ -488,8 +619,6 @@ class _AssetRow(QWidget):
         if total > 0:
             self._bar.setRange(0, 100)
             self._bar.setValue(int(received * 100 / total))
-        # When total is unknown (chunked transfer), leave the bar in
-        # busy-pulse mode (range 0..0).
 
     def _on_ready_read(self) -> None:
         if self._reply is None or self._sink is None:
@@ -508,30 +637,33 @@ class _AssetRow(QWidget):
 
         err = reply.error()
         url_final = reply.url().toString()
+        err_text  = reply.errorString()
         reply.deleteLater()
 
         if err != QNetworkReply.NetworkError.NoError:
             # Cleanup the partial file so a re-try starts fresh.
-            try:
-                self._part.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if self._part is not None:
+                try:
+                    self._part.unlink(missing_ok=True)
+                except OSError:
+                    pass
             self._bar.setRange(0, 100)
             self._bar.setValue(0)
             self._btn.setText("Download")
             QMessageBox.warning(
                 self, "Download failed",
-                f"{self._asset.name}\nURL: {url_final}\n\n"
+                f"{self.asset.name}\nURL: {url_final}\n\n"
                 f"Error: {err.name}\n"
-                f"Reply: {reply.errorString() if hasattr(reply, 'errorString') else '(no message)'}")
+                f"Reply: {err_text}")
             return
 
         # Atomic-ish rename: drop any existing file first (Windows
         # refuses to rename onto an existing path).
         try:
-            if self._dest.exists():
+            if self._dest is not None and self._dest.exists():
                 self._dest.unlink()
-            self._part.rename(self._dest)
+            if self._part is not None and self._dest is not None:
+                self._part.rename(self._dest)
         except OSError as exc:
             QMessageBox.critical(self, "Rename failed", f"{self._dest}\n{exc}")
             return
@@ -539,4 +671,4 @@ class _AssetRow(QWidget):
         self._bar.setRange(0, 100)
         self._bar.setValue(100)
         self._btn.setText("Re-download")
-        self.downloaded.emit(self._asset.relpath)
+        self.downloaded.emit(self.asset.relpath)

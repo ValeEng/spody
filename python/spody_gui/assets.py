@@ -1,5 +1,4 @@
-"""Registry of the *required* and *optional* data assets the setup
-wizard manages.
+"""Registry of the *required* data assets the setup wizard manages.
 
 A spody run needs two on-disk inputs that are NOT shipped in the GUI
 bundle (because they are large and externally maintained):
@@ -9,35 +8,40 @@ bundle (because they are large and externally maintained):
   * a lunar harmonic-gravity model (`GRGM1200B/gggrx_1200b_sha.tab`
     plus its `.lbl` companion), shipped as-is.
 
-This module defines the canonical list of assets, where they go inside
-the data root, the URL the wizard offers as a starting point, and how
-to check whether each is locally "present" (the file exists and is at
-least `min_bytes` large; small/zero-byte placeholders count as
-missing). The URLs are intentionally tweakable from the wizard UI --
-the user can paste a corrected URL and re-try without editing this
-file.
+The DE440 ASCII source comes split into ~100-year chunks. The user
+picks between two coverage profiles, persisted in QSettings under
+`wizard/de440_coverage`:
 
-The minimum set of *raw* files needed before the wizard's conversion
-step is:
-    DE440/header.440      (mandatory header)
-    DE440/ascp01950.440   (modern-era coverage, 1950-2050)
-    GRGM1200B/gggrx_1200b_sha.tab
-    GRGM1200B/gggrx_1200b_sha.lbl
+  * "modern"  -> just `ascp01950.440` (covers 1950..2050, ~30 MB).
+                  Right default for anyone running near-present epochs.
+  * "full"    -> all 11 chunks 01550..02550 (1550..2650, ~340 MB).
+                  Needed only for historical / far-future scenarios.
 
-Plus the *derived* file:
-    DE440/de440.spody     (produced by `spody convert ephemeris`)
+The list of "required" assets therefore depends on the coverage
+profile -- `required_assets()` is a function, not a constant.
+
+The URLs are intentionally tweakable from the wizard UI -- the user
+can paste a corrected URL and re-try without editing this file. Once
+a URL is proven, we bake it here so the next user doesn't have to.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-# Optional ASCII DE440 chunks the wizard can offer in addition to the
-# default 1950-2050. The chunk file name encodes the start year (zero-
-# padded to four digits, century * 100). Each chunk covers ~100 years.
-DE440_EXTRA_CHUNKS: tuple[str, ...] = (
-    "01550", "01650", "01750", "01850",          # historical
-    "02050", "02150", "02250", "02350", "02450", "02550",  # future
+from PySide6.QtCore import QSettings
+
+
+# QSettings key for the coverage profile. Defaults to "modern" so the
+# first-launch wizard ships a ~30 MB download instead of ~340 MB.
+KEY_COVERAGE = "wizard/de440_coverage"
+
+# DE440 ASCII chunk ids (zero-padded year * 100). Each chunk covers
+# ~100 years; the JPL file naming convention is `ascpXXXXX.440`.
+DE440_CHUNKS_MODERN: tuple[str, ...] = ("01950",)
+DE440_CHUNKS_FULL:   tuple[str, ...] = (
+    "01550", "01650", "01750", "01850", "01950",
+    "02050", "02150", "02250", "02350", "02450", "02550",
 )
 
 
@@ -52,70 +56,105 @@ class Asset:
     required: bool     # Hard requirement to run spody at all.
 
 
-# Canonical asset list. Order matters only for display.
-ASSETS: tuple[Asset, ...] = (
-    Asset(
-        name="DE440 header",
-        url="https://ssd.jpl.nasa.gov/ftp/eph/planets/ascii/de440/header.440",
-        relpath="DE440/header.440",
-        min_bytes=10_000,
-        kind="raw",
-        required=True,
-    ),
-    Asset(
-        name="DE440 ASCII 1950-2050",
-        url="https://ssd.jpl.nasa.gov/ftp/eph/planets/ascii/de440/ascp01950.440",
-        relpath="DE440/ascp01950.440",
-        min_bytes=10_000_000,
-        kind="raw",
-        required=True,
-    ),
-    Asset(
-        name="DE440 binary (de440.spody)",
-        # Empty URL -> derived: produced by `spody convert ephemeris`.
-        url="",
-        relpath="DE440/de440.spody",
-        min_bytes=1_000_000,
-        kind="derived",
-        required=True,
-    ),
-    # GRGM1200B is mirrored on the PDS Geosciences node (Washington U.).
-    # Switching to a different release (e.g. GRGM1200A) only needs the
-    # 'b' replaced with 'a' in both the URL and the relpath.
-    Asset(
-        name="GRGM1200B .tab (harmonics)",
-        url=("https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/"
-             "grail_1001/shadr/gggrx_1200b_sha.tab"),
-        relpath="GRGM1200B/gggrx_1200b_sha.tab",
-        min_bytes=10_000_000,
-        kind="raw",
-        required=True,
-    ),
-    Asset(
-        name="GRGM1200B .lbl (metadata)",
-        url=("https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/"
-             "grail_1001/shadr/gggrx_1200b_sha.lbl"),
-        relpath="GRGM1200B/gggrx_1200b_sha.lbl",
-        min_bytes=1_000,
-        kind="raw",
-        required=True,
-    ),
+# --------------------------------------------------------------------------
+# Static asset descriptors (DE440 header + GRGM1200B pair + derived .spody).
+# DE440 ASCII chunks are built on demand by `_chunk_asset`.
+# --------------------------------------------------------------------------
+DE440_HEADER = Asset(
+    name="DE440 header",
+    url="https://ssd.jpl.nasa.gov/ftp/eph/planets/ascii/de440/header.440",
+    relpath="DE440/header.440",
+    min_bytes=10_000,
+    kind="raw",
+    required=True,
+)
+
+DE440_SPODY = Asset(
+    name="DE440 binary (de440.spody)",
+    # Empty URL -> derived: produced by `spody convert ephemeris`.
+    url="",
+    relpath="DE440/de440.spody",
+    min_bytes=1_000_000,
+    kind="derived",
+    required=True,
+)
+
+# GRGM1200B is mirrored on the PDS Geosciences node (Washington U.).
+# Switching to GRGM1200A only needs the 'b' replaced with 'a' in both
+# the URL and the relpath.
+GRGM1200B_TAB = Asset(
+    name="GRGM1200B .tab (harmonics)",
+    url=("https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/"
+         "grail_1001/shadr/gggrx_1200b_sha.tab"),
+    relpath="GRGM1200B/gggrx_1200b_sha.tab",
+    min_bytes=10_000_000,
+    kind="raw",
+    required=True,
+)
+
+GRGM1200B_LBL = Asset(
+    name="GRGM1200B .lbl (metadata)",
+    url=("https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/"
+         "grail_1001/shadr/gggrx_1200b_sha.lbl"),
+    relpath="GRGM1200B/gggrx_1200b_sha.lbl",
+    min_bytes=1_000,
+    kind="raw",
+    required=True,
 )
 
 
-def for_extra_de440_chunk(date_id: str) -> Asset:
-    """Build an Asset descriptor for an extra DE440 chunk the user
-    enables in the wizard. Not part of the default required set."""
+# --------------------------------------------------------------------------
+# Coverage profile (read/write QSettings)
+# --------------------------------------------------------------------------
+def coverage() -> str:
+    """Return the currently-selected DE440 coverage profile. Always
+    returns "modern" or "full" -- an unrecognised stored value is
+    treated as "modern" so the wizard never gets stuck."""
+    v = QSettings().value(KEY_COVERAGE, "modern", type=str)
+    return v if v in ("modern", "full") else "modern"
+
+
+def set_coverage(value: str) -> None:
+    """Persist the DE440 coverage choice. Caller must pass "modern"
+    or "full"."""
+    if value not in ("modern", "full"):
+        raise ValueError(f"unknown coverage profile: {value!r}")
+    QSettings().setValue(KEY_COVERAGE, value)
+
+
+# --------------------------------------------------------------------------
+# Required-asset list (computed from the current coverage)
+# --------------------------------------------------------------------------
+def required_assets(coverage_value: str | None = None) -> tuple[Asset, ...]:
+    """Build the list of assets the wizard must have on disk before
+    spody can run. `coverage_value` defaults to the persisted choice
+    via `coverage()`; pass it explicitly only when probing alternative
+    profiles (e.g. previewing a switch)."""
+    cov = coverage_value if coverage_value is not None else coverage()
+    chunks = DE440_CHUNKS_FULL if cov == "full" else DE440_CHUNKS_MODERN
+    out: list[Asset] = [DE440_HEADER]
+    out.extend(_chunk_asset(c) for c in chunks)
+    out.append(DE440_SPODY)
+    out.append(GRGM1200B_TAB)
+    out.append(GRGM1200B_LBL)
+    return tuple(out)
+
+
+def _chunk_asset(date_id: str) -> Asset:
+    """One ascpXXXXX.440 chunk as an Asset descriptor."""
     return Asset(
         name=f"DE440 ASCII {_chunk_label(date_id)}",
         url=f"https://ssd.jpl.nasa.gov/ftp/eph/planets/ascii/de440/ascp{date_id}.440",
         relpath=f"DE440/ascp{date_id}.440",
         min_bytes=10_000_000,
         kind="raw",
-        required=False,
+        required=True,
     )
 
 
+# --------------------------------------------------------------------------
+# On-disk status helpers
+# --------------------------------------------------------------------------
 def is_present(asset: Asset, root: Path) -> bool:
     """A file is *present* iff it exists and is at least `min_bytes`
     big -- this catches half-downloads / browser placeholder files."""
@@ -126,13 +165,14 @@ def is_present(asset: Asset, root: Path) -> bool:
         return False
 
 
-def missing_required(root: Path) -> list[Asset]:
+def missing_required(root: Path, coverage_value: str | None = None) -> list[Asset]:
     """List of required assets that are NOT present under `root`."""
-    return [a for a in ASSETS if a.required and not is_present(a, root)]
+    return [a for a in required_assets(coverage_value)
+            if a.required and not is_present(a, root)]
 
 
-def all_required_present(root: Path) -> bool:
-    return not missing_required(root)
+def all_required_present(root: Path, coverage_value: str | None = None) -> bool:
+    return not missing_required(root, coverage_value)
 
 
 def effective_paths(root: Path) -> dict[str, str]:
