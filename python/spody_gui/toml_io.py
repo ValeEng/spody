@@ -69,6 +69,13 @@ def read_toml(path: Path) -> dict[str, Any]:
         return tomli.load(fp)
 
 
+def format_toml(data: dict[str, Any]) -> str:
+    """Render `data` as canonically-formatted TOML text (without
+    writing it). Same emitter as `write_toml`, exposed standalone so
+    the GUI can show a live preview of what would be written."""
+    return _format_document(data)
+
+
 def write_toml(path: Path, data: dict[str, Any]) -> None:
     """Emit `data` as a canonically-formatted TOML file at `path`.
     Sections appear in `_SECTION_ORDER`; keys inside each section
@@ -79,8 +86,7 @@ def write_toml(path: Path, data: dict[str, Any]) -> None:
     (no scalar keys and no sub-tables) are skipped entirely so opting
     out of an optional block (events, batch, spacecraft.srp) just
     means not putting it in the dict."""
-    text = _format_document(data)
-    Path(path).write_text(text, encoding="utf-8")
+    Path(path).write_text(format_toml(data), encoding="utf-8")
 
 
 # ----------------------------------------------------------------------

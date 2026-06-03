@@ -39,7 +39,7 @@ class MainWindow(QMainWindow):
         # terminal) and Analysis (file picker + plots). The two modes
         # are completely independent widgets; the menu bar stays shared
         # but Run-only actions are no-ops while the Analysis tab is up.
-        self._form = TomlForm()
+        self._form = TomlForm(self._store)
         self._terminal = TerminalView()
         run_splitter = QSplitter(Qt.Orientation.Horizontal)
         run_splitter.addWidget(self._form)

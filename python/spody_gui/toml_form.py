@@ -21,11 +21,16 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .settings import SettingsStore
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIntValidator
+from PySide6.QtGui import QFont, QIntValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -38,9 +43,11 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -214,6 +221,11 @@ class TomlForm(QWidget):
     requestRunCheck     = Signal()       # emitted after a successful Generate
     runRequested        = Signal(str)    # subcommand to run ("propagate" / "batch")
 
+    # Style sheets for the Validate badge -- tiny, kept inline so the
+    # button strip's visual language is self-contained in this file.
+    _BADGE_OK  = ("color: #1a7f37; font-weight: bold;")
+    _BADGE_BAD = ("color: #cf222e; font-weight: bold;")
+
     # Top-level sections this form owns directly (it has widgets for
     # every supported key inside). Anything else loaded from a TOML
     # (e.g. [events], [batch] in slice 1) is stashed in `_passthrough`
@@ -226,8 +238,12 @@ class TomlForm(QWidget):
         "events", "batch",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, store: "SettingsStore | None" = None) -> None:
         super().__init__()
+        # Shared SettingsStore -- used by the Validate button to find
+        # the spody binary. Optional so the form is still instantiable
+        # for unit / smoke tests without a full MainWindow.
+        self._store = store
         self._widgets: dict[str, QWidget] = {}   # dotted path -> widget
         self._current_path: Path | None = None
         self._modified = False
@@ -244,14 +260,14 @@ class TomlForm(QWidget):
 
         outer = QVBoxLayout(self)
 
-        # Top row: current file + Load / Generate / RUN.
-        # RUN is the prominent green action: it routes to propagate or
-        # batch depending on whether the form currently has a [batch]
-        # section. Validate stays accessible via the menu / Ctrl+T.
+        # Top row: current file + Load / Generate / Validate / RUN
+        # plus a small badge to the right showing the last validate
+        # result (✓ OK / ✗ <error>) without going to the terminal.
         self._path_label = QLabel("(no file)")
         self._path_label.setStyleSheet("color: gray;")
         btn_load = QPushButton("Load...")
         btn_gen  = QPushButton("Generate")
+        btn_val  = QPushButton("Validate")
         btn_run  = QPushButton("RUN")
         btn_run.setStyleSheet(
             "QPushButton { background-color: #2ea043; color: white; "
@@ -261,13 +277,24 @@ class TomlForm(QWidget):
         )
         btn_load.clicked.connect(self._on_load_clicked)
         btn_gen.clicked.connect(self._on_generate_clicked)
+        btn_val.clicked.connect(self._on_validate_clicked)
         btn_run.clicked.connect(self._on_run_clicked)
+
+        self._validate_badge = QLabel("")
+        self._validate_badge.setMinimumWidth(160)
+
         top_row = QHBoxLayout()
         top_row.addWidget(self._path_label, 1)
         top_row.addWidget(btn_load)
         top_row.addWidget(btn_gen)
+        top_row.addWidget(btn_val)
         top_row.addWidget(btn_run)
         outer.addLayout(top_row)
+
+        badge_row = QHBoxLayout()
+        badge_row.addStretch(1)
+        badge_row.addWidget(self._validate_badge)
+        outer.addLayout(badge_row)
 
         # Scrollable body holding all the section groups.
         scroll = QScrollArea()
@@ -285,10 +312,39 @@ class TomlForm(QWidget):
         body_lay.addWidget(self._build_batch())
         body_lay.addStretch(1)
         scroll.setWidget(body)
-        outer.addWidget(scroll, 1)
+
+        # Live TOML preview: read-only QPlainTextEdit fed by
+        # _refresh_preview() on every form change. Wrapped in a small
+        # widget with a header label so the user knows it's a preview
+        # (not the editor!). The preview + form share a vertical
+        # QSplitter the user can resize.
+        preview_box = QWidget()
+        preview_lay = QVBoxLayout(preview_box)
+        preview_lay.setContentsMargins(0, 0, 0, 0)
+        preview_header = QLabel("TOML preview  (read-only; reflects the form live):")
+        preview_header.setStyleSheet("color: gray; padding-top: 4px;")
+        self._preview = QPlainTextEdit()
+        self._preview.setReadOnly(True)
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        mono.setPointSize(9)
+        self._preview.setFont(mono)
+        self._preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        preview_lay.addWidget(preview_header)
+        preview_lay.addWidget(self._preview, 1)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(scroll)
+        splitter.addWidget(preview_box)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([520, 280])
+        outer.addWidget(splitter, 1)
 
         # Hook tooltips after every widget has been registered.
         self._apply_tooltips()
+        # Seed the preview with the initial (mostly empty) form state.
+        self._refresh_preview()
 
     # ==================================================================
     # Section builders
@@ -878,6 +934,13 @@ class TomlForm(QWidget):
         if not self._modified:
             self._modified = True
             self.modificationChanged.emit(True)
+        # Any edit invalidates a previous validate result; the badge
+        # is cleared so the user is not misled into trusting a stale OK.
+        if self._validate_badge.text():
+            self._validate_badge.setText("")
+        # Live preview is cheap (~30 fields, <1 ms format); we refresh
+        # on every keystroke without debouncing.
+        self._refresh_preview()
 
     def _validate_field(self, key: str) -> None:
         """Run the registered range check (if any) on a single field
@@ -1068,6 +1131,10 @@ class TomlForm(QWidget):
         finally:
             self._loading = False
         self.clear_modified()
+        # Preview was suppressed during _loading; sync it now.
+        self._refresh_preview()
+        if self._validate_badge.text():
+            self._validate_badge.setText("")
 
     def load_path(self, path: Path) -> bool:
         """Read a TOML from disk via tomli and populate the form."""
@@ -1108,6 +1175,9 @@ class TomlForm(QWidget):
             self._loading = False
         self.set_current_path(None)
         self.clear_modified()
+        self._refresh_preview()
+        if self._validate_badge.text():
+            self._validate_badge.setText("")
 
     def write_to(self, path: Path) -> bool:
         """Serialise the form via to_dict + write_toml. Returns True
@@ -1152,6 +1222,103 @@ class TomlForm(QWidget):
         in MainWindow so this button shares it with the menu actions)."""
         subcommand = "batch" if "batch" in self.to_dict() else "propagate"
         self.runRequested.emit(subcommand)
+
+    def _on_validate_clicked(self) -> None:
+        """Write the current form to a temp TOML next to the current
+        file (or to the OS temp dir if there is no current file) and
+        run `spody validate` synchronously. Show the verdict on the
+        badge -- green '✓ OK' or red '✗ <error>' with the full
+        message in the tooltip. Does NOT touch the terminal pane;
+        this is a quick check without committing to a Run."""
+        if self._store is None:
+            self._set_badge("(no SettingsStore wired)", ok=False)
+            return
+        spody_bin = self._store.spody_binary()
+        if not spody_bin or not Path(spody_bin).exists():
+            self._set_badge("(spody binary not set)", ok=False,
+                            tip="Set Settings > Paths > spody binary first.")
+            return
+
+        try:
+            data = self.to_dict()
+        except ValueError as exc:
+            self._set_badge("✗ form has invalid values", ok=False,
+                            tip=str(exc))
+            return
+
+        # Write next to the current file when possible so relative
+        # paths inside the TOML (harmonics_file, ephemeris.file,
+        # batch.cases_file) resolve the same way spody does at run time.
+        if self._current_path is not None:
+            tmp_dir = self._current_path.parent
+            prefix  = ".spody_validate_"
+        else:
+            tmp_dir = Path(tempfile.gettempdir())
+            prefix  = "spody_validate_"
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".toml", prefix=prefix,
+            dir=str(tmp_dir), delete=False, encoding="utf-8",
+        ) as fp:
+            tmp_path = Path(fp.name)
+            from .toml_io import format_toml
+            fp.write(format_toml(data))
+
+        try:
+            r = subprocess.run(
+                [spody_bin, "validate", str(tmp_path)],
+                capture_output=True, text=True, timeout=30,
+                cwd=str(tmp_dir),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self._set_badge("✗ validate failed to launch", ok=False,
+                            tip=str(exc))
+            tmp_path.unlink(missing_ok=True)
+            return
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        if r.returncode == 0:
+            self._set_badge("✓ valid", ok=True,
+                            tip=(r.stdout or "spody validate exit 0").strip())
+        else:
+            # spody writes one-line "error: ..." messages to stderr;
+            # the last non-empty line is what we want as the short msg.
+            err_lines = [
+                ln for ln in (r.stderr or r.stdout).strip().splitlines() if ln
+            ]
+            short = err_lines[-1] if err_lines else f"exit {r.returncode}"
+            # Strip a leading "error: <file>: " for the badge so it fits.
+            badge_msg = short
+            if ": " in badge_msg:
+                badge_msg = "✗ " + badge_msg.split(": ", 2)[-1]
+            else:
+                badge_msg = "✗ " + badge_msg
+            self._set_badge(badge_msg[:160], ok=False, tip=short)
+
+    def _set_badge(self, text: str, *, ok: bool, tip: str = "") -> None:
+        self._validate_badge.setText(text)
+        self._validate_badge.setStyleSheet(self._BADGE_OK if ok else self._BADGE_BAD)
+        self._validate_badge.setToolTip(tip)
+
+    def _refresh_preview(self) -> None:
+        """Update the read-only TOML preview to reflect the current
+        form. Robust to in-progress invalid input: if to_dict raises,
+        we show a one-line placeholder and the preview catches up on
+        the next valid edit."""
+        if not hasattr(self, "_preview"):
+            return   # called during __init__ before the preview exists
+        try:
+            from .toml_io import format_toml
+            text = format_toml(self.to_dict())
+        except ValueError as exc:
+            text = f"# (form has invalid values: {exc})"
+        # Preserve the user's scroll position so the preview doesn't
+        # jump to the top on every keystroke.
+        scrollbar = self._preview.verticalScrollBar()
+        pos = scrollbar.value()
+        self._preview.setPlainText(text)
+        scrollbar.setValue(pos)
 
     # ==================================================================
     # Internals
