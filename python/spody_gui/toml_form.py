@@ -372,12 +372,16 @@ class TomlForm(QWidget):
         self._add_string(f, "batch.name",          "name")
         self._add_path  (f, "batch.output_dir",    "output_dir", "",
                          pick_dir=True)
-        # os.cpu_count() can return None on exotic systems; default to 1
-        # in that case so the hint is always something meaningful.
+        # Cap thread_number to the actual logical-CPU count of the
+        # host. spody is CPU-bound numerical work, so oversubscribing
+        # past the available cores is only ever slower; the validator
+        # blocks input above the cap as the user types it.
+        # os.cpu_count() can return None on exotic systems; default to
+        # 1 in that case so the cap is always meaningful.
         cpu_n = os.cpu_count() or 1
         self._add_int   (f, "batch.thread_number", "thread_number",
-                         minimum=1, maximum=64,
-                         hint=f"({cpu_n} cores available)")
+                         minimum=1, maximum=cpu_n,
+                         hint=f"(1..{cpu_n} cores available on this machine)")
 
         # cases_file with a Browse that ALSO re-reads the CSV columns
         # immediately (and a separate Re-read button for manual edits
