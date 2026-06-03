@@ -35,7 +35,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -73,6 +72,9 @@ SCAN_MAX_DEPTH = 3
 # Roles used to store the per-item full path on tree items, so we
 # don't have to re-resolve from display text.
 _PATH_ROLE = Qt.ItemDataRole.UserRole
+# Same trick on the plot-selection tree: each leaf carries its
+# PlotSpec so the click handler dispatches without index bookkeeping.
+_SPEC_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 # ----------------------------------------------------------------------
@@ -101,6 +103,12 @@ class PlotSpec:
     file only (e.g. it draws multiple lines per file -- overlaying it
     would produce 3N or 5N illegible lines). The Overlay button is
     disabled with an explanation when the active spec lacks it."""
+    category:   str = ""
+    """Grouping label shown as a collapsible folder in the plot tree.
+    Empty string puts the plot at root level (appropriate when a file
+    kind has only a few plots that don't need grouping). Plots are
+    rendered in registry order so categories stack in the order they
+    first appear."""
 
 
 def _plot_traj_r(ax: Axes, d: np.ndarray) -> None:
@@ -407,49 +415,74 @@ _p_xz = lambda ax, d: _plot_traj_projection(ax, d, "x", "z")
 _p_yz = lambda ax, d: _plot_traj_projection(ax, d, "y", "z")
 
 
+# Plot registry, grouped by file kind. Categories drive the visual
+# grouping in the right-pane tree: same `category` string -> same
+# folder; registry order is preserved so the folders stack in the
+# order they first appear. Plots with empty `category` go at root
+# level -- the kinds with only a few plots (accel, events) use that.
 PLOTS: dict[str, list[PlotSpec]] = {
     "traj": [
-        PlotSpec("|r|(t) -- radial distance",   "2d", _plot_traj_r,
-                 overlay_fn=_make_2d_overlay(_plot_traj_r)),
-        PlotSpec("|v|(t) -- speed",             "2d", _plot_traj_v,
-                 overlay_fn=_make_2d_overlay(_plot_traj_v)),
-        # XYZ / VxVyVz draw 3 lines per file: not overlay-safe (would
-        # produce 3N illegible lines). Same for the accel breakdown.
-        PlotSpec("x, y, z (t) -- position",     "2d", _plot_traj_xyz),
-        PlotSpec("vx, vy, vz (t) -- velocity",  "2d", _plot_traj_vxyz),
-        PlotSpec("orbit projection XY",         "2d", _p_xy,
-                 overlay_fn=_make_2d_overlay(_p_xy)),
-        PlotSpec("orbit projection XZ",         "2d", _p_xz,
-                 overlay_fn=_make_2d_overlay(_p_xz)),
-        PlotSpec("orbit projection YZ",         "2d", _p_yz,
-                 overlay_fn=_make_2d_overlay(_p_yz)),
+        # ----- State vectors -----------------------------------------
+        # All four come straight from the columns in the trajectory
+        # dtype; the XYZ / VxVyVz ones draw three lines per file so
+        # the overlay variant is intentionally None (3N lines would
+        # be illegible).
+        PlotSpec("Radial distance |r|",         "2d", _plot_traj_r,
+                 overlay_fn=_make_2d_overlay(_plot_traj_r),
+                 category="State vectors"),
+        PlotSpec("Speed |v|",                   "2d", _plot_traj_v,
+                 overlay_fn=_make_2d_overlay(_plot_traj_v),
+                 category="State vectors"),
+        PlotSpec("Position x, y, z",            "2d", _plot_traj_xyz,
+                 category="State vectors"),
+        PlotSpec("Velocity vx, vy, vz",         "2d", _plot_traj_vxyz,
+                 category="State vectors"),
+        # ----- Orbit shape --------------------------------------------
+        PlotSpec("XY projection",               "2d", _p_xy,
+                 overlay_fn=_make_2d_overlay(_p_xy),
+                 category="Orbit shape"),
+        PlotSpec("XZ projection",               "2d", _p_xz,
+                 overlay_fn=_make_2d_overlay(_p_xz),
+                 category="Orbit shape"),
+        PlotSpec("YZ projection",               "2d", _p_yz,
+                 overlay_fn=_make_2d_overlay(_p_yz),
+                 category="Orbit shape"),
         PlotSpec("3D orbit + Moon",             "3d", _plot_traj_3d_orbit,
-                 overlay_fn=_overlay_3d_orbit),
-        # Classical orbital elements derived from r, v. All single-line
-        # so overlay-safe out of the box. See _orbital_elements for
-        # the degenerate-case handling (equatorial / circular).
-        PlotSpec("a(t) -- semi-major axis",     "2d", _plot_traj_a,
-                 overlay_fn=_make_2d_overlay(_plot_traj_a)),
-        PlotSpec("e(t) -- eccentricity",        "2d", _plot_traj_e,
-                 overlay_fn=_make_2d_overlay(_plot_traj_e)),
-        PlotSpec("i(t) -- inclination",         "2d", _plot_traj_i,
-                 overlay_fn=_make_2d_overlay(_plot_traj_i)),
-        PlotSpec("RAAN Ω(t)",                   "2d", _plot_traj_raan,
-                 overlay_fn=_make_2d_overlay(_plot_traj_raan)),
-        PlotSpec("arg. periapsis ω(t)",         "2d", _plot_traj_aop,
-                 overlay_fn=_make_2d_overlay(_plot_traj_aop)),
-        PlotSpec("true anomaly ν(t)",           "2d", _plot_traj_nu,
-                 overlay_fn=_make_2d_overlay(_plot_traj_nu)),
+                 overlay_fn=_overlay_3d_orbit,
+                 category="Orbit shape"),
+        # ----- Orbital elements ---------------------------------------
+        # Derived from r, v. All single-line so overlay-safe out of the
+        # box. See _orbital_elements for the degenerate-case handling
+        # (equatorial / circular).
+        PlotSpec("Semi-major axis  a",          "2d", _plot_traj_a,
+                 overlay_fn=_make_2d_overlay(_plot_traj_a),
+                 category="Orbital elements"),
+        PlotSpec("Eccentricity  e",             "2d", _plot_traj_e,
+                 overlay_fn=_make_2d_overlay(_plot_traj_e),
+                 category="Orbital elements"),
+        PlotSpec("Inclination  i",              "2d", _plot_traj_i,
+                 overlay_fn=_make_2d_overlay(_plot_traj_i),
+                 category="Orbital elements"),
+        PlotSpec("RAAN  Ω",                     "2d", _plot_traj_raan,
+                 overlay_fn=_make_2d_overlay(_plot_traj_raan),
+                 category="Orbital elements"),
+        PlotSpec("Arg. periapsis  ω",           "2d", _plot_traj_aop,
+                 overlay_fn=_make_2d_overlay(_plot_traj_aop),
+                 category="Orbital elements"),
+        PlotSpec("True anomaly  ν",             "2d", _plot_traj_nu,
+                 overlay_fn=_make_2d_overlay(_plot_traj_nu),
+                 category="Orbital elements"),
     ],
     "accel": [
-        PlotSpec("|a_total|(t)",                "2d", _plot_acc_total,
+        # Three entries -- flat at the root, no point grouping.
+        PlotSpec("Total  |a_total|",            "2d", _plot_acc_total,
                  overlay_fn=_make_2d_overlay(_plot_acc_total)),
-        PlotSpec("per-force breakdown (log y)", "2d", _plot_acc_breakdown),
-        PlotSpec("eclipse fraction (t)",        "2d", _plot_acc_eclipse,
+        PlotSpec("Per-force breakdown (log y)", "2d", _plot_acc_breakdown),
+        PlotSpec("Eclipse fraction",            "2d", _plot_acc_eclipse,
                  overlay_fn=_make_2d_overlay(_plot_acc_eclipse)),
     ],
     "events": [
-        PlotSpec("events timeline",             "2d", _plot_events_timeline),
+        PlotSpec("Events timeline",             "2d", _plot_events_timeline),
     ],
 }
 
@@ -566,28 +599,37 @@ class AnalysisPanel(QWidget):
         left_lay.addWidget(btn_add)
         left_lay.addWidget(btn_overlay)
 
-        # Right pane: plot controls + stacked 2D/3D canvas + info ----
-        self._plot_combo = QComboBox()
-        self._plot_combo.setEnabled(False)
-        self._plot_btn = QPushButton("Plot")
-        self._plot_btn.setEnabled(False)
-        self._plot_btn.clicked.connect(self._on_plot)
+        # Right pane: plot tree (click-to-plot, grouped by category)
+        # + stacked 2D/3D canvas + info. The Plot button is gone --
+        # selecting a leaf in the tree fires the plot immediately and
+        # re-clicking the active leaf re-plots.
+        self._plot_tree = QTreeWidget()
+        self._plot_tree.setHeaderHidden(True)
+        self._plot_tree.setRootIsDecorated(True)
+        self._plot_tree.setIndentation(14)
+        self._plot_tree.setMaximumHeight(280)
+        self._plot_tree.itemClicked.connect(self._on_plot_tree_clicked)
 
-        plot_row = QHBoxLayout()
-        plot_row.addWidget(QLabel("Plot:"))
-        plot_row.addWidget(self._plot_combo, 1)
-        plot_row.addWidget(self._plot_btn)
+        # Last-clicked PlotSpec, set by _on_plot_tree_clicked and read
+        # by Plot / Overlay so both share one notion of "active plot".
+        self._active_spec: PlotSpec | None = None
 
         # Sun-arrow controls (3D only). The epoch field auto-fills from
         # the TOML currently open in the Run tab; user can override.
+        # Wrapped in its own widget so the whole row can be hidden when
+        # the active plot is 2D (Sun arrow has no meaning there).
         self._epoch_edit = QLineEdit()
         self._epoch_edit.setPlaceholderText("et_start_s (TDB sec past J2000)")
         btn_sun = QPushButton("+ Sun arrow")
         btn_sun.clicked.connect(self._on_add_sun)
         sun_row = QHBoxLayout()
+        sun_row.setContentsMargins(0, 0, 0, 0)
         sun_row.addWidget(QLabel("Epoch:"))
         sun_row.addWidget(self._epoch_edit, 1)
         sun_row.addWidget(btn_sun)
+        self._sun_widget = QWidget()
+        self._sun_widget.setLayout(sun_row)
+        self._sun_widget.setVisible(False)   # hidden until a 3D plot fires
 
         # 2D page: matplotlib canvas + toolbar in a sub-widget.
         self._figure  = Figure(figsize=(6, 4))
@@ -618,8 +660,8 @@ class AnalysisPanel(QWidget):
         right = QWidget()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.addLayout(plot_row)
-        right_lay.addLayout(sun_row)
+        right_lay.addWidget(self._plot_tree)
+        right_lay.addWidget(self._sun_widget)
         right_lay.addWidget(self._stack, 1)
         right_lay.addWidget(self._info_label)
 
@@ -740,10 +782,11 @@ class AnalysisPanel(QWidget):
 
     def _on_overlay_selected(self) -> None:
         """Overlay all selected files (matching the currently-loaded
-        kind) using the plot picked in the combo. Works for 2D and 3D
-        depending on `spec.dim`; specs without an `overlay_fn` (e.g.
-        per-component plots that draw 3 lines per file) trigger an
-        explanatory message instead of an unreadable overlay."""
+        kind) using the active plot from the right-pane tree. Works
+        for 2D and 3D depending on `spec.dim`; specs without an
+        `overlay_fn` (e.g. per-component plots that draw 3 lines per
+        file) trigger an explanatory message instead of an unreadable
+        overlay."""
         if self._kind is None:
             QMessageBox.information(
                 self, "Pick a file first",
@@ -751,10 +794,14 @@ class AnalysisPanel(QWidget):
                 "click the others you want to overlay."
             )
             return
-        idx = self._plot_combo.currentIndex()
-        if idx < 0:
+        spec = self._active_spec
+        if spec is None:
+            QMessageBox.information(
+                self, "Pick a plot first",
+                "Click a plot in the right-pane tree, then press Overlay "
+                "to stack the currently-selected files using that plot."
+            )
             return
-        spec = PLOTS[self._kind][idx]
         if spec.overlay_fn is None:
             QMessageBox.information(
                 self, "Overlay not supported",
@@ -829,7 +876,7 @@ class AnalysisPanel(QWidget):
 
     def load_file(self, path: Path) -> None:
         """Load a binary into the canvas. Auto-detects the kind from
-        the file's magic; populates the plot menu accordingly and
+        the file's magic; populates the plot tree accordingly and
         renders the first option immediately."""
         kind = _detect_kind(path)
         if kind is None:
@@ -853,18 +900,79 @@ class AnalysisPanel(QWidget):
         )
         self._info_label.setStyleSheet("")
 
-        # Repopulate the plot menu; auto-plot the first option.
-        self._plot_combo.blockSignals(True)
-        self._plot_combo.clear()
+        # Rebuild the plot tree for the new kind; auto-plot the first
+        # leaf so the user immediately sees *something* without having
+        # to click around.
+        self._populate_plot_tree(kind)
+        first = self._first_plot_leaf()
+        if first is not None:
+            self._plot_tree.setCurrentItem(first)
+            self._on_plot_tree_clicked(first, 0)
+
+    # ------------------------------------------------------------------
+    # Plot tree management
+    # ------------------------------------------------------------------
+    def _populate_plot_tree(self, kind: str) -> None:
+        """Rebuild the right-pane tree for the given file kind. Specs
+        with non-empty `category` get grouped under a bold folder; the
+        rest live at root level. Registry order is preserved so the
+        groups stack in a stable order."""
+        self._plot_tree.clear()
+        # Lazy import: avoid hardcoding a category-order list -- the
+        # first time we encounter a category we create its folder, and
+        # subsequent specs with the same string attach as children.
+        folders: dict[str, QTreeWidgetItem] = {}
         for spec in PLOTS.get(kind, []):
-            self._plot_combo.addItem(spec.label)
-        self._plot_combo.blockSignals(False)
-        has_plots = self._plot_combo.count() > 0
-        self._plot_combo.setEnabled(has_plots)
-        self._plot_btn.setEnabled(has_plots)
-        if has_plots:
-            self._plot_combo.setCurrentIndex(0)
-            self._on_plot()
+            if not spec.category:
+                # Root-level leaf.
+                leaf = QTreeWidgetItem([spec.label])
+                leaf.setData(0, _SPEC_ROLE, spec)
+                self._plot_tree.addTopLevelItem(leaf)
+                continue
+            folder = folders.get(spec.category)
+            if folder is None:
+                folder = self._make_plot_folder(spec.category)
+                folders[spec.category] = folder
+                self._plot_tree.addTopLevelItem(folder)
+            leaf = QTreeWidgetItem([spec.label])
+            leaf.setData(0, _SPEC_ROLE, spec)
+            folder.addChild(leaf)
+        # Expand everything so the user sees the full menu at a glance.
+        for folder in folders.values():
+            folder.setExpanded(True)
+
+    @staticmethod
+    def _make_plot_folder(text: str) -> QTreeWidgetItem:
+        """A bold, non-selectable folder header inside the plot tree."""
+        item = QTreeWidgetItem([text])
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        f = QFont()
+        f.setBold(True)
+        item.setFont(0, f)
+        return item
+
+    def _first_plot_leaf(self) -> QTreeWidgetItem | None:
+        """First leaf (root-level or first child of the first folder)
+        in the plot tree. Used by `load_file` to auto-plot something
+        sensible on each new file."""
+        for i in range(self._plot_tree.topLevelItemCount()):
+            top = self._plot_tree.topLevelItem(i)
+            if top.data(0, _SPEC_ROLE) is not None:
+                return top
+            if top.childCount() > 0:
+                return top.child(0)
+        return None
+
+    def _on_plot_tree_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
+        """Leaf click -> dispatch the plot. Header clicks (no stored
+        spec) are ignored (Qt still toggles their expansion state)."""
+        spec = item.data(0, _SPEC_ROLE)
+        if spec is None:
+            return
+        self._active_spec = spec
+        # Sun-arrow row only makes sense once a 3D scene is up.
+        self._sun_widget.setVisible(spec.dim == "3d")
+        self._plot_active()
 
     # ------------------------------------------------------------------
     # Sun arrow
@@ -937,17 +1045,16 @@ class AnalysisPanel(QWidget):
         raw = self._store.moon_texture()
         return Path(raw) if raw else None
 
-    def _on_plot(self) -> None:
-        """Dispatch the selected plot to the right canvas. 2D plots are
-        drawn into the matplotlib figure; 3D plots into the VTK scene.
-        Each branch is fully responsible for its canvas lifecycle
-        (clear, draw, render) so individual plot functions stay tiny."""
-        if self._data is None or self._kind is None:
+    def _plot_active(self) -> None:
+        """Dispatch the active PlotSpec (last leaf clicked in the
+        plot tree) to the right canvas. 2D plots are drawn into the
+        matplotlib figure; 3D plots into the VTK scene. Each branch
+        is fully responsible for its canvas lifecycle so individual
+        plot functions stay tiny. Called by the tree's itemClicked
+        handler -- re-clicking the active leaf re-plots."""
+        if self._data is None or self._active_spec is None:
             return
-        idx = self._plot_combo.currentIndex()
-        if idx < 0:
-            return
-        spec = PLOTS[self._kind][idx]
+        spec = self._active_spec
         try:
             if spec.dim == "2d":
                 self._stack.setCurrentIndex(0)
