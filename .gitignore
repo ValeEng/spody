@@ -85,6 +85,12 @@ __pycache__/
 .venv/
 venv/
 
+# PyInstaller bundle output (under python/). Built on demand by
+# build_bundle.py; never committed -- the spec file is the only
+# tracked artifact.
+python/build/
+python/dist/
+
 # IDE
 .vscode/
 .idea/

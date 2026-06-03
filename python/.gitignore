@@ -1,7 +1,8 @@
-# PyInstaller bundle outputs
+# PyInstaller bundle outputs (also covered by root .gitignore)
 build/
 dist/
-*.spec
+# NOTE: do NOT ignore *.spec -- the bundle spec is tracked so the
+# build stays reproducible across machines.
 
 # Package metadata
 *.egg-info/
