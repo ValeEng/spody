@@ -587,6 +587,29 @@ class TomlForm(QWidget):
         f.addRow(QLabel("Column mapping  ([batch.columns]):"))
         f.addRow(self._batch_columns_table)
 
+        # CSV data preview: first N rows of the cases_file verbatim, so
+        # the user can sanity-check the column-target mapping against
+        # the actual numbers spody will see. Read-only, fixed-height
+        # so it doesn't dominate the form even with many columns.
+        self._batch_preview_status = QLabel("")
+        self._batch_preview_status.setStyleSheet("color: gray;")
+        f.addRow(self._batch_preview_status)
+
+        self._batch_preview_table = QTableWidget(0, 0)
+        self._batch_preview_table.verticalHeader().setDefaultSectionSize(20)
+        self._batch_preview_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
+        self._batch_preview_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._batch_preview_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection)
+        self._batch_preview_table.setMinimumHeight(140)
+        # Monospace cells so columns of numbers line up visually.
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        self._batch_preview_table.setFont(mono)
+        f.addRow(self._batch_preview_table)
+
         v.addWidget(self._batch_box)
         self._batch_box.setVisible(False)
         return g
@@ -756,13 +779,15 @@ class TomlForm(QWidget):
             self._refresh_batch_columns()
 
     def _refresh_batch_columns(self) -> None:
-        """(Re-)read the CSV header at cases_file and rebuild the
-        [batch.columns] table. Existing target/mode assignments are
-        preserved across re-reads when the column name reappears."""
+        """(Re-)read the CSV at cases_file and rebuild both the
+        [batch.columns] mapping table and the data-preview table.
+        Existing target/mode assignments survive a re-read when the
+        column name reappears."""
         path_str = self._batch_cases_edit.text().strip()
         if not path_str:
             self._batch_cases_status.setText("")
             self._batch_columns_table.setRowCount(0)
+            self._clear_preview()
             return
 
         p = Path(path_str)
@@ -774,31 +799,68 @@ class TomlForm(QWidget):
         if not p.is_file():
             self._batch_cases_status.setText(f"(not found: {p})")
             self._batch_columns_table.setRowCount(0)
+            self._clear_preview()
             return
 
         try:
-            columns = _read_csv_header(p)
+            header, preview_rows, total_rows = _read_csv_preview(p)
         except OSError as exc:
             self._batch_cases_status.setText(f"(read failed: {exc})")
             self._batch_columns_table.setRowCount(0)
+            self._clear_preview()
             return
 
-        # Drop the special `id` column (used for case naming, not a
-        # spody override target).
-        columns = [c for c in columns if c.lower() != "id"]
+        # Drop the special `id` column from the *mapping* table (it's
+        # used for case naming, not a spody override target). The
+        # preview keeps every column so the user sees the full row.
+        mapping_columns = [c for c in header if c.lower() != "id"]
         existing = self._snapshot_batch_columns()
 
         was_loading = self._loading
         self._loading = True
         try:
             self._batch_columns_table.setRowCount(0)
-            for col in columns:
+            for col in mapping_columns:
                 self._add_batch_column_row(col, existing.get(col))
         finally:
             self._loading = was_loading
 
         self._batch_cases_status.setText(
-            f"({len(columns)} non-id columns read from {p.name})")
+            f"({len(mapping_columns)} non-id columns read from {p.name})")
+        self._populate_preview(header, preview_rows, total_rows, p)
+
+    def _clear_preview(self) -> None:
+        """Empty the preview table + clear the 'first N of M' label."""
+        self._batch_preview_status.setText("")
+        self._batch_preview_table.setRowCount(0)
+        self._batch_preview_table.setColumnCount(0)
+
+    def _populate_preview(self, header: list[str], rows: list[list[str]],
+                          total: int, src: Path) -> None:
+        """Push the CSV preview into the read-only table. Cells are
+        rendered verbatim (no parsing), so float vs int vs string is
+        whatever the file says."""
+        n_shown = len(rows)
+        if total == 0:
+            self._batch_preview_status.setText(
+                f"(preview: file has a header but no data rows: {src.name})")
+        elif n_shown < total:
+            self._batch_preview_status.setText(
+                f"(preview: first {n_shown} of {total} rows from {src.name})")
+        else:
+            self._batch_preview_status.setText(
+                f"(preview: {n_shown} rows from {src.name})")
+
+        self._batch_preview_table.setRowCount(0)
+        self._batch_preview_table.setColumnCount(len(header))
+        self._batch_preview_table.setHorizontalHeaderLabels(header)
+        for r, row_cells in enumerate(rows):
+            self._batch_preview_table.insertRow(r)
+            for c in range(len(header)):
+                text = row_cells[c] if c < len(row_cells) else ""
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self._batch_preview_table.setItem(r, c, item)
 
     def _add_batch_column_row(self, col_name: str,
                                existing: tuple[str, str] | None = None) -> None:
@@ -1171,6 +1233,7 @@ class TomlForm(QWidget):
             self._on_batch_toggled(False)
             self._batch_columns_table.setRowCount(0)
             self._batch_cases_status.setText("")
+            self._clear_preview()
         finally:
             self._loading = False
         self.set_current_path(None)
@@ -1486,17 +1549,38 @@ def _tidy_float(v: float) -> str:
     return re.sub(r"e([+-])0+(\d)", r"e\1\2", s)
 
 
-def _read_csv_header(path: Path) -> list[str]:
-    """First non-comment, non-blank line of the CSV, split on commas.
+def _read_csv_preview(path: Path, max_rows: int = 10
+                       ) -> tuple[list[str], list[list[str]], int]:
+    """Header + first `max_rows` data rows + total data-row count.
+
     Matches spody's own loose CSV reader: leading `#` lines are
-    treated as comments, fields are trimmed."""
+    treated as comments, blank lines are skipped, fields are trimmed.
+    The full file is scanned to count rows (needed for the
+    'first N of M' status line); cases.csv files are typically
+    small (~1000 rows max) so this is cheap."""
+    header: list[str] = []
+    rows:   list[list[str]] = []
+    total = 0
     with path.open(encoding="utf-8") as fp:
         for line in fp:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-            return [c.strip() for c in stripped.split(",")]
-    return []
+            cells = [c.strip() for c in stripped.split(",")]
+            if not header:
+                header = cells
+                continue
+            total += 1
+            if len(rows) < max_rows:
+                rows.append(cells)
+    return header, rows, total
+
+
+# Backward-compat shim: kept so any caller that only needed the header
+# keeps working without an awkward signature change.
+def _read_csv_header(path: Path) -> list[str]:
+    header, _, _ = _read_csv_preview(path, max_rows=0)
+    return header
 
 
 def _heuristic_target(col_name: str, available: list[str]) -> str | None:
