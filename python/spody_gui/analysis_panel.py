@@ -20,6 +20,7 @@ changed manually with the Change button.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -717,13 +718,27 @@ class AnalysisPanel(QWidget):
         self._plot_tree.setRootIsDecorated(True)
         self._plot_tree.setIndentation(14)
         self._plot_tree.setMinimumHeight(120)
+        # ExtendedSelection: plain click resets to one leaf (fires
+        # itemClicked = single-plot dispatch); Ctrl/Shift-click extends
+        # the selection set, which the Tile button consumes.
+        self._plot_tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
         self._plot_tree.itemClicked.connect(self._on_plot_tree_clicked)
+        self._plot_tree.itemSelectionChanged.connect(self._refresh_tile_button)
+
+        # Dashboard / tile-mode: render N selected plots as subplots in
+        # a single matplotlib figure. Counter on the button tells the
+        # user how many leaves are currently selected.
+        self._btn_tile = QPushButton("▦ Tile selected  (0)")
+        self._btn_tile.setEnabled(False)
+        self._btn_tile.clicked.connect(self._on_tile_clicked)
 
         plots_box = QWidget()
         plots_lay = QVBoxLayout(plots_box)
         plots_lay.setContentsMargins(0, 0, 0, 0)
         plots_lay.addWidget(QLabel("Plots:"))
         plots_lay.addWidget(self._plot_tree, 1)
+        plots_lay.addWidget(self._btn_tile)
 
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(files_box)
@@ -1108,6 +1123,155 @@ class AnalysisPanel(QWidget):
         else:
             self._plot_active()
 
+    def _refresh_tile_button(self) -> None:
+        """Live counter + enable gate for the Tile button. The button
+        accepts >= 2 selected leaves (tile mode is uninteresting with
+        a single plot -- that's just the single-click path)."""
+        n = sum(1 for it in self._plot_tree.selectedItems()
+                if it.data(0, _SPEC_ROLE) is not None)
+        self._btn_tile.setText(f"▦ Tile selected  ({n})")
+        self._btn_tile.setEnabled(n >= 2)
+
+    # Soft cap so the user doesn't accidentally render 30 subplots
+    # into a 280-pixel canvas; we surface a friendly error instead.
+    TILE_MAX_PLOTS = 12
+
+    def _on_tile_clicked(self) -> None:
+        """Render the multi-selected plot tree leaves as subplots in a
+        single matplotlib figure. Grid is `ceil(sqrt(N)) x ceil(N/cols)`
+        so 4 plots -> 2x2, 6 -> 2x3, 9 -> 3x3. All-single and all-diff
+        selections are supported; mixed sets and 3D plots are rejected
+        with a clear message."""
+        if self._kind is None:
+            QMessageBox.information(
+                self, "Pick a file first",
+                "Click a file in the tree, then Ctrl/Shift-click plots in "
+                "the plot tree and press Tile.")
+            return
+        specs = [
+            it.data(0, _SPEC_ROLE)
+            for it in self._plot_tree.selectedItems()
+            if it.data(0, _SPEC_ROLE) is not None
+        ]
+        # Drop 3D specs upfront so we can report them cleanly.
+        excluded_3d = [s for s in specs if s.dim != "2d"]
+        specs = [s for s in specs if s.dim == "2d"]
+        if not specs:
+            QMessageBox.information(
+                self, "No 2D plots selected",
+                "Tile mode works only with 2D plots. Ctrl/Shift-click "
+                "two or more 2D plot leaves in the plot tree.")
+            return
+        if len(specs) > self.TILE_MAX_PLOTS:
+            QMessageBox.warning(
+                self, "Too many plots to tile",
+                f"Capped at {self.TILE_MAX_PLOTS} subplots for legibility "
+                f"({len(specs)} selected).")
+            return
+
+        # Decide dispatch mode from the selection. Mixed is rejected:
+        # diff plots need 2 files, single plots need 1 -- their
+        # canvases would compete for the same file-tree selection.
+        modes = {s.mode for s in specs}
+        if len(modes) > 1:
+            QMessageBox.information(
+                self, "Mixed plot modes",
+                "Tile cannot mix single-file and diff plots in one figure "
+                "(they read from the file tree differently). Pick from one "
+                "category at a time.")
+            return
+        mode = modes.pop()
+
+        # Resolve the data argument(s) once -- every subplot draws into
+        # the same dataset(s) so we read disk once, not N times.
+        if mode == "diff":
+            paths, err = self._collect_two_diff_files()
+            if err is not None:
+                QMessageBox.information(self, "Diff tile", err)
+                return
+            reader = _READERS[self._kind]
+            try:
+                data_a = reader(paths[0])
+                data_b = reader(paths[1])
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, "Diff read failed", str(exc))
+                return
+            subtitle = f"A = {paths[0].name}    B = {paths[1].name}"
+        else:   # mode == "single"
+            if self._data is None:
+                QMessageBox.information(
+                    self, "Pick a file first",
+                    "Single-file tile mode needs a file loaded "
+                    "(click one in the file tree).")
+                return
+            subtitle = self._path.name if self._path else ""
+
+        n = len(specs)
+        cols = math.ceil(math.sqrt(n))
+        rows = math.ceil(n / cols)
+
+        try:
+            self._stack.setCurrentIndex(0)
+            self._figure.clear()
+            for i, spec in enumerate(specs):
+                ax = self._figure.add_subplot(rows, cols, i + 1)
+                if mode == "diff":
+                    spec.fn(ax, data_a, data_b)
+                else:
+                    spec.fn(ax, self._data)
+                # Shrink labels in tile mode -- matplotlib's default
+                # sizes are calibrated for a single full-canvas plot.
+                ax.title.set_size("small")
+                ax.tick_params(labelsize="small")
+                ax.xaxis.label.set_size("small")
+                ax.yaxis.label.set_size("small")
+                # Legends already use fontsize='small' or 'best'; nothing
+                # to do for plots that don't add one.
+            if subtitle:
+                self._figure.suptitle(subtitle, fontsize="small")
+            self._figure.tight_layout()
+            self._canvas.draw_idle()
+        except ValueError as exc:
+            # _ensure_same_grid raises this when diff files don't line up.
+            QMessageBox.warning(self, "Tile incompatible", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 -- surface anything to user
+            QMessageBox.critical(self, "Tile failed", repr(exc))
+            return
+
+        msg = f"Tile: {len(specs)} plots ({rows}x{cols})"
+        if excluded_3d:
+            msg += f"\n(skipped {len(excluded_3d)} 3D plot(s) -- tile is 2D-only)"
+        self._info_label.setText(msg)
+        self._info_label.setStyleSheet("")
+
+    def _collect_two_diff_files(self) -> tuple[list[Path], str | None]:
+        """Return the two file-tree-selected paths matching the active
+        kind, or an error message string for the caller to surface.
+        Extracted so `_plot_diff` and `_on_tile_clicked` share the
+        selection-validation rule."""
+        paths: list[Path] = []
+        skipped: list[str] = []
+        for it in self._tree.selectedItems():
+            raw = it.data(0, _PATH_ROLE)
+            if not raw:
+                continue
+            p = Path(raw)
+            kind = _detect_kind(p)
+            if kind == self._kind:
+                paths.append(p)
+            else:
+                skipped.append(f"{p.name} ({kind or 'unknown'})")
+        if len(paths) != 2:
+            extra = ("\n\nSkipped (kind mismatch):\n" + "\n".join(skipped)
+                     if skipped else "")
+            return paths, (
+                f"Diff needs exactly 2 {self._kind} files in the file "
+                f"tree (Ctrl/Shift-click). Currently selected: "
+                f"{len(paths)}.{extra}"
+            )
+        return paths, None
+
     # ------------------------------------------------------------------
     # Sun arrow
     # ------------------------------------------------------------------
@@ -1191,26 +1355,9 @@ class AnalysisPanel(QWidget):
                 "Click a file in the tree to set the kind, then pick a "
                 "diff plot with two files selected.")
             return
-        paths: list[Path] = []
-        skipped: list[str] = []
-        for it in self._tree.selectedItems():
-            raw = it.data(0, _PATH_ROLE)
-            if not raw:
-                continue
-            p = Path(raw)
-            kind = _detect_kind(p)
-            if kind == self._kind:
-                paths.append(p)
-            else:
-                skipped.append(f"{p.name} ({kind or 'unknown'})")
-        if len(paths) != 2:
-            extra = ("\n\nSkipped (kind mismatch):\n" + "\n".join(skipped)
-                     if skipped else "")
-            QMessageBox.information(
-                self, "Diff needs exactly 2 files",
-                f"Pick 2 {self._kind} files in the tree (Ctrl/Shift-click), "
-                f"then click the diff plot. Currently selected: "
-                f"{len(paths)}.{extra}")
+        paths, err = self._collect_two_diff_files()
+        if err is not None:
+            QMessageBox.information(self, "Diff needs exactly 2 files", err)
             return
 
         reader = _READERS[self._kind]
