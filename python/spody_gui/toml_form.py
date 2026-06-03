@@ -19,24 +19,29 @@ threshold) are handled in their own pass.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDoubleValidator, QIntValidator
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -55,6 +60,38 @@ INTEGRATORS      = ("rkdp45",)
 OUTPUT_MODES     = ("fixed", "step")
 THIRD_BODIES_ALL = ("Sun", "Mercury", "Venus", "Earth", "Moon",
                     "Mars", "Jupiter", "Saturn", "Uranus", "Neptune")
+
+# Valid override-target paths for [batch.columns]. Mirrors the
+# FIELD_TABLE in src/toml_input.c. Each entry is (path, mode_tag):
+# mode_tag is None for shared targets, "spacecraft" or "debris" when
+# the path only makes sense under that object schema. The form filters
+# by the current object selection.
+BATCH_TARGETS: tuple[tuple[str, str | None], ...] = (
+    ("simulation.et_start_s",          None),
+    ("simulation.duration_s",          None),
+    ("spacecraft.mass_kg",             "spacecraft"),
+    ("spacecraft.srp.area_m2",         "spacecraft"),
+    ("spacecraft.srp.Cr",              "spacecraft"),
+    ("debris.am_srp",                  "debris"),
+    ("debris.Cr",                      "debris"),
+    ("initial_state.position_km[0]",   None),
+    ("initial_state.position_km[1]",   None),
+    ("initial_state.position_km[2]",   None),
+    ("initial_state.velocity_kms[0]",  None),
+    ("initial_state.velocity_kms[1]",  None),
+    ("initial_state.velocity_kms[2]",  None),
+    ("force_model.srp",                None),
+    ("integrator.rel_tol",             None),
+    ("integrator.h_init_s",            None),
+    ("integrator.h_min_s",             None),
+    ("integrator.h_max_s",             None),
+    ("output.interval_s",              None),
+)
+
+# Sentinel string shown when a column has no target assigned. We use
+# a leading "(" so it sorts above real path names alphabetically and
+# is visually distinct from a real target.
+_UNASSIGNED = "(unassigned)"
 
 
 # A short label appended to certain QLineEdits to remind the user of
@@ -107,6 +144,7 @@ class TomlForm(QWidget):
         "simulation", "spacecraft", "debris",
         "initial_state", "force_model", "ephemeris",
         "integrator", "output",
+        "events", "batch",
     }
 
     def __init__(self) -> None:
@@ -159,6 +197,8 @@ class TomlForm(QWidget):
         body_lay.addWidget(self._build_ephemeris())
         body_lay.addWidget(self._build_integrator())
         body_lay.addWidget(self._build_output())
+        body_lay.addWidget(self._build_events())
+        body_lay.addWidget(self._build_batch())
         body_lay.addStretch(1)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
@@ -294,6 +334,97 @@ class TomlForm(QWidget):
                         "Binary (*.bin);;All files (*)", save=True)
         return g
 
+    def _build_events(self) -> QGroupBox:
+        g = QGroupBox("[events]  (optional)")
+        v = QVBoxLayout(g)
+
+        self._events_check = QCheckBox("Enable [events]  (eclipse detection)")
+        self._events_check.toggled.connect(self._on_events_toggled)
+        self._events_check.toggled.connect(lambda _: self._touch())
+        v.addWidget(self._events_check)
+
+        self._events_box = QWidget()
+        f = QFormLayout(self._events_box)
+        self._add_float(f, "events.eclipse_threshold", "eclipse_threshold (0..1)")
+        v.addWidget(self._events_box)
+        self._events_box.setVisible(False)
+        return g
+
+    def _build_batch(self) -> QGroupBox:
+        """Batch section + a CSV-aware [batch.columns] mapping table.
+
+        The columns table is populated from the cases_file's CSV
+        header (excluding the optional `id` column); each row gets a
+        target dropdown (filtered by the current object schema) and a
+        mode dropdown (override / delta). Heuristic pre-matching
+        picks the obvious target if the column name matches the last
+        segment of a known path (e.g. `mass_kg` -> `spacecraft.mass_kg`)."""
+        g = QGroupBox("[batch]  (optional)")
+        v = QVBoxLayout(g)
+
+        self._batch_check = QCheckBox("Enable [batch]  (multi-case sweep)")
+        self._batch_check.toggled.connect(self._on_batch_toggled)
+        self._batch_check.toggled.connect(lambda _: self._touch())
+        v.addWidget(self._batch_check)
+
+        self._batch_box = QWidget()
+        f = QFormLayout(self._batch_box)
+        self._add_string(f, "batch.name",          "name")
+        self._add_path  (f, "batch.output_dir",    "output_dir", "",
+                         pick_dir=True)
+        # os.cpu_count() can return None on exotic systems; default to 1
+        # in that case so the hint is always something meaningful.
+        cpu_n = os.cpu_count() or 1
+        self._add_int   (f, "batch.thread_number", "thread_number",
+                         minimum=1, maximum=64,
+                         hint=f"({cpu_n} cores available)")
+
+        # cases_file with a Browse that ALSO re-reads the CSV columns
+        # immediately (and a separate Re-read button for manual edits
+        # to the path).
+        self._batch_cases_edit = QLineEdit()
+        self._batch_cases_edit.textChanged.connect(self._touch)
+        cases_browse = QPushButton("Browse...")
+        cases_browse.clicked.connect(self._on_browse_cases_file)
+        cases_reread = QPushButton("Re-read columns")
+        cases_reread.clicked.connect(self._refresh_batch_columns)
+        cases_row = QHBoxLayout()
+        cases_row.setContentsMargins(0, 0, 0, 0)
+        cases_row.addWidget(self._batch_cases_edit, 1)
+        cases_row.addWidget(cases_browse)
+        cases_row.addWidget(cases_reread)
+        f.addRow("cases_file", _hwrap(cases_row))
+        self._widgets["batch.cases_file"] = self._batch_cases_edit
+
+        # Status line just under the cases_file row -- tells the user
+        # whether the CSV was readable and how many columns came back.
+        self._batch_cases_status = QLabel("")
+        self._batch_cases_status.setStyleSheet("color: gray;")
+        f.addRow("", self._batch_cases_status)
+
+        # The column-mapping table.
+        self._batch_columns_table = QTableWidget(0, 3)
+        self._batch_columns_table.setHorizontalHeaderLabels(
+            ["CSV column", "Target", "Mode"])
+        self._batch_columns_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents)
+        self._batch_columns_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch)
+        self._batch_columns_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents)
+        self._batch_columns_table.verticalHeader().setVisible(False)
+        self._batch_columns_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._batch_columns_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection)
+        self._batch_columns_table.setMinimumHeight(120)
+        f.addRow(QLabel("Column mapping  ([batch.columns]):"))
+        f.addRow(self._batch_columns_table)
+
+        v.addWidget(self._batch_box)
+        self._batch_box.setVisible(False)
+        return g
+
     # ==================================================================
     # Widget factories. Each one creates a widget, registers it under
     # the dotted key, wires the appropriate change signal to `_touch`,
@@ -317,12 +448,24 @@ class TomlForm(QWidget):
         layout.addRow(label + _unit_suffix(key.split(".")[-1]), w)
 
     def _add_int(self, layout: QFormLayout, key: str, label: str,
-                 minimum: int = -2**31, maximum: int = 2**31 - 1) -> None:
+                 minimum: int = -2**31, maximum: int = 2**31 - 1,
+                 hint: str = "") -> None:
         w = QLineEdit()
         w.setValidator(QIntValidator(minimum, maximum, w))
         w.textChanged.connect(self._touch)
         self._widgets[key] = w
-        layout.addRow(label + _unit_suffix(key.split(".")[-1]), w)
+        full_label = label + _unit_suffix(key.split(".")[-1])
+        if hint:
+            # Inline grey note next to the field (e.g. "(8 cores available)").
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(w, 1)
+            hint_label = QLabel(hint)
+            hint_label.setStyleSheet("color: gray;")
+            row.addWidget(hint_label)
+            layout.addRow(full_label, _hwrap(row))
+        else:
+            layout.addRow(full_label, w)
 
     def _add_bool(self, layout: QFormLayout, key: str, label: str) -> None:
         w = QCheckBox()
@@ -340,13 +483,17 @@ class TomlForm(QWidget):
         layout.addRow(label, w)
 
     def _add_path(self, layout: QFormLayout, key: str, label: str,
-                  filter_str: str, save: bool = False) -> None:
+                  filter_str: str, save: bool = False,
+                  pick_dir: bool = False) -> None:
         edit = QLineEdit()
         edit.textChanged.connect(self._touch)
         btn = QPushButton("Browse...")
         def _browse() -> None:
             start = edit.text() or ""
-            if save:
+            if pick_dir:
+                path = QFileDialog.getExistingDirectory(
+                    self, f"Choose {key}", start)
+            elif save:
                 path, _ = QFileDialog.getSaveFileName(
                     self, f"Choose {key}", start, filter_str)
             else:
@@ -413,6 +560,191 @@ class TomlForm(QWidget):
         on_spc = self._radio_spc.isChecked()
         self._spc_box.setVisible(on_spc)
         self._dbr_box.setVisible(not on_spc)
+        # Batch column targets depend on the object schema; refresh
+        # the per-row combos to drop now-invalid options.
+        self._refresh_batch_column_target_combos()
+
+    def _on_events_toggled(self, checked: bool) -> None:
+        self._events_box.setVisible(checked)
+
+    def _on_batch_toggled(self, checked: bool) -> None:
+        self._batch_box.setVisible(checked)
+
+    # ------------------------------------------------------------------
+    # [batch.columns] helpers
+    # ------------------------------------------------------------------
+    def _available_batch_targets(self) -> list[str]:
+        """Override-target paths valid under the current object mode."""
+        mode = "spacecraft" if self._radio_spc.isChecked() else "debris"
+        return [p for p, tag in BATCH_TARGETS if tag is None or tag == mode]
+
+    def _on_browse_cases_file(self) -> None:
+        start = self._batch_cases_edit.text() or ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate cases CSV", start,
+            "Cases (*.csv);;All files (*)")
+        if path:
+            self._batch_cases_edit.setText(path)
+            self._refresh_batch_columns()
+
+    def _refresh_batch_columns(self) -> None:
+        """(Re-)read the CSV header at cases_file and rebuild the
+        [batch.columns] table. Existing target/mode assignments are
+        preserved across re-reads when the column name reappears."""
+        path_str = self._batch_cases_edit.text().strip()
+        if not path_str:
+            self._batch_cases_status.setText("")
+            self._batch_columns_table.setRowCount(0)
+            return
+
+        p = Path(path_str)
+        if not p.is_absolute() and self._current_path is not None:
+            # Same resolution rule spody uses internally: paths in the
+            # TOML are relative to the TOML file's directory.
+            p = self._current_path.parent / p
+
+        if not p.is_file():
+            self._batch_cases_status.setText(f"(not found: {p})")
+            self._batch_columns_table.setRowCount(0)
+            return
+
+        try:
+            columns = _read_csv_header(p)
+        except OSError as exc:
+            self._batch_cases_status.setText(f"(read failed: {exc})")
+            self._batch_columns_table.setRowCount(0)
+            return
+
+        # Drop the special `id` column (used for case naming, not a
+        # spody override target).
+        columns = [c for c in columns if c.lower() != "id"]
+        existing = self._snapshot_batch_columns()
+
+        was_loading = self._loading
+        self._loading = True
+        try:
+            self._batch_columns_table.setRowCount(0)
+            for col in columns:
+                self._add_batch_column_row(col, existing.get(col))
+        finally:
+            self._loading = was_loading
+
+        self._batch_cases_status.setText(
+            f"({len(columns)} non-id columns read from {p.name})")
+
+    def _add_batch_column_row(self, col_name: str,
+                               existing: tuple[str, str] | None = None) -> None:
+        """Append one row to the column-mapping table. `existing` is a
+        previous `(target, mode)` selection that survived a reload."""
+        row = self._batch_columns_table.rowCount()
+        self._batch_columns_table.insertRow(row)
+
+        name_item = QTableWidgetItem(col_name)
+        name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._batch_columns_table.setItem(row, 0, name_item)
+
+        target_combo = QComboBox()
+        target_combo.addItem(_UNASSIGNED)
+        for path in self._available_batch_targets():
+            target_combo.addItem(path)
+        target_combo.currentIndexChanged.connect(self._touch)
+        self._batch_columns_table.setCellWidget(row, 1, target_combo)
+
+        mode_combo = QComboBox()
+        mode_combo.addItems(["override", "delta"])
+        mode_combo.currentIndexChanged.connect(self._touch)
+        self._batch_columns_table.setCellWidget(row, 2, mode_combo)
+
+        # Restore the previous selection if one survived a re-read;
+        # otherwise try the obvious-name heuristic for a fresh row.
+        if existing is not None:
+            tgt, mode = existing
+            idx = target_combo.findText(tgt)
+            if idx >= 0:
+                target_combo.setCurrentIndex(idx)
+            mode_combo.setCurrentText(mode)
+        else:
+            tgt = _heuristic_target(col_name, self._available_batch_targets())
+            if tgt is not None:
+                target_combo.setCurrentText(tgt)
+
+    def _snapshot_batch_columns(self) -> dict[str, tuple[str, str]]:
+        """Capture the current (target, mode) per column. Used so a
+        Re-read columns press doesn't blow away the user's work."""
+        out: dict[str, tuple[str, str]] = {}
+        for row in range(self._batch_columns_table.rowCount()):
+            item = self._batch_columns_table.item(row, 0)
+            if item is None:
+                continue
+            target = self._batch_columns_table.cellWidget(row, 1).currentText()
+            mode   = self._batch_columns_table.cellWidget(row, 2).currentText()
+            out[item.text()] = (target, mode)
+        return out
+
+    def _refresh_batch_column_target_combos(self) -> None:
+        """Rebuild each row's Target combo for a new object mode,
+        preserving any selection that survives the mode change."""
+        if not hasattr(self, "_batch_columns_table"):
+            return   # called too early during __init__
+        new_targets = self._available_batch_targets()
+        for row in range(self._batch_columns_table.rowCount()):
+            combo = self._batch_columns_table.cellWidget(row, 1)
+            if combo is None:
+                continue
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(_UNASSIGNED)
+            for t in new_targets:
+                combo.addItem(t)
+            idx = combo.findText(current)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _batch_columns_to_dict(self) -> dict[str, Any]:
+        """Serialise the column-mapping table to a TOML-ready dict for
+        emission inside `[batch.columns]`. Unassigned rows are
+        silently dropped -- spody will error at validate time."""
+        out: dict[str, Any] = {}
+        for row in range(self._batch_columns_table.rowCount()):
+            item = self._batch_columns_table.item(row, 0)
+            if item is None:
+                continue
+            target = self._batch_columns_table.cellWidget(row, 1).currentText()
+            mode   = self._batch_columns_table.cellWidget(row, 2).currentText()
+            if target == _UNASSIGNED:
+                continue
+            if mode == "delta":
+                out[item.text()] = {"target": target, "mode": "delta"}
+            else:
+                out[item.text()] = target
+        return out
+
+    def _apply_loaded_batch_columns(self, cols_data: dict[str, Any]) -> None:
+        """After a TOML load, push the loaded `[batch.columns]` entries
+        onto matching rows of the column-mapping table. Rows whose
+        column name has no entry in the TOML keep their heuristic /
+        unassigned default."""
+        for row in range(self._batch_columns_table.rowCount()):
+            item = self._batch_columns_table.item(row, 0)
+            if item is None:
+                continue
+            name = item.text()
+            entry = cols_data.get(name)
+            if entry is None:
+                continue
+            if isinstance(entry, dict):
+                target = entry.get("target", "")
+                mode   = entry.get("mode", "override")
+            else:
+                target = str(entry)
+                mode   = "override"
+            target_combo = self._batch_columns_table.cellWidget(row, 1)
+            mode_combo   = self._batch_columns_table.cellWidget(row, 2)
+            idx = target_combo.findText(target)
+            if idx >= 0:
+                target_combo.setCurrentIndex(idx)
+            mode_combo.setCurrentText(mode)
 
     def _on_srp_toggled(self, checked: bool) -> None:
         self._srp_box.setVisible(checked)
@@ -481,9 +813,24 @@ class TomlForm(QWidget):
             flat = {k: v for k, v in flat.items()
                     if not (k.startswith("spacecraft.") or k == "spacecraft.mass_kg")}
 
+        # Optional sections: drop their fields entirely when the gating
+        # checkbox is off so an unchecked block isn't emitted half-filled.
+        if not self._events_check.isChecked():
+            flat = {k: v for k, v in flat.items() if not k.startswith("events.")}
+        if not self._batch_check.isChecked():
+            flat = {k: v for k, v in flat.items() if not k.startswith("batch.")}
+
         result = _explode_dotted(flat)
-        # Merge in any top-level sections we don't render yet ([events],
-        # [batch], ...) so editing + Generate doesn't drop them.
+
+        # [batch.columns] comes from the dynamic table, not from a flat
+        # widget key; inject it only when batch is enabled and at least
+        # one column has a target assigned.
+        if self._batch_check.isChecked():
+            cols = self._batch_columns_to_dict()
+            if cols:
+                result.setdefault("batch", {})["columns"] = cols
+
+        # Pass-through for any top-level section we don't render at all.
         for k, v in self._passthrough.items():
             result.setdefault(k, v)
         return result
@@ -515,6 +862,7 @@ class TomlForm(QWidget):
             # SRP gate.
             has_srp = any(k.startswith("spacecraft.srp.") for k in flat)
             self._srp_check.setChecked(has_srp)
+            self._on_srp_toggled(has_srp)
             if has_srp:
                 # XOR area_m2 / am_srp.
                 if "spacecraft.srp.am_srp" in flat:
@@ -523,12 +871,30 @@ class TomlForm(QWidget):
                     self._srp_radio_area.setChecked(True)
                 self._on_srp_param_toggled()
 
+            # Optional-block gates: events, batch.
+            has_events = any(k.startswith("events.") for k in flat)
+            self._events_check.setChecked(has_events)
+            self._on_events_toggled(has_events)
+
+            has_batch = any(k.startswith("batch.") for k in flat)
+            self._batch_check.setChecked(has_batch)
+            self._on_batch_toggled(has_batch)
+
             # Now push field values.
             for key, value in flat.items():
                 w = self._widgets.get(key)
                 if w is None:
                     continue   # unknown key; emitter would round-trip via flatten too
                 self._set_widget_value(key, w, value)
+
+            # [batch.columns] is dynamic: first scan the freshly-loaded
+            # cases_file to populate the rows, then apply the loaded
+            # column->target mappings on top.
+            if has_batch:
+                self._refresh_batch_columns()
+                cols_data = data.get("batch", {}).get("columns", {})
+                if isinstance(cols_data, dict):
+                    self._apply_loaded_batch_columns(cols_data)
         finally:
             self._loading = False
         self.clear_modified()
@@ -541,8 +907,11 @@ class TomlForm(QWidget):
         except (OSError, Exception) as exc:
             QMessageBox.critical(self, "Load failed", f"{path}\n{exc}")
             return False
-        self.load_from_dict(data)
+        # Set the current path FIRST so load_from_dict can resolve any
+        # relative paths inside the TOML (notably batch.cases_file)
+        # against the right base directory, matching what spody does.
         self.set_current_path(path)
+        self.load_from_dict(data)
         return True
 
     def reset_to_blank(self) -> None:
@@ -559,6 +928,12 @@ class TomlForm(QWidget):
             self._on_srp_toggled(False)
             self._srp_radio_area.setChecked(True)
             self._on_srp_param_toggled()
+            self._events_check.setChecked(False)
+            self._on_events_toggled(False)
+            self._batch_check.setChecked(False)
+            self._on_batch_toggled(False)
+            self._batch_columns_table.setRowCount(0)
+            self._batch_cases_status.setText("")
         finally:
             self._loading = False
         self.set_current_path(None)
@@ -745,3 +1120,32 @@ def _is_inline_table(d: dict[str, Any]) -> bool:
     a leaf) has the `target` key. spody only emits this inside
     `[batch.columns]`."""
     return "target" in d
+
+
+def _read_csv_header(path: Path) -> list[str]:
+    """First non-comment, non-blank line of the CSV, split on commas.
+    Matches spody's own loose CSV reader: leading `#` lines are
+    treated as comments, fields are trimmed."""
+    with path.open(encoding="utf-8") as fp:
+        for line in fp:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            return [c.strip() for c in stripped.split(",")]
+    return []
+
+
+def _heuristic_target(col_name: str, available: list[str]) -> str | None:
+    """Pre-match the column name to an available target when the last
+    segment matches exactly. e.g. CSV column `mass_kg` ->
+    `spacecraft.mass_kg`; `Cr` -> first match between `spacecraft.srp.Cr`
+    and `debris.Cr` (filtered by mode at the caller). Returns None if
+    nothing matches, leaving the row as (unassigned)."""
+    for p in available:
+        # Drop any [i] index suffix when comparing -- so a column
+        # called `position_km` matches `position_km[0]` loosely. We
+        # only use this as a hint; the user can always override.
+        last = p.rsplit(".", 1)[-1].split("[", 1)[0]
+        if last == col_name:
+            return p
+    return None
