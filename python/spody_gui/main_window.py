@@ -1,7 +1,6 @@
-"""Main application window: TOML editor, terminal pane, menus, status bar."""
+"""Main application window: TOML form, terminal pane, menus, status bar."""
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -15,37 +14,19 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
-from . import schema
 from .analysis_panel import AnalysisPanel
-from .editor import TomlEditor
 from .runner import SpodyRunner
 from .settings import SettingsDialog, SettingsStore
 from .terminal import TerminalView
+from .toml_form import TomlForm
 
 # How many entries to keep in the File > Recent menu.
 RECENT_FILES_MAX = 8
 
-# Grep for simulation.et_start_s in the TOML text. A real TOML parser
-# would be cleaner but tomllib is 3.11+ and tomli is one more dep we
-# don't otherwise need -- a one-line regex covers the canonical
-# `et_start_s = <number>` form spody examples use.
-_RE_ET_START = re.compile(
-    r"^\s*et_start_s\s*=\s*([\d.+\-eE]+)\s*(?:#.*)?$", re.MULTILINE
-)
-
-
-def _extract_et_start_s(toml_text: str) -> float | None:
-    m = _RE_ET_START.search(toml_text)
-    if not m:
-        return None
-    try:
-        return float(m.group(1))
-    except ValueError:
-        return None
-
 
 class MainWindow(QMainWindow):
-    """Single-window UI: TOML editor on the left, terminal output on the right."""
+    """Single-window UI. Run tab: structured TOML form on the left,
+    terminal output on the right. Analysis tab: file browser + plots."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -53,16 +34,15 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         self._store = SettingsStore()
-        self._current_path: Path | None = None
 
-        # Central layout: top-level mode switch between Run (editor +
+        # Central layout: top-level mode switch between Run (form +
         # terminal) and Analysis (file picker + plots). The two modes
         # are completely independent widgets; the menu bar stays shared
         # but Run-only actions are no-ops while the Analysis tab is up.
-        self._editor = TomlEditor()
+        self._form = TomlForm()
         self._terminal = TerminalView()
         run_splitter = QSplitter(Qt.Orientation.Horizontal)
-        run_splitter.addWidget(self._editor)
+        run_splitter.addWidget(self._form)
         run_splitter.addWidget(self._terminal)
         run_splitter.setStretchFactor(0, 1)
         run_splitter.setStretchFactor(1, 1)
@@ -93,7 +73,14 @@ class MainWindow(QMainWindow):
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self._refresh_run_status)
 
-        self._editor.modificationChanged.connect(self._refresh_title)
+        # Form tells us when its content has been edited (so we can
+        # mark the window title dirty), when a Generate write succeeded
+        # (so we refresh recents + Analysis working dir), and when the
+        # RUN button is clicked (so we share the save-before-run flow
+        # with the menu actions).
+        self._form.modificationChanged.connect(self._refresh_title)
+        self._form.requestRunCheck.connect(self._on_form_generated)
+        self._form.runRequested.connect(self._action_run)
 
         self._build_menus()
         self._refresh_title()
@@ -115,15 +102,6 @@ class MainWindow(QMainWindow):
         m_file.addAction(self._make_action("Save &As...", self._action_save_as, QKeySequence.StandardKey.SaveAs))
         m_file.addSeparator()
         m_file.addAction(self._make_action("&Quit",       self.close,          QKeySequence.StandardKey.Quit))
-
-        # Insert -------------------------------------------------------
-        # One menu item per snippet template. Inserting also serves as a
-        # discoverable list of the available top-level sections.
-        m_ins = mb.addMenu("&Insert")
-        for name in schema.SNIPPETS.keys():
-            a = QAction(f"[{name}] template", self)
-            a.triggered.connect(lambda _checked=False, n=name: self._editor.insert_snippet(n))
-            m_ins.addAction(a)
 
         # Run ----------------------------------------------------------
         m_run = mb.addMenu("&Run")
@@ -174,15 +152,14 @@ class MainWindow(QMainWindow):
     def _action_new(self) -> None:
         if not self._maybe_save():
             return
-        self._editor.set_text("")
-        self._current_path = None
-        self._editor.document().setModified(False)
+        self._form.reset_to_blank()
         self._refresh_title()
 
     def _action_open(self) -> None:
         if not self._maybe_save():
             return
-        start = str(self._current_path.parent) if self._current_path else ""
+        current = self._form.current_path()
+        start = str(current.parent) if current else ""
         path, _ = QFileDialog.getOpenFileName(
             self, "Open TOML", start, "TOML files (*.toml);;All files (*)"
         )
@@ -190,32 +167,19 @@ class MainWindow(QMainWindow):
             self._open_path(Path(path))
 
     def _open_path(self, path: Path) -> None:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.critical(self, "Open failed", str(exc))
-            return
-        self._editor.set_text(text)
-        self._current_path = path
-        self._editor.document().setModified(False)
-        self._store.add_recent_file(str(path), RECENT_FILES_MAX)
-        self._refresh_recent_menu()
-        self._refresh_title()
-        # The TOML's directory is the canonical "working dir" for outputs
-        # (spody resolves relative paths there); seed the Analysis tab so
-        # switching to it immediately shows any binaries already present.
-        # Also pre-fill the Sun-arrow epoch so the user does not have to
-        # retype the same number they have in their TOML.
-        self._analysis.set_working_dir(path.parent)
-        self._analysis.set_default_epoch(_extract_et_start_s(text))
+        if not self._form.load_path(path):
+            return   # form already showed a message box on failure
+        self._on_form_loaded_or_saved(path)
 
     def _action_save(self) -> bool:
-        if self._current_path is None:
+        current = self._form.current_path()
+        if current is None:
             return self._action_save_as()
-        return self._save_to(self._current_path)
+        return self._save_to(current)
 
     def _action_save_as(self) -> bool:
-        start = str(self._current_path) if self._current_path else ""
+        current = self._form.current_path()
+        start = str(current) if current else ""
         path, _ = QFileDialog.getSaveFileName(
             self, "Save TOML", start, "TOML files (*.toml);;All files (*)"
         )
@@ -224,26 +188,43 @@ class MainWindow(QMainWindow):
         return self._save_to(Path(path))
 
     def _save_to(self, path: Path) -> bool:
-        try:
-            path.write_text(self._editor.text(), encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.critical(self, "Save failed", str(exc))
+        if not self._form.write_to(path):
             return False
-        self._current_path = path
-        self._editor.document().setModified(False)
+        self._on_form_loaded_or_saved(path)
+        return True
+
+    def _on_form_generated(self) -> None:
+        """The form's Generate TOML button finished writing. Sync the
+        rest of the UI (recents, title, analysis dir, sun-arrow epoch)
+        using the path the form now holds."""
+        path = self._form.current_path()
+        if path is not None:
+            self._on_form_loaded_or_saved(path)
+
+    def _on_form_loaded_or_saved(self, path: Path) -> None:
+        """Shared post-IO sync: update Recent list, window title, the
+        Analysis tab's working-dir + Sun-arrow epoch hint. Called by
+        Open, Save, and the form's Generate button via requestRunCheck."""
         self._store.add_recent_file(str(path), RECENT_FILES_MAX)
         self._refresh_recent_menu()
         self._refresh_title()
         self._analysis.set_working_dir(path.parent)
-        return True
+        # Pre-fill the Sun-arrow epoch in the Analysis tab from the
+        # loaded form, so the user does not have to retype the number.
+        data = self._form.to_dict()
+        et = data.get("simulation", {}).get("et_start_s")
+        if isinstance(et, (int, float)):
+            self._analysis.set_default_epoch(float(et))
 
     def _maybe_save(self) -> bool:
-        """Prompt to save if buffer is dirty. Returns False if user cancels."""
-        if not self._editor.document().isModified():
+        """Prompt to save if the form has unsaved edits. Returns False
+        if the user cancels (the caller should abort whatever it was
+        about to do)."""
+        if not self._form.is_modified():
             return True
         resp = QMessageBox.question(
             self, "Unsaved changes",
-            "The current TOML has unsaved changes. Save before continuing?",
+            "The form has unsaved edits. Generate the TOML before continuing?",
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
             | QMessageBox.StandardButton.Cancel,
         )
@@ -262,19 +243,19 @@ class MainWindow(QMainWindow):
                 "Set the path to spody.exe in Settings > Paths first."
             )
             return
-        # Save-before-run: spody.exe reads from disk and resolves paths
-        # relative to the TOML file's directory, so we always need a real
-        # file on disk and a meaningful working directory.
-        if self._current_path is None or self._editor.document().isModified():
+        # spody.exe needs a file on disk plus a working directory; if
+        # the form is dirty or has never been saved, generate first.
+        if self._form.current_path() is None or self._form.is_modified():
             if not self._maybe_save():
                 return
-        if self._current_path is None:
+        current = self._form.current_path()
+        if current is None:
             return  # user cancelled the save prompt
         self._terminal.clear()
         self._terminal.append_line(
-            f"$ {Path(spody_bin).name} {subcommand} {self._current_path.name}"
+            f"$ {Path(spody_bin).name} {subcommand} {current.name}"
         )
-        self._runner.run(spody_bin, subcommand, self._current_path)
+        self._runner.run(spody_bin, subcommand, current)
 
     def _action_stop(self) -> None:
         self._runner.stop()
@@ -298,10 +279,10 @@ class MainWindow(QMainWindow):
         self._status_run.setText(f"{verdict} ({elapsed:.1f}s)")
         self._terminal.append_line(f"[{verdict} in {elapsed:.1f}s]")
         # Refresh the Analysis tree so any new outputs from this run
-        # appear without the user having to hit Refresh manually. The
-        # working dir was already seeded on Open / Save.
-        if self._current_path is not None:
-            self._analysis.set_working_dir(self._current_path.parent)
+        # appear without the user having to hit Refresh manually.
+        current = self._form.current_path()
+        if current is not None:
+            self._analysis.set_working_dir(current.parent)
 
     def _on_run_error(self, message: str) -> None:
         self._terminal.append_line(f"[runner error: {message}]")
@@ -322,18 +303,17 @@ class MainWindow(QMainWindow):
             self, "About SpOdy",
             "SpOdy GUI -- desktop frontend for the spody propagator.\n"
             "PySide6 (Qt for Python).\n"
-            "Patran-style: edits TOML, runs the binary, displays output."
+            "Patran-style: fills a TOML form, runs the binary, "
+            "displays output."
         )
 
     # ------------------------------------------------------------------
     # Title + close
     # ------------------------------------------------------------------
     def _refresh_title(self) -> None:
-        if self._current_path is None:
-            label = "(unsaved)"
-        else:
-            label = str(self._current_path)
-        dirty = "*" if self._editor.document().isModified() else ""
+        current = self._form.current_path()
+        label = str(current) if current else "(unsaved)"
+        dirty = "*" if self._form.is_modified() else ""
         self.setWindowTitle(f"SpOdy -- {label}{dirty}")
         self._status_path.setText(label + dirty)
 
