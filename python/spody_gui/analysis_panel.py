@@ -586,29 +586,46 @@ class AnalysisPanel(QWidget):
 
         btn_add = QPushButton("+ Add external file...")
         btn_add.clicked.connect(self._on_add_external)
-        # Overlay button works on the active plot in the combo: it
-        # produces a 2D overlay when a 2D plot is selected and a 3D
-        # overlay when a 3D plot is selected (subject to spec.overlay_fn).
+        # Overlay button uses the active plot (set by the plot tree
+        # below the splitter): produces a 2D overlay when a 2D plot is
+        # active and a 3D overlay otherwise (subject to spec.overlay_fn).
         btn_overlay = QPushButton("→ Overlay selected")
         btn_overlay.clicked.connect(self._on_overlay_selected)
 
-        left = QWidget()
-        left_lay = QVBoxLayout(left)
-        left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.addWidget(self._tree, 1)
-        left_lay.addWidget(btn_add)
-        left_lay.addWidget(btn_overlay)
+        files_box = QWidget()
+        files_lay = QVBoxLayout(files_box)
+        files_lay.setContentsMargins(0, 0, 0, 0)
+        files_lay.addWidget(self._tree, 1)
+        files_lay.addWidget(btn_add)
+        files_lay.addWidget(btn_overlay)
 
-        # Right pane: plot tree (click-to-plot, grouped by category)
-        # + stacked 2D/3D canvas + info. The Plot button is gone --
-        # selecting a leaf in the tree fires the plot immediately and
-        # re-clicking the active leaf re-plots.
+        # Plot tree (click-to-plot, grouped by category) lives in the
+        # left column under a vertical splitter so the user can size
+        # files vs plots to taste. The Plot button is gone -- selecting
+        # a leaf in the tree fires the plot immediately and re-clicking
+        # the active leaf re-plots.
         self._plot_tree = QTreeWidget()
         self._plot_tree.setHeaderHidden(True)
         self._plot_tree.setRootIsDecorated(True)
         self._plot_tree.setIndentation(14)
-        self._plot_tree.setMaximumHeight(280)
+        self._plot_tree.setMinimumHeight(120)
         self._plot_tree.itemClicked.connect(self._on_plot_tree_clicked)
+
+        plots_box = QWidget()
+        plots_lay = QVBoxLayout(plots_box)
+        plots_lay.setContentsMargins(0, 0, 0, 0)
+        plots_lay.addWidget(QLabel("Plots:"))
+        plots_lay.addWidget(self._plot_tree, 1)
+
+        left_splitter = QSplitter(Qt.Orientation.Vertical)
+        left_splitter.addWidget(files_box)
+        left_splitter.addWidget(plots_box)
+        # 60/40 default, both stretch when the user resizes the window.
+        left_splitter.setStretchFactor(0, 3)
+        left_splitter.setStretchFactor(1, 2)
+        left_splitter.setSizes([360, 240])
+
+        left = left_splitter
 
         # Last-clicked PlotSpec, set by _on_plot_tree_clicked and read
         # by Plot / Overlay so both share one notion of "active plot".
@@ -660,7 +677,6 @@ class AnalysisPanel(QWidget):
         right = QWidget()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.addWidget(self._plot_tree)
         right_lay.addWidget(self._sun_widget)
         right_lay.addWidget(self._stack, 1)
         right_lay.addWidget(self._info_label)
