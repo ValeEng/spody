@@ -14,9 +14,11 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
+from . import assets
 from .analysis_panel import AnalysisPanel
 from .runner import SpodyRunner
 from .settings import SettingsDialog, SettingsStore
+from .setup_wizard import SetupWizard, require_data_ready
 from .terminal import TerminalView
 from .toml_form import TomlForm
 
@@ -86,6 +88,11 @@ class MainWindow(QMainWindow):
         self._refresh_title()
         self._refresh_recent_menu()
 
+        # Auto-pop the Setup wizard the first time the window is shown
+        # if any required data file is missing. Done via a 0-ms single
+        # shot so the main window is visible underneath the modal.
+        QTimer.singleShot(0, self._maybe_pop_setup_wizard)
+
     # ------------------------------------------------------------------
     # Menus
     # ------------------------------------------------------------------
@@ -118,9 +125,10 @@ class MainWindow(QMainWindow):
 
         # Settings -----------------------------------------------------
         m_set = mb.addMenu("&Settings")
-        m_set.addAction(self._make_action("&Paths...", self._action_settings))
+        m_set.addAction(self._make_action("&Paths...",       self._action_settings))
+        m_set.addAction(self._make_action("Setup &wizard...", self._action_setup_wizard))
         m_set.addSeparator()
-        m_set.addAction(self._make_action("&About",    self._action_about))
+        m_set.addAction(self._make_action("&About",          self._action_about))
 
     def _make_action(self, text: str, slot, shortcut: QKeySequence | None = None) -> QAction:
         a = QAction(text, self)
@@ -243,6 +251,11 @@ class MainWindow(QMainWindow):
                 "Set the path to spody.exe in Settings > Paths first."
             )
             return
+        # Hard guard: never launch spody if any required data file is
+        # missing. The runner would crash with a cryptic error; better
+        # to surface this here and offer the wizard one click away.
+        if not self._require_data_ready("Cannot run"):
+            return
         # spody.exe needs a file on disk plus a working directory; if
         # the form is dirty or has never been saved, generate first.
         if self._form.current_path() is None or self._form.is_modified():
@@ -297,6 +310,44 @@ class MainWindow(QMainWindow):
     def _action_settings(self) -> None:
         dlg = SettingsDialog(self._store, self)
         dlg.exec()
+
+    def _action_setup_wizard(self) -> None:
+        """User-triggered open: same dialog whether anything is missing
+        or not (the user might want to add extra chunks / re-download)."""
+        self._open_setup_wizard()
+
+    def _open_setup_wizard(self) -> SetupWizard:
+        dlg = SetupWizard(self._store, self)
+        dlg.exec()
+        # If the wizard changed anything on disk, give the Analysis tab
+        # a chance to pick up newly-arrived files. The Run tab doesn't
+        # need a refresh -- the run-guard re-checks on each launch.
+        if dlg.was_changed():
+            current = self._form.current_path()
+            if current is not None:
+                self._analysis.set_working_dir(current.parent)
+        return dlg
+
+    def _maybe_pop_setup_wizard(self) -> None:
+        """Called once on first show. Opens the wizard only when the
+        data root is missing files we need; silent otherwise so re-use
+        of the GUI is undisturbed."""
+        root = self._store.data_dir()
+        if assets.all_required_present(root):
+            return
+        # Friendly heads-up so the wizard does not appear unexplained.
+        QMessageBox.information(
+            self, "Setup needed",
+            "Some required data files are missing.\n\n"
+            f"Data dir: {root}\n\n"
+            "Opening the Setup wizard.")
+        self._open_setup_wizard()
+
+    def _require_data_ready(self, action_label: str) -> bool:
+        """Thin wrapper around the shared `require_data_ready` helper
+        so both menu/run paths and the form's Validate button use the
+        same dialog text."""
+        return require_data_ready(self._store, self, action_label)
 
     def _action_about(self) -> None:
         QMessageBox.about(

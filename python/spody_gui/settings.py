@@ -1,11 +1,24 @@
 """Persistent settings: path manager + Settings dialog.
 
 QSettings persists to the OS-native location (registry on Windows, plist
-on macOS, INI under ~/.config on Linux). The keys are intentionally few
-for v0 -- one path each for the spody binary, harmonics file, ephemeris
-file, and a default output directory -- plus the Recent files list.
+on macOS, INI under ~/.config on Linux). The dialog stays intentionally
+narrow:
+
+  * spody binary  -- path to spody.exe (the C runner).
+  * data dir      -- root for downloaded ephemeris / harmonics; the
+                     Setup wizard manages the contents but the user
+                     can point at an existing folder here.
+  * Moon texture  -- equirectangular image for the 3D Analysis view.
+
+The legacy `paths/harmonics_file`, `paths/ephemeris_file` and
+`paths/output_dir` keys are still recognised so an existing config
+doesn't get nuked, but they are no longer surfaced in the dialog --
+the per-run harmonics / ephemeris paths live inside the TOML and are
+filled by the Setup wizard.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
@@ -14,18 +27,22 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from . import paths
+
 # Names under which paths are stored in QSettings. Centralised so the
-# dialog and the runner agree on the spelling.
+# dialog and the runner agree on the spelling. Legacy keys are kept
+# for back-compat; the dialog no longer edits them.
 KEY_SPODY_BIN     = "paths/spody_binary"
-KEY_HARMONICS     = "paths/harmonics_file"
-KEY_EPHEMERIS     = "paths/ephemeris_file"
-KEY_OUTPUT_DIR    = "paths/output_dir"
+KEY_HARMONICS     = "paths/harmonics_file"      # legacy
+KEY_EPHEMERIS     = "paths/ephemeris_file"      # legacy
+KEY_OUTPUT_DIR    = "paths/output_dir"          # legacy
 KEY_MOON_TEXTURE  = "paths/moon_texture"
 KEY_RECENT        = "files/recent"
 
@@ -39,18 +56,23 @@ class SettingsStore:
 
     # Paths ------------------------------------------------------------
     def spody_binary(self) -> str:    return self._qs.value(KEY_SPODY_BIN,     "", type=str)
-    def harmonics_file(self) -> str:  return self._qs.value(KEY_HARMONICS,     "", type=str)
-    def ephemeris_file(self) -> str:  return self._qs.value(KEY_EPHEMERIS,     "", type=str)
-    def output_dir(self) -> str:      return self._qs.value(KEY_OUTPUT_DIR,    "", type=str)
     def moon_texture(self) -> str:    return self._qs.value(KEY_MOON_TEXTURE,  "", type=str)
 
-    def set_paths(self, *, spody_bin: str, harmonics: str, ephemeris: str,
-                  output_dir: str, moon_texture: str) -> None:
+    # Legacy accessors -- still read by older code but no longer the
+    # primary source. The wizard's data dir is the canonical store.
+    def harmonics_file(self) -> str:  return self._qs.value(KEY_HARMONICS, "", type=str)
+    def ephemeris_file(self) -> str:  return self._qs.value(KEY_EPHEMERIS, "", type=str)
+    def output_dir(self) -> str:      return self._qs.value(KEY_OUTPUT_DIR, "", type=str)
+
+    def data_dir(self) -> Path:
+        """Where the Setup wizard places downloaded data. Delegates to
+        the `paths` module so the resolution rules live in one place."""
+        return paths.data_dir()
+
+    def set_paths(self, *, spody_bin: str, data_dir: str, moon_texture: str) -> None:
         self._qs.setValue(KEY_SPODY_BIN,    spody_bin)
-        self._qs.setValue(KEY_HARMONICS,    harmonics)
-        self._qs.setValue(KEY_EPHEMERIS,    ephemeris)
-        self._qs.setValue(KEY_OUTPUT_DIR,   output_dir)
         self._qs.setValue(KEY_MOON_TEXTURE, moon_texture)
+        paths.set_data_dir(data_dir)
 
     # Recent files -----------------------------------------------------
     def recent_files(self) -> list[str]:
@@ -104,21 +126,25 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(640)
         self._store = store
 
-        self._e_spody     = QLineEdit(store.spody_binary())
-        self._e_harmonics = QLineEdit(store.harmonics_file())
-        self._e_ephemeris = QLineEdit(store.ephemeris_file())
-        self._e_output    = QLineEdit(store.output_dir())
-        self._e_moon      = QLineEdit(store.moon_texture())
+        self._e_spody    = QLineEdit(store.spody_binary())
+        self._e_data     = QLineEdit(str(store.data_dir()))
+        self._e_moon     = QLineEdit(store.moon_texture())
 
         form = QFormLayout()
         form.addRow("spody binary",  _path_picker_row(self._e_spody,
                     "Locate spody.exe", "Executable (*.exe);;All files (*)"))
-        form.addRow("harmonics file", _path_picker_row(self._e_harmonics,
-                    "Locate harmonics file", "Harmonics (*.tab *.cof *.txt);;All files (*)"))
-        form.addRow("ephemeris file", _path_picker_row(self._e_ephemeris,
-                    "Locate ephemeris file", "Ephemeris (*.spody *.bsp);;All files (*)"))
-        form.addRow("default output dir", _path_picker_row(self._e_output,
-                    "Choose output directory", "", pick_dir=True))
+        form.addRow("data dir",      _path_picker_row(self._e_data,
+                    "Choose data directory", "", pick_dir=True))
+        # One-line note clarifying that the data dir is wizard-managed;
+        # picking a different folder is supported but unusual.
+        data_hint = QLabel(
+            "Where the Setup wizard downloads ephemeris + harmonics into. "
+            "Default sits next to the executable; change only to reuse an "
+            "existing dataset."
+        )
+        data_hint.setStyleSheet("color: gray;")
+        data_hint.setWordWrap(True)
+        form.addRow("", data_hint)
         form.addRow("Moon texture (3D view)", _path_picker_row(self._e_moon,
                     "Locate Moon equirectangular texture",
                     "Images (*.jpg *.jpeg *.png);;All files (*)"))
@@ -136,9 +162,7 @@ class SettingsDialog(QDialog):
     def _on_accept(self) -> None:
         self._store.set_paths(
             spody_bin=self._e_spody.text().strip(),
-            harmonics=self._e_harmonics.text().strip(),
-            ephemeris=self._e_ephemeris.text().strip(),
-            output_dir=self._e_output.text().strip(),
+            data_dir=self._e_data.text().strip(),
             moon_texture=self._e_moon.text().strip(),
         )
         self.accept()

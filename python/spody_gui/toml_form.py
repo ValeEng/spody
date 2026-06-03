@@ -1238,6 +1238,16 @@ class TomlForm(QWidget):
             self._set_badge("(spody binary not set)", ok=False,
                             tip="Set Settings > Paths > spody binary first.")
             return
+        # Hard guard: same check the menu run uses. spody validate is
+        # tolerant of missing files in some edge cases, but most TOML
+        # inputs reference the harmonics / ephemeris paths, and the
+        # parser stats them eagerly -- safer to refuse outright and
+        # offer the wizard.
+        from .setup_wizard import require_data_ready
+        if not require_data_ready(self._store, self, "Validate"):
+            self._set_badge("(data not ready)", ok=False,
+                            tip="Open Settings > Setup wizard...")
+            return
 
         try:
             data = self.to_dict()

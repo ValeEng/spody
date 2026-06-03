@@ -95,3 +95,8 @@ venv/
 .DS_Store
 Thumbs.db
 note.txt
+
+# Setup wizard data root (downloaded ephemeris + harmonics, plus the
+# converted .spody binary). Sits at the repo root in dev mode so the
+# GUI sees the same `data/` it would in a portable bundle.
+data/
