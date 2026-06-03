@@ -143,6 +143,144 @@ def _plot_traj_projection(ax: Axes, d: np.ndarray, a: str, b: str) -> None:
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
 
 
+# Gravitational parameter of the Moon (km^3/s^2). spody v0 only
+# supports the Moon as the central body, so this is also the only mu
+# the orbital-elements solver needs today. When more bodies land
+# (point G), thread mu through PlotSpec or read it from the binary.
+MU_MOON_KM3_S2 = 4902.800066
+
+
+def _orbital_elements(d: np.ndarray, mu: float = MU_MOON_KM3_S2
+                      ) -> dict[str, np.ndarray]:
+    """Classical orbital elements from state vectors at every sample.
+
+    Returns a dict with the per-sample arrays:
+        a    [km]     -- semi-major axis (vis-viva)
+        e    [-]      -- eccentricity (magnitude of eccentricity vector)
+        i    [deg]    -- inclination
+        raan [deg]    -- right ascension of ascending node
+        aop  [deg]    -- argument of periapsis
+        nu   [deg]    -- true anomaly
+
+    All math is vectorised across the full trajectory. The classical
+    set has two degenerate cases that we handle explicitly:
+        * Equatorial orbit (i ~ 0): RAAN is undefined; we fold its
+          rotation into AOP and set RAAN = 0.
+        * Circular orbit (e ~ 0): AOP and true anomaly are undefined;
+          we set both to 0.
+    The thresholds are tight (1e-8) so any realistic propagated orbit
+    is unaffected.
+    """
+    r = np.stack((d["x"],  d["y"],  d["z"]),  axis=-1)         # (N, 3) km
+    v = np.stack((d["vx"], d["vy"], d["vz"]), axis=-1)         # (N, 3) km/s
+    r_mag = np.linalg.norm(r, axis=-1)
+    v_mag = np.linalg.norm(v, axis=-1)
+
+    # Specific angular momentum h = r x v -- normal to the orbit plane.
+    h = np.cross(r, v)
+    h_mag = np.linalg.norm(h, axis=-1)
+
+    # Eccentricity vector e = (v x h)/mu - r_hat. |e| is the scalar
+    # eccentricity; the vector points toward periapsis.
+    r_hat = r / r_mag[..., None]
+    e_vec = np.cross(v, h) / mu - r_hat
+    e_mag = np.linalg.norm(e_vec, axis=-1)
+
+    # Vis-viva: 1/a = 2/r - v^2/mu  ->  a = 1 / (2/r - v^2/mu).
+    a = 1.0 / (2.0 / r_mag - v_mag ** 2 / mu)
+
+    # Inclination from h_z / |h|. Clip to dodge tiny floating-point
+    # excursions outside [-1, 1] that would NaN out arccos.
+    cos_i = np.clip(h[..., 2] / h_mag, -1.0, 1.0)
+    i_rad = np.arccos(cos_i)
+
+    # Node line n = z_hat x h = (-h_y, h_x, 0).
+    n = np.stack((-h[..., 1], h[..., 0], np.zeros_like(h_mag)), axis=-1)
+    n_mag = np.linalg.norm(n, axis=-1)
+
+    EPS = 1e-8
+    equatorial = n_mag < EPS
+    circular   = e_mag < EPS
+
+    # RAAN = acos(n_x / |n|); quadrant flip from sign of n_y.
+    safe_n = np.where(equatorial, 1.0, n_mag)
+    cos_O = np.clip(n[..., 0] / safe_n, -1.0, 1.0)
+    raan_rad = np.arccos(cos_O)
+    raan_rad = np.where(n[..., 1] < 0, 2 * np.pi - raan_rad, raan_rad)
+    raan_rad = np.where(equatorial, 0.0, raan_rad)
+
+    # AOP = acos((n.e)/(|n||e|)); quadrant flip from sign of e_z.
+    denom_w = np.where(equatorial | circular, 1.0, n_mag * e_mag)
+    cos_w = np.clip(np.einsum("...j,...j->...", n, e_vec) / denom_w, -1.0, 1.0)
+    aop_rad = np.arccos(cos_w)
+    aop_rad = np.where(e_vec[..., 2] < 0, 2 * np.pi - aop_rad, aop_rad)
+    aop_rad = np.where(equatorial | circular, 0.0, aop_rad)
+
+    # True anomaly nu = acos((e.r)/(|e||r|)); flip from sign of r.v
+    # (positive r.v means we're past periapsis but before apoapsis).
+    denom_nu = np.where(circular, 1.0, e_mag * r_mag)
+    cos_nu = np.clip(np.einsum("...j,...j->...", e_vec, r) / denom_nu, -1.0, 1.0)
+    nu_rad = np.arccos(cos_nu)
+    rdotv = np.einsum("...j,...j->...", r, v)
+    nu_rad = np.where(rdotv < 0, 2 * np.pi - nu_rad, nu_rad)
+    nu_rad = np.where(circular, 0.0, nu_rad)
+
+    return {
+        "a":    a,
+        "e":    e_mag,
+        "i":    np.degrees(i_rad),
+        "raan": np.degrees(raan_rad),
+        "aop":  np.degrees(aop_rad),
+        "nu":   np.degrees(nu_rad),
+    }
+
+
+def _plot_traj_a(ax: Axes, d: np.ndarray) -> None:
+    el = _orbital_elements(d)
+    ax.plot(d["t"], el["a"])
+    ax.set_xlabel("t [s]"); ax.set_ylabel("a [km]")
+    ax.set_title("Semi-major axis"); ax.grid(True, alpha=0.3)
+
+
+def _plot_traj_e(ax: Axes, d: np.ndarray) -> None:
+    el = _orbital_elements(d)
+    ax.plot(d["t"], el["e"])
+    ax.set_xlabel("t [s]"); ax.set_ylabel("e [-]")
+    ax.set_title("Eccentricity"); ax.grid(True, alpha=0.3)
+
+
+def _plot_traj_i(ax: Axes, d: np.ndarray) -> None:
+    el = _orbital_elements(d)
+    ax.plot(d["t"], el["i"])
+    ax.set_xlabel("t [s]"); ax.set_ylabel("i [deg]")
+    ax.set_title("Inclination"); ax.grid(True, alpha=0.3)
+
+
+def _plot_traj_raan(ax: Axes, d: np.ndarray) -> None:
+    el = _orbital_elements(d)
+    ax.plot(d["t"], el["raan"])
+    ax.set_xlabel("t [s]"); ax.set_ylabel("Ω [deg]")
+    ax.set_title("RAAN (right ascension of ascending node)")
+    ax.grid(True, alpha=0.3)
+
+
+def _plot_traj_aop(ax: Axes, d: np.ndarray) -> None:
+    el = _orbital_elements(d)
+    ax.plot(d["t"], el["aop"])
+    ax.set_xlabel("t [s]"); ax.set_ylabel("ω [deg]")
+    ax.set_title("Argument of periapsis"); ax.grid(True, alpha=0.3)
+
+
+def _plot_traj_nu(ax: Axes, d: np.ndarray) -> None:
+    # Per-revolution saw-tooth is the correct shape for the wrapped
+    # true anomaly. On long propagations this gets visually busy;
+    # the user can zoom in on the toolbar.
+    el = _orbital_elements(d)
+    ax.plot(d["t"], el["nu"], lw=0.6)
+    ax.set_xlabel("t [s]"); ax.set_ylabel("ν [deg]")
+    ax.set_title("True anomaly"); ax.grid(True, alpha=0.3)
+
+
 def _norm3(v: np.ndarray) -> np.ndarray:
     return np.sqrt(np.sum(v * v, axis=-1))
 
@@ -287,6 +425,21 @@ PLOTS: dict[str, list[PlotSpec]] = {
                  overlay_fn=_make_2d_overlay(_p_yz)),
         PlotSpec("3D orbit + Moon",             "3d", _plot_traj_3d_orbit,
                  overlay_fn=_overlay_3d_orbit),
+        # Classical orbital elements derived from r, v. All single-line
+        # so overlay-safe out of the box. See _orbital_elements for
+        # the degenerate-case handling (equatorial / circular).
+        PlotSpec("a(t) -- semi-major axis",     "2d", _plot_traj_a,
+                 overlay_fn=_make_2d_overlay(_plot_traj_a)),
+        PlotSpec("e(t) -- eccentricity",        "2d", _plot_traj_e,
+                 overlay_fn=_make_2d_overlay(_plot_traj_e)),
+        PlotSpec("i(t) -- inclination",         "2d", _plot_traj_i,
+                 overlay_fn=_make_2d_overlay(_plot_traj_i)),
+        PlotSpec("RAAN Ω(t)",                   "2d", _plot_traj_raan,
+                 overlay_fn=_make_2d_overlay(_plot_traj_raan)),
+        PlotSpec("arg. periapsis ω(t)",         "2d", _plot_traj_aop,
+                 overlay_fn=_make_2d_overlay(_plot_traj_aop)),
+        PlotSpec("true anomaly ν(t)",           "2d", _plot_traj_nu,
+                 overlay_fn=_make_2d_overlay(_plot_traj_nu)),
     ],
     "accel": [
         PlotSpec("|a_total|(t)",                "2d", _plot_acc_total,
