@@ -20,11 +20,12 @@ threshold) are handled in their own pass.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QIntValidator
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -94,6 +95,84 @@ BATCH_TARGETS: tuple[tuple[str, str | None], ...] = (
 _UNASSIGNED = "(unassigned)"
 
 
+# Per-field tooltips. One line each, shown on hover (and amended with
+# the validation error when a value is out of range). Keys are the
+# dotted paths the form uses internally.
+_TOOLTIPS: dict[str, str] = {
+    "simulation.name":               "Human-readable scenario name (also drives batch case file names).",
+    "simulation.et_start_s":         "Start epoch in TDB seconds past J2000.",
+    "simulation.duration_s":         "Propagation duration in seconds; > 0.",
+    "spacecraft.mass_kg":            "Dry mass in kilograms; must be > 0.",
+    "spacecraft.srp.area_m2":        "SRP cross-section in m²; A/m derived as area_m2 / mass_kg.",
+    "spacecraft.srp.am_srp":         "A/m directly in m²/kg; alternative to area_m2 (XOR).",
+    "spacecraft.srp.Cr":             "Reflectivity coefficient (1 = absorb, 2 = mirror).",
+    "debris.am_srp":                 "Area-to-mass ratio in m²/kg; > 0.",
+    "debris.Cr":                     "Reflectivity coefficient (used only when SRP is enabled).",
+    "initial_state.frame":           "Inertial reference frame. v0 supports only 'central_inertial'.",
+    "initial_state.position_km":     "[x, y, z] position in km, central-body inertial frame.",
+    "initial_state.velocity_kms":    "[vx, vy, vz] velocity in km/s, same frame as position.",
+    "force_model.central_body":      "Central body of the propagation. v0 supports only 'Moon'.",
+    "force_model.harmonics_file":    "Spherical-harmonics coefficient file (e.g. GRGM1200B).",
+    "force_model.harmonics_degree":  "Truncation degree; ≥ 2 and ≤ file maximum (1200 for GRGM1200B).",
+    "force_model.third_bodies":      "Perturbing bodies; pick from the standard NAIF set.",
+    "force_model.srp":               "Enable cannonball SRP. Requires [spacecraft.srp] in spacecraft mode.",
+    "ephemeris.file":                "DE-series ephemeris in the .spody binary format.",
+    "integrator.type":               "Integration scheme. v0 supports only RK Dormand-Prince 5(4).",
+    "integrator.rel_tol":            "Relative tolerance per accepted step; > 0.",
+    "integrator.h_init_s":           "Initial step size in seconds; > 0, normally in [h_min_s, h_max_s].",
+    "integrator.h_min_s":            "Minimum step size in seconds; > 0.",
+    "integrator.h_max_s":            "Maximum step size in seconds; > h_min_s.",
+    "output.mode":                   "'fixed' = uniform interval_s sampling; 'step' = one record per accepted step.",
+    "output.interval_s":             "Sample interval in seconds; required when mode = fixed.",
+    "output.csv_file":               "Trajectory CSV output. Leave empty to skip.",
+    "output.bin_file":               "Trajectory binary output (SPDYOUT_). Leave empty to skip.",
+    "output.log_file":               "Tee stdout/stderr into this file. Leave empty to skip.",
+    "output.accelerations_file":     "Per-force acceleration breakdown (SPDYACC_). Leave empty to skip.",
+    "output.events_log":             "Event triggers binary (SPDYEVT_). Leave empty to skip.",
+    "events.eclipse_threshold":      "Sunlight-fraction crossing that fires the eclipse event; in [0, 1].",
+    "batch.name":                    "Batch run name; drives the per-case output file names.",
+    "batch.output_dir":              "Existing directory; a 'batch/' subdir is auto-created inside it.",
+    "batch.thread_number":           "1 = sequential. > 1 needs the OpenMP-enabled spody build.",
+    "batch.cases_file":              "CSV (today) or .spody (future): one row per case, header = column names.",
+}
+
+
+# Per-field value validators. Each takes the coerced field value
+# (float / int / str) and returns "" if acceptable, or a short error
+# message used to populate the tooltip and turn the field red.
+# Fields with no entry are not validated beyond the type-validator
+# (QDoubleValidator / QIntValidator) attached to the widget.
+def _pos    (v: float) -> str: return "" if v >  0.0 else "must be > 0"
+def _nonneg (v: float) -> str: return "" if v >= 0.0 else "must be >= 0"
+def _harm_deg(v: int)  -> str: return "" if 2 <= v <= 1200 else "must be in [2, 1200]"
+def _frac01 (v: float) -> str: return "" if 0.0 <= v <= 1.0 else "must be in [0, 1]"
+
+_VALIDATORS: dict[str, Any] = {
+    "simulation.duration_s":          _pos,
+    "spacecraft.mass_kg":             _pos,
+    "spacecraft.srp.area_m2":         _pos,
+    "spacecraft.srp.am_srp":          _pos,
+    "spacecraft.srp.Cr":              _nonneg,
+    "debris.am_srp":                  _pos,
+    "debris.Cr":                      _nonneg,
+    "force_model.harmonics_degree":   _harm_deg,
+    "integrator.rel_tol":             _pos,
+    "integrator.h_init_s":            _pos,
+    "integrator.h_min_s":             _pos,
+    "integrator.h_max_s":             _pos,
+    "output.interval_s":              _pos,
+    "events.eclipse_threshold":       _frac01,
+    # batch.thread_number cap is already enforced by QIntValidator(1, cpu_n).
+}
+
+# QSS for an invalid field. Kept conservative so it works on light and
+# dark Qt themes alike -- a thin red border + a tinted background.
+_INVALID_QSS = (
+    "QLineEdit { border: 1px solid #d04040; "
+    "background-color: rgba(255, 200, 200, 60); }"
+)
+
+
 # A short label appended to certain QLineEdits to remind the user of
 # the unit; not parsed, purely cosmetic.
 _UNIT = {
@@ -157,6 +236,11 @@ class TomlForm(QWidget):
         # manage. Carried through to_dict so Generate does not destroy
         # data the form was never shown.
         self._passthrough: dict[str, Any] = {}
+        # Set of keys whose QLineEdit holds a float (no Qt validator is
+        # attached so the user's typed text stays verbatim -- see
+        # _add_float). Used by _widget_value to know when to parse the
+        # text as float vs leave as string.
+        self._float_keys: set[str] = set()
 
         outer = QVBoxLayout(self)
 
@@ -202,6 +286,9 @@ class TomlForm(QWidget):
         body_lay.addStretch(1)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
+
+        # Hook tooltips after every widget has been registered.
+        self._apply_tooltips()
 
     # ==================================================================
     # Section builders
@@ -317,9 +404,14 @@ class TomlForm(QWidget):
 
     def _build_output(self) -> QGroupBox:
         g = QGroupBox("[output]")
-        f = QFormLayout(g)
+        # Stash the QFormLayout + the row index of interval_s so we can
+        # toggle its visibility via QFormLayout.setRowVisible when the
+        # mode combo changes (interval_s only applies to mode='fixed').
+        self._output_form = QFormLayout(g)
+        f = self._output_form
         self._add_enum (f, "output.mode",               "mode", OUTPUT_MODES)
         self._add_float(f, "output.interval_s",         "interval_s")
+        self._output_interval_row = f.rowCount() - 1
         # Path fields below are optional -- empty string means the
         # corresponding output stream is not emitted by spody.
         self._add_path (f, "output.csv_file",           "csv_file",
@@ -332,7 +424,21 @@ class TomlForm(QWidget):
                         "Binary (*.bin);;All files (*)", save=True)
         self._add_path (f, "output.events_log",         "events_log",
                         "Binary (*.bin);;All files (*)", save=True)
+
+        # Wire interval_s visibility to the mode combo. Note: the
+        # field's value is also stripped from to_dict when mode='step'
+        # so a stale value left over from a prior 'fixed' run does
+        # not leak into the emitted TOML.
+        mode_combo = self._widgets["output.mode"]
+        mode_combo.currentTextChanged.connect(self._on_output_mode_changed)
+        self._on_output_mode_changed(mode_combo.currentText())
         return g
+
+    def _on_output_mode_changed(self, mode: str) -> None:
+        if not hasattr(self, "_output_form"):
+            return   # called too early during construction
+        self._output_form.setRowVisible(self._output_interval_row,
+                                        mode == "fixed")
 
     def _build_events(self) -> QGroupBox:
         g = QGroupBox("[events]  (optional)")
@@ -437,18 +543,21 @@ class TomlForm(QWidget):
     def _add_string(self, layout: QFormLayout, key: str, label: str) -> None:
         w = QLineEdit()
         w.textChanged.connect(self._touch)
+        w.textChanged.connect(lambda _t, k=key: self._validate_field(k))
         self._widgets[key] = w
         layout.addRow(label + _unit_suffix(key.split(".")[-1]), w)
 
     def _add_float(self, layout: QFormLayout, key: str, label: str) -> None:
         w = QLineEdit()
-        # QDoubleValidator with a huge range accepts scientific notation;
-        # we re-validate at to_dict time with float() to surface bad input.
-        val = QDoubleValidator(-1.0e30, 1.0e30, 15, w)
-        val.setNotation(QDoubleValidator.Notation.ScientificNotation)
-        w.setValidator(val)
+        # Intentionally no QDoubleValidator: it normalises the text on
+        # editingFinished (locale-aware fixup, e.g. "1.0e-5" -> "1e-05"),
+        # which surprises users -- they expect the value they typed to
+        # stay verbatim. Range checking is done by _validate_field and
+        # the float() parse in _widget_value.
         w.textChanged.connect(self._touch)
+        w.textChanged.connect(lambda _t, k=key: self._validate_field(k))
         self._widgets[key] = w
+        self._float_keys.add(key)
         layout.addRow(label + _unit_suffix(key.split(".")[-1]), w)
 
     def _add_int(self, layout: QFormLayout, key: str, label: str,
@@ -457,6 +566,7 @@ class TomlForm(QWidget):
         w = QLineEdit()
         w.setValidator(QIntValidator(minimum, maximum, w))
         w.textChanged.connect(self._touch)
+        w.textChanged.connect(lambda _t, k=key: self._validate_field(k))
         self._widgets[key] = w
         full_label = label + _unit_suffix(key.split(".")[-1])
         if hint:
@@ -519,9 +629,7 @@ class TomlForm(QWidget):
         fields: list[QLineEdit] = []
         for _ in range(3):
             le = QLineEdit()
-            val = QDoubleValidator(-1.0e30, 1.0e30, 15, le)
-            val.setNotation(QDoubleValidator.Notation.ScientificNotation)
-            le.setValidator(val)
+            # No QDoubleValidator: see _add_float for the rationale.
             le.textChanged.connect(self._touch)
             row.addWidget(le, 1)
             fields.append(le)
@@ -771,6 +879,57 @@ class TomlForm(QWidget):
             self._modified = True
             self.modificationChanged.emit(True)
 
+    def _validate_field(self, key: str) -> None:
+        """Run the registered range check (if any) on a single field
+        and turn the line edit red on failure. Empty fields are NOT
+        an error: they are emitted-as-absent at `to_dict` time and
+        spody catches genuinely missing required keys at validate.
+
+        Numeric parsing is driven by what the registered validator
+        function expects, not by the widget's QValidator (float
+        fields no longer have one -- see `_add_float`)."""
+        validator = _VALIDATORS.get(key)
+        w = self._widgets.get(key)
+        if validator is None or not isinstance(w, QLineEdit):
+            return
+        text = w.text().strip()
+        base_tip = _TOOLTIPS.get(key, "")
+        if not text:
+            w.setStyleSheet("")
+            w.setToolTip(base_tip)
+            return
+        try:
+            # Integer field iff the widget has a QIntValidator (the
+            # only Qt validator we still attach); everything else is a
+            # float field.
+            v = int(text) if isinstance(w.validator(), QIntValidator) else float(text)
+            err = validator(v)
+        except (ValueError, TypeError):
+            err = "not a valid number"
+        if err:
+            w.setStyleSheet(_INVALID_QSS)
+            w.setToolTip(f"{base_tip}\n\n⚠ {err}" if base_tip else f"⚠ {err}")
+        else:
+            w.setStyleSheet("")
+            w.setToolTip(base_tip)
+
+    def _apply_tooltips(self) -> None:
+        """Push the per-field descriptions from `_TOOLTIPS` onto each
+        registered widget. Called once at the end of __init__ so it
+        covers every field built by the section builders."""
+        for key, text in _TOOLTIPS.items():
+            w = self._widgets.get(key)
+            if w is None:
+                continue
+            if isinstance(w, tuple):       # vec3 (three QLineEdits)
+                for le in w:
+                    le.setToolTip(text)
+            elif isinstance(w, dict):      # checkbox set
+                for cb in w.values():
+                    cb.setToolTip(text)
+            else:
+                w.setToolTip(text)
+
     def is_modified(self) -> bool:
         return self._modified
 
@@ -823,6 +982,13 @@ class TomlForm(QWidget):
             flat = {k: v for k, v in flat.items() if not k.startswith("events.")}
         if not self._batch_check.isChecked():
             flat = {k: v for k, v in flat.items() if not k.startswith("batch.")}
+
+        # output.interval_s only applies to mode == "fixed"; in step
+        # mode the field is hidden in the UI but the underlying widget
+        # may still hold a stale value -- drop it from the emitted TOML
+        # so the file matches what the user sees.
+        if flat.get("output.mode") == "step":
+            flat.pop("output.interval_s", None)
 
         result = _explode_dotted(flat)
 
@@ -1012,17 +1178,18 @@ class TomlForm(QWidget):
             text = w.text().strip()
             if not text:
                 return None
-            # Floats / ints get coerced via the registered validator,
-            # but we also try here so to_dict surfaces bad input.
-            v = w.validator()
-            if isinstance(v, QDoubleValidator):
-                try:    return float(text)
-                except ValueError:
-                    raise ValueError(f"'{key}' is not a valid number: {text!r}")
-            if isinstance(v, QIntValidator):
+            # Type discrimination: int fields keep their QIntValidator
+            # (we want the cap behaviour on thread_number); float fields
+            # are tracked by name in self._float_keys; everything else
+            # is a string.
+            if isinstance(w.validator(), QIntValidator):
                 try:    return int(text)
                 except ValueError:
                     raise ValueError(f"'{key}' is not a valid integer: {text!r}")
+            if key in self._float_keys:
+                try:    return float(text)
+                except ValueError:
+                    raise ValueError(f"'{key}' is not a valid number: {text!r}")
             return text
         if isinstance(w, QCheckBox):
             return bool(w.isChecked())
@@ -1047,7 +1214,7 @@ class TomlForm(QWidget):
     def _set_widget_value(self, key: str, w: Any, value: Any) -> None:
         if isinstance(w, QLineEdit):
             if isinstance(value, float):
-                w.setText(repr(value))
+                w.setText(_tidy_float(value))
             elif isinstance(value, int):
                 w.setText(str(value))
             else:
@@ -1064,7 +1231,7 @@ class TomlForm(QWidget):
         if isinstance(w, tuple):   # vec3
             if isinstance(value, (list, tuple)) and len(value) == 3:
                 for le, x in zip(w, value):
-                    le.setText(repr(float(x)))
+                    le.setText(_tidy_float(float(x)))
             return
         if isinstance(w, dict):    # checkbox set
             wanted = set(value) if isinstance(value, (list, tuple)) else set()
@@ -1124,6 +1291,22 @@ def _is_inline_table(d: dict[str, Any]) -> bool:
     a leaf) has the `target` key. spody only emits this inside
     `[batch.columns]`."""
     return "target" in d
+
+
+def _tidy_float(v: float) -> str:
+    """Display-friendly form for a parsed float (used when populating a
+    field from a loaded TOML).
+
+    Python's `repr(float)` is the shortest round-trippable form but
+    its exponent has a leading-zero quirk: `repr(1e-5) == '1e-05'`,
+    `repr(2e8) == '200000000.0'`. The leading zero on the exponent is
+    cosmetic noise people don't write in TOML files, so we strip it.
+    Everything else is left exactly as `repr` produces it."""
+    if v == 0.0:
+        return "0.0"
+    s = repr(v)
+    # "1e-05" -> "1e-5", "1.5e+07" -> "1.5e+7"
+    return re.sub(r"e([+-])0+(\d)", r"e\1\2", s)
 
 
 def _read_csv_header(path: Path) -> list[str]:
