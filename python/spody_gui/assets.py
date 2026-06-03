@@ -79,11 +79,13 @@ ASSETS: tuple[Asset, ...] = (
         kind="derived",
         required=True,
     ),
+    # GRGM1200B is mirrored on the PDS Geosciences node (Washington U.).
+    # Switching to a different release (e.g. GRGM1200A) only needs the
+    # 'b' replaced with 'a' in both the URL and the relpath.
     Asset(
         name="GRGM1200B .tab (harmonics)",
-        # Direct URL TBD; PGDA hosts these behind product pages. Show the
-        # product landing page so the user can fix the URL in the wizard.
-        url="https://pgda.gsfc.nasa.gov/products/50",
+        url=("https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/"
+             "grail_1001/shadr/gggrx_1200b_sha.tab"),
         relpath="GRGM1200B/gggrx_1200b_sha.tab",
         min_bytes=10_000_000,
         kind="raw",
@@ -91,7 +93,8 @@ ASSETS: tuple[Asset, ...] = (
     ),
     Asset(
         name="GRGM1200B .lbl (metadata)",
-        url="https://pgda.gsfc.nasa.gov/products/50",
+        url=("https://pds-geosciences.wustl.edu/grail/grail-l-lgrs-5-rdr-v1/"
+             "grail_1001/shadr/gggrx_1200b_sha.lbl"),
         relpath="GRGM1200B/gggrx_1200b_sha.lbl",
         min_bytes=1_000,
         kind="raw",
