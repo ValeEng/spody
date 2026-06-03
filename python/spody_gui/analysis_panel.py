@@ -109,6 +109,12 @@ class PlotSpec:
     kind has only a few plots that don't need grouping). Plots are
     rendered in registry order so categories stack in the order they
     first appear."""
+    mode:       str = "single"
+    """Dispatch mode. 'single' (default) calls `fn(ax_or_canvas, data)`
+    against the currently-loaded file. 'diff' calls `fn(ax, data_a,
+    data_b)` against exactly two selected files in the file tree
+    (sorted top-down). Diff specs ignore `overlay_fn` -- they don't
+    overlay, they subtract."""
 
 
 def _plot_traj_r(ax: Axes, d: np.ndarray) -> None:
@@ -287,6 +293,94 @@ def _plot_traj_nu(ax: Axes, d: np.ndarray) -> None:
     ax.plot(d["t"], el["nu"], lw=0.6)
     ax.set_xlabel("t [s]"); ax.set_ylabel("ν [deg]")
     ax.set_title("True anomaly"); ax.grid(True, alpha=0.3)
+
+
+# ----------------------------------------------------------------------
+# Diff plots (two trajectories required).
+#
+# Diffs subtract trajectory B from trajectory A sample-by-sample, so
+# they need both to be sampled on the same time grid. The dispatcher
+# validates length equality (and t[0]/t[-1] match within a small
+# tolerance) before calling these; the plot functions themselves
+# trust that pre-check and just compute the delta arrays.
+# ----------------------------------------------------------------------
+def _ensure_same_grid(a: np.ndarray, b: np.ndarray) -> None:
+    """Validation reused by every diff plot. Raises ValueError if A and
+    B don't share the same sample count + endpoints (the same grid
+    spody emits for two runs with matching `output.interval_s`)."""
+    if len(a) != len(b):
+        raise ValueError(
+            f"diff requires matching sample counts (A: {len(a)}, B: {len(b)}). "
+            "Use the same simulation.duration_s + output.interval_s in both "
+            "TOMLs.")
+    if not (np.isclose(a["t"][0], b["t"][0], atol=1.0)
+            and np.isclose(a["t"][-1], b["t"][-1], atol=1.0)):
+        raise ValueError(
+            f"diff requires matching time grids "
+            f"(A: [{a['t'][0]:.1f}, {a['t'][-1]:.1f}] s, "
+            f"B: [{b['t'][0]:.1f}, {b['t'][-1]:.1f}] s).")
+
+
+def _plot_diff_r(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
+    _ensure_same_grid(a, b)
+    dx = a["x"] - b["x"]; dy = a["y"] - b["y"]; dz = a["z"] - b["z"]
+    dr = np.sqrt(dx * dx + dy * dy + dz * dz)
+    ax.semilogy(a["t"], dr)
+    ax.set_xlabel("t [s]"); ax.set_ylabel("|Δr| [km]")
+    ax.set_title("Position-error magnitude  |r_A - r_B|")
+    ax.grid(True, which="both", alpha=0.3)
+
+
+def _plot_diff_v(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
+    _ensure_same_grid(a, b)
+    dvx = a["vx"] - b["vx"]; dvy = a["vy"] - b["vy"]; dvz = a["vz"] - b["vz"]
+    dv = np.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
+    ax.semilogy(a["t"], dv)
+    ax.set_xlabel("t [s]"); ax.set_ylabel("|Δv| [km/s]")
+    ax.set_title("Velocity-error magnitude  |v_A - v_B|")
+    ax.grid(True, which="both", alpha=0.3)
+
+
+def _plot_diff_xyz(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
+    _ensure_same_grid(a, b)
+    for name in ("x", "y", "z"):
+        ax.plot(a["t"], a[name] - b[name], label=f"Δ{name}")
+    ax.set_xlabel("t [s]"); ax.set_ylabel("Δposition [km]")
+    ax.set_title("Position error per component  (A - B)")
+    ax.legend(loc="best"); ax.grid(True, alpha=0.3)
+
+
+def _plot_diff_ric(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
+    """Position-error decomposition in the RIC (Radial / In-track /
+    Cross-track) frame of trajectory A.
+
+    Standard for orbital regression: errors split by direction tell
+    you whether your delta is mostly down-track (timing / energy
+    drift), radial (altitude error), or out-of-plane (RAAN / i drift).
+    """
+    _ensure_same_grid(a, b)
+    r_A = np.stack((a["x"],  a["y"],  a["z"]),  axis=-1)
+    v_A = np.stack((a["vx"], a["vy"], a["vz"]), axis=-1)
+    dr_in = np.stack((a["x"] - b["x"],
+                      a["y"] - b["y"],
+                      a["z"] - b["z"]), axis=-1)
+
+    # Build the RIC frame at every sample from A's state.
+    r_hat = r_A / np.linalg.norm(r_A, axis=-1, keepdims=True)
+    h     = np.cross(r_A, v_A)
+    c_hat = h / np.linalg.norm(h, axis=-1, keepdims=True)
+    i_hat = np.cross(c_hat, r_hat)        # right-handed: i = c x r
+
+    radial    = np.einsum("...j,...j->...", dr_in, r_hat)
+    in_track  = np.einsum("...j,...j->...", dr_in, i_hat)
+    cross_tr  = np.einsum("...j,...j->...", dr_in, c_hat)
+
+    ax.plot(a["t"], radial,   label="radial")
+    ax.plot(a["t"], in_track, label="in-track")
+    ax.plot(a["t"], cross_tr, label="cross-track")
+    ax.set_xlabel("t [s]"); ax.set_ylabel("Δr [km]")
+    ax.set_title("Position error in RIC frame of A")
+    ax.legend(loc="best"); ax.grid(True, alpha=0.3)
 
 
 def _norm3(v: np.ndarray) -> np.ndarray:
@@ -472,6 +566,20 @@ PLOTS: dict[str, list[PlotSpec]] = {
         PlotSpec("True anomaly  ν",             "2d", _plot_traj_nu,
                  overlay_fn=_make_2d_overlay(_plot_traj_nu),
                  category="Orbital elements"),
+        # ----- Diff (pick 2 files) ------------------------------------
+        # mode='diff' specs subtract B from A sample-by-sample. The
+        # dispatcher requires exactly two files to be selected in the
+        # file tree on the left (sorted top-down = A then B). Files
+        # must share the same sample count + endpoints; mismatched
+        # grids fail with a clear message.
+        PlotSpec("|Δr| (log y)",                "2d", _plot_diff_r,
+                 category="Diff (pick 2 files)", mode="diff"),
+        PlotSpec("|Δv| (log y)",                "2d", _plot_diff_v,
+                 category="Diff (pick 2 files)", mode="diff"),
+        PlotSpec("Δx, Δy, Δz per component",    "2d", _plot_diff_xyz,
+                 category="Diff (pick 2 files)", mode="diff"),
+        PlotSpec("RIC frame  (radial/in-tr/cross-tr)", "2d", _plot_diff_ric,
+                 category="Diff (pick 2 files)", mode="diff"),
     ],
     "accel": [
         # Three entries -- flat at the root, no point grouping.
@@ -814,9 +922,16 @@ class AnalysisPanel(QWidget):
         if spec is None:
             QMessageBox.information(
                 self, "Pick a plot first",
-                "Click a plot in the right-pane tree, then press Overlay "
-                "to stack the currently-selected files using that plot."
+                "Click a plot in the plot tree, then press Overlay to "
+                "stack the currently-selected files using that plot."
             )
+            return
+        if spec.mode == "diff":
+            QMessageBox.information(
+                self, "Overlay not applicable to a diff plot",
+                f"'{spec.label}' is a diff plot -- click it directly with "
+                "two files selected in the file tree; the diff dispatch "
+                "fires automatically. Overlay is for single-file plots.")
             return
         if spec.overlay_fn is None:
             QMessageBox.information(
@@ -988,7 +1103,10 @@ class AnalysisPanel(QWidget):
         self._active_spec = spec
         # Sun-arrow row only makes sense once a 3D scene is up.
         self._sun_widget.setVisible(spec.dim == "3d")
-        self._plot_active()
+        if spec.mode == "diff":
+            self._plot_diff(spec)
+        else:
+            self._plot_active()
 
     # ------------------------------------------------------------------
     # Sun arrow
@@ -1060,6 +1178,70 @@ class AnalysisPanel(QWidget):
         falls back to the flat-grey sphere."""
         raw = self._store.moon_texture()
         return Path(raw) if raw else None
+
+    def _plot_diff(self, spec: PlotSpec) -> None:
+        """Render a mode='diff' plot: two trajectories selected in the
+        file tree (sorted top-down = A then B) are read and passed to
+        `spec.fn(ax, data_a, data_b)`. Mismatched kinds / wrong file
+        count / read failures surface via message box so the user
+        knows what to fix."""
+        if self._kind is None:
+            QMessageBox.information(
+                self, "Pick a file first",
+                "Click a file in the tree to set the kind, then pick a "
+                "diff plot with two files selected.")
+            return
+        paths: list[Path] = []
+        skipped: list[str] = []
+        for it in self._tree.selectedItems():
+            raw = it.data(0, _PATH_ROLE)
+            if not raw:
+                continue
+            p = Path(raw)
+            kind = _detect_kind(p)
+            if kind == self._kind:
+                paths.append(p)
+            else:
+                skipped.append(f"{p.name} ({kind or 'unknown'})")
+        if len(paths) != 2:
+            extra = ("\n\nSkipped (kind mismatch):\n" + "\n".join(skipped)
+                     if skipped else "")
+            QMessageBox.information(
+                self, "Diff needs exactly 2 files",
+                f"Pick 2 {self._kind} files in the tree (Ctrl/Shift-click), "
+                f"then click the diff plot. Currently selected: "
+                f"{len(paths)}.{extra}")
+            return
+
+        reader = _READERS[self._kind]
+        try:
+            data_a = reader(paths[0])
+            data_b = reader(paths[1])
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Diff read failed", str(exc))
+            return
+
+        try:
+            self._stack.setCurrentIndex(0)        # diff plots are 2D only
+            self._figure.clear()
+            ax = self._figure.add_subplot(111)
+            spec.fn(ax, data_a, data_b)
+            ax.set_title(
+                f"{ax.get_title()}\nA = {paths[0].name}    B = {paths[1].name}",
+                fontsize="small")
+            self._figure.tight_layout()
+            self._canvas.draw_idle()
+        except ValueError as exc:
+            # Raised by _ensure_same_grid when the two files don't share
+            # the same time grid -- expected failure mode, not a bug.
+            QMessageBox.warning(self, "Diff incompatible", str(exc))
+        except Exception as exc:  # noqa: BLE001 -- surface anything to user
+            QMessageBox.critical(self, "Diff failed", repr(exc))
+            return
+
+        self._info_label.setText(
+            f"Diff: {spec.label}\nA = {paths[0]}\nB = {paths[1]}")
+        self._info_label.setStyleSheet("")
 
     def _plot_active(self) -> None:
         """Dispatch the active PlotSpec (last leaf clicked in the
