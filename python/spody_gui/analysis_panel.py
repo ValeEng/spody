@@ -415,6 +415,15 @@ def _plot_diff_r(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
     ax.grid(True, which="both", alpha=0.3)
 
 
+def _plot_diff_r_linear(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
+    dx = a["x"] - b["x"]; dy = a["y"] - b["y"]; dz = a["z"] - b["z"]
+    dr = np.sqrt(dx * dx + dy * dy + dz * dz)
+    ax.plot(a["t"], dr)
+    ax.set_xlabel("t [s]"); ax.set_ylabel("|Δr| [km]")
+    ax.set_title("Position-error magnitude  |r_A - r_B|")
+    ax.grid(True, alpha=0.3)
+
+
 def _plot_diff_v(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
     dvx = a["vx"] - b["vx"]; dvy = a["vy"] - b["vy"]; dvz = a["vz"] - b["vz"]
     dv = np.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
@@ -422,6 +431,15 @@ def _plot_diff_v(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
     ax.set_xlabel("t [s]"); ax.set_ylabel("|Δv| [km/s]")
     ax.set_title("Velocity-error magnitude  |v_A - v_B|")
     ax.grid(True, which="both", alpha=0.3)
+
+
+def _plot_diff_v_linear(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
+    dvx = a["vx"] - b["vx"]; dvy = a["vy"] - b["vy"]; dvz = a["vz"] - b["vz"]
+    dv = np.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
+    ax.plot(a["t"], dv)
+    ax.set_xlabel("t [s]"); ax.set_ylabel("|Δv| [km/s]")
+    ax.set_title("Velocity-error magnitude  |v_A - v_B|")
+    ax.grid(True, alpha=0.3)
 
 
 def _plot_diff_xyz(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
@@ -655,7 +673,11 @@ PLOTS: dict[str, list[PlotSpec]] = {
         # grids fail with a clear message.
         PlotSpec("|Δr| (log y)",                "2d", _plot_diff_r,
                  category="Diff (pick 2 files)", mode="diff"),
+        PlotSpec("|Δr| (linear y)",             "2d", _plot_diff_r_linear,
+                 category="Diff (pick 2 files)", mode="diff"),
         PlotSpec("|Δv| (log y)",                "2d", _plot_diff_v,
+                 category="Diff (pick 2 files)", mode="diff"),
+        PlotSpec("|Δv| (linear y)",             "2d", _plot_diff_v_linear,
                  category="Diff (pick 2 files)", mode="diff"),
         PlotSpec("Δx, Δy, Δz per component",    "2d", _plot_diff_xyz,
                  category="Diff (pick 2 files)", mode="diff"),
