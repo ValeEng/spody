@@ -1,3 +1,16 @@
+﻿# Copyright 2026 ValeEng
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Build the SpOdy desktop bundle (one-folder PyInstaller artifact).
 
 Run from the `python/` directory:
@@ -38,6 +51,8 @@ SPEC_FILE   = HERE / "spody_gui.spec"
 BUILD_DIR   = HERE / "build"
 DIST_DIR    = HERE / "dist"
 BUNDLE_DIR  = DIST_DIR / "spody-gui"
+MANUAL_DIR  = REPO_ROOT / "docs" / "user-manual"
+MANUAL_PDF  = MANUAL_DIR / "spody-user-manual.pdf"
 
 
 def main() -> int:
@@ -56,6 +71,13 @@ def main() -> int:
             "--target spody) or pass --spody-exe.\n"
         )
         return 2
+
+    # Rebuild the user manual PDF if we can; non-fatal on failure so
+    # bundling proceeds even when (say) Edge headless or the python
+    # markdown libs are unavailable. The spec file then sees no PDF
+    # and the bundle ships without the manual; Help > User manual
+    # surfaces a clear message in that case.
+    _rebuild_manual()
 
     rc = _run_pyinstaller()
     if rc != 0:
@@ -82,6 +104,23 @@ def _wipe(path: Path) -> None:
         return
     print(f"  rm -rf {path.relative_to(HERE)}/")
     shutil.rmtree(path, ignore_errors=True)
+
+
+def _rebuild_manual() -> None:
+    """Try to (re)build the user-manual PDF. Best-effort: a failure
+    here is logged but does not abort the bundle build."""
+    builder = MANUAL_DIR / "build_pdf.py"
+    if not builder.is_file():
+        print("[warn] no docs/user-manual/build_pdf.py -- "
+              "bundle will ship without the manual")
+        return
+    print(f"\n>>> rebuilding {MANUAL_PDF.relative_to(REPO_ROOT)}")
+    rc = subprocess.call([sys.executable, str(builder)],
+                         cwd=str(MANUAL_DIR))
+    if rc != 0 or not MANUAL_PDF.is_file():
+        print("[warn] manual PDF build failed -- bundle will ship "
+              "without the manual (Help > User manual will report "
+              "'not found')")
 
 
 def _run_pyinstaller() -> int:

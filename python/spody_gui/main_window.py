@@ -1,3 +1,16 @@
+﻿# Copyright 2026 ValeEng
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Main application window: TOML form, terminal pane, menus, status bar."""
 from __future__ import annotations
 
@@ -14,7 +27,13 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
+import sys
+
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
+
 from . import assets
+from .about_dialog import show_about
 from .analysis_panel import AnalysisPanel
 from .runner import SpodyRunner
 from .settings import SettingsDialog, SettingsStore
@@ -127,8 +146,14 @@ class MainWindow(QMainWindow):
         m_set = mb.addMenu("&Settings")
         m_set.addAction(self._make_action("&Paths...",       self._action_settings))
         m_set.addAction(self._make_action("Setup &wizard...", self._action_setup_wizard))
-        m_set.addSeparator()
-        m_set.addAction(self._make_action("&About",          self._action_about))
+
+        # Help ---------------------------------------------------------
+        # About moved here from Settings -- conventional place for it
+        # and gives the user-manual entry a natural home.
+        m_help = mb.addMenu("&Help")
+        m_help.addAction(self._make_action("&User manual",  self._action_user_manual))
+        m_help.addSeparator()
+        m_help.addAction(self._make_action("&About",         self._action_about))
 
     def _make_action(self, text: str, slot, shortcut: QKeySequence | None = None) -> QAction:
         a = QAction(text, self)
@@ -350,13 +375,44 @@ class MainWindow(QMainWindow):
         return require_data_ready(self._store, self, action_label)
 
     def _action_about(self) -> None:
-        QMessageBox.about(
-            self, "About SpOdy",
-            "SpOdy GUI -- desktop frontend for the spody propagator.\n"
-            "PySide6 (Qt for Python).\n"
-            "Patran-style: fills a TOML form, runs the binary, "
-            "displays output."
+        show_about(self._store, self)
+
+    def _action_user_manual(self) -> None:
+        """Locate spody-user-manual.pdf and hand it off to the OS
+        default PDF viewer via QDesktopServices. The bundle puts it
+        next to spody-gui.exe under docs/; in a dev checkout it lives
+        at <repo>/docs/user-manual/spody-user-manual.pdf."""
+        pdf = self._locate_user_manual()
+        if pdf is None:
+            QMessageBox.warning(
+                self, "User manual not found",
+                "Could not locate spody-user-manual.pdf.\n\n"
+                "In a development checkout, rebuild it by running\n"
+                "    python docs/user-manual/build_pdf.py\n"
+                "from the repository root."
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(pdf)))
+
+    @staticmethod
+    def _locate_user_manual() -> Path | None:
+        """Return the first existing manual path among the bundle and
+        dev-checkout candidates, or None when neither is present."""
+        candidates = []
+        if getattr(sys, "frozen", False):
+            # PyInstaller bundle: PDF copied alongside the exe.
+            candidates.append(Path(sys.executable).parent / "docs"
+                              / "spody-user-manual.pdf")
+        # Dev checkout: spody_gui/main_window.py -> spody_gui/ ->
+        # python/ -> <repo>/  ->  docs/user-manual/...
+        candidates.append(
+            Path(__file__).resolve().parents[2]
+            / "docs" / "user-manual" / "spody-user-manual.pdf"
         )
+        for p in candidates:
+            if p.is_file():
+                return p
+        return None
 
     # ------------------------------------------------------------------
     # Title + close

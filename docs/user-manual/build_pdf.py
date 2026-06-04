@@ -1,3 +1,16 @@
+﻿# Copyright 2026 ValeEng
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Build the SpOdy user manual as a single PDF.
 
 Pipeline:
@@ -35,6 +48,11 @@ SRC_DIR  = HERE / "source"
 STYLE    = HERE / "style.css"
 HTML_OUT = HERE / "spody-user-manual.html"
 PDF_OUT  = HERE / "spody-user-manual.pdf"
+
+# Hardcoded version label shown on the cover. Kept in sync with
+# spody_gui/__init__.py:__version__ by convention; touched once per
+# release.
+APP_VERSION = "0.1.0-alpha"
 
 # Candidate locations for Microsoft Edge on Windows (no install needed
 # in either modern path -- one of them is always present on Win10/11).
@@ -111,11 +129,11 @@ def _wrap_html(body: str, toc: str) -> str:
     means the HTML is portable and the print step has nothing to
     fetch over the network."""
     css = STYLE.read_text(encoding="utf-8")
-    cover = """\
+    cover = f"""\
 <section class="cover">
   <div>
     <div class="title">SpOdy</div>
-    <div class="subtitle">User manual &mdash; v0.1</div>
+    <div class="subtitle">User manual &mdash; v{APP_VERSION}</div>
   </div>
   <div class="meta">
     Desktop frontend for the SpOdy orbital propagator.<br>

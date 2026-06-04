@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spody_python"
-version = "0.1.0"
+version = "0.1.0a0"   # semver "0.1.0-alpha" in PEP 440 syntax
 description = "Desktop GUI + binary readers for the spody propagator"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -27,6 +27,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pyinstaller >= 6.0",
+    # User-manual build pipeline (docs/user-manual/build_pdf.py).
+    # build_bundle.py auto-runs the manual builder, so a dev install
+    # needs these to ship the PDF inside the bundle.
+    "markdown >= 3.4",
+    "pygments >= 2.15",
 ]
 
 [project.scripts]

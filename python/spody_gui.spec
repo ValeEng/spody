@@ -1,3 +1,16 @@
+﻿# Copyright 2026 ValeEng
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 # PyInstaller spec for the SpOdy desktop bundle.
 #
 # Build with:
@@ -44,6 +57,16 @@ datas = [
     ("../examples/lro_6day/input.toml",      "examples/lro_6day"),
     ("../examples/lro_6day/README.md",       "examples/lro_6day"),
 ]
+
+# User manual PDF -- shipped under docs/ next to spody-gui.exe so
+# Help > User manual finds it. Included conditionally: if the PDF
+# has not been (re)built, the bundle still builds but the menu
+# entry shows a 'not found' dialog. build_bundle.py rebuilds the
+# PDF before invoking PyInstaller so this path is normally present.
+import os as _os
+_pdf = "../docs/user-manual/spody-user-manual.pdf"
+if _os.path.isfile(_pdf):
+    datas.append((_pdf, "docs"))
 
 # Drop modules we know we don't ship. tkinter ships with Python but
 # matplotlib's QtAgg backend doesn't need it; excluding shaves ~15 MB.
