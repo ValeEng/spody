@@ -92,28 +92,29 @@ jobs:
           submodules: recursive
 
       # -- toolchain ---------------------------------------------------
-      # Windows: gcc via MinGW (egor-tensin/setup-mingw). Linux:
-      # gcc + cmake are preinstalled on ubuntu-latest. macOS: clang
-      # is the system default; cmake comes from Homebrew (already
-      # available on macos-latest runners).
-      - name: install MinGW (windows)
+      # Windows: MinGW 12+ and CMake are preinstalled on
+      # windows-latest at well-known paths -- prepending the MinGW
+      # bin dir to PATH is enough and dodges the broken cleanup
+      # script in egor-tensin/setup-mingw on current images.
+      # Linux: gcc + cmake preinstalled on ubuntu-latest.
+      # macOS:  clang preinstalled (system default); cmake from the
+      #          stock Homebrew install on macos-latest.
+      - name: expose preinstalled MinGW (windows)
         if: runner.os == 'Windows'
-        uses: egor-tensin/setup-mingw@v2
-        with:
-          platform: x64
-
-      - name: install cmake (windows)
-        if: runner.os == 'Windows'
-        run: choco install --no-progress -y cmake
+        run: |
+          # Path is documented in the windows-latest runner-image
+          # readme; gcc here is MinGW 12+. PREPEND to GITHUB_PATH so
+          # cmake's compiler probe in the next step picks this gcc
+          # over the older Strawberry Perl one already on PATH.
+          Add-Content $env:GITHUB_PATH 'C:\ProgramData\mingw64\mingw64\bin'
+          gcc --version
+          cmake --version
 
       - name: install chromium (linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y
           sudo apt-get install -y chromium-browser
-          # Some PyInstaller + matplotlib + VTK Qt bundles need extra
-          # X libs at runtime; on the CI runner we don't *run* the
-          # bundle (only build it), so these are not strictly required.
 
       - name: install chromium + libomp (macos)
         if: runner.os == 'macOS'
@@ -121,10 +122,14 @@ jobs:
           # Apple Clang ships without OpenMP; libomp is needed for
           # CMake's find_package(OpenMP) to succeed and link the
           # parallel-batch loop in spody. Brew puts it under
-          # /opt/homebrew/opt/libomp on arm64, which CMake 3.20+
-          # locates automatically.
+          # /opt/homebrew/opt/libomp on arm64 and marks it keg-only,
+          # so CMake needs an explicit OpenMP_ROOT hint (set on the
+          # cmake configure step below).
           brew install libomp
-          brew install --cask --no-quarantine chromium
+          # --no-quarantine was dropped by recent Homebrew; harmless
+          # for our use because we drive chromium via --headless,
+          # which bypasses Gatekeeper anyway.
+          brew install --cask chromium
 
       - name: set up python
         uses: actions/setup-python@v5
@@ -144,13 +149,25 @@ jobs:
           -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
           -DSPODY_ENABLE_OMP_SIMD=ON
 
-      - name: configure cmake (unix)
-        if: runner.os != 'Windows'
+      - name: configure cmake (linux)
+        if: runner.os == 'Linux'
         run: >
           cmake -B build
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
           -DSPODY_ENABLE_OMP_SIMD=ON
+
+      - name: configure cmake (macos)
+        if: runner.os == 'macOS'
+        run: |
+          # libomp is keg-only on Homebrew; point CMake's
+          # find_package(OpenMP) at it explicitly. Without this hint
+          # the standard probe misses libomp and the build fails.
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+            -DSPODY_ENABLE_OMP_SIMD=ON \
+            -DOpenMP_ROOT="$(brew --prefix libomp)"
 
       - name: build spody
         run: cmake --build build --config Release --target spody --parallel
