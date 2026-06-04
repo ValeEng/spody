@@ -1,0 +1,268 @@
+# Copyright 2026 ValeEng
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Build + draft-release pipeline for SpOdy.
+#
+# Triggered automatically by a tag push matching v*.*.*[-*]
+# (e.g. v0.1.0-alpha, v1.2.3, v2.0.0-rc1). Can also be run manually
+# from the Actions tab via workflow_dispatch -- in that case nothing
+# is published, only the build artifacts are produced for inspection.
+#
+# On a tag push the flow is:
+#
+#   1.  build job (matrix Win / Linux / macOS arm64)
+#         - check out repo + spody-core submodule
+#         - install gcc / clang + cmake + python + chromium
+#         - configure & build spody (the C engine) with -O3 + LTO
+#           and the OMP-SIMD pragmas enabled
+#         - set up the Python venv and install GUI + docs deps
+#         - rebuild the user-manual PDF (via the just-installed
+#           chromium / Edge)
+#         - run build_bundle.py to produce dist/spody-gui/
+#         - archive the bundle (zip on Win/macOS, tar.gz on Linux)
+#         - compute SHA256 of the archive
+#         - upload archive + SHA256 as workflow artifacts
+#
+#   2.  release job (needs: build, runs once on ubuntu)
+#         - download every build artifact
+#         - create a DRAFT GitHub Release at the pushed tag, with
+#           every artifact attached and a pre-release flag set when
+#           the tag has an -alpha / -beta / -rc suffix
+#         - the human goes to github.com, reviews the assets, edits
+#           the changelog, and clicks "Publish release"
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Cancel an in-flight run if a newer commit pushes the same tag (rare
+# but possible during a rebuild).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write     # needed by softprops/action-gh-release to draft
+
+jobs:
+
+  build:
+    name: build (${{ matrix.os-label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            os-label: win64
+            archive-ext: zip
+            shell: pwsh
+          - os: ubuntu-latest
+            os-label: linux-x86_64
+            archive-ext: tar.gz
+            shell: bash
+          - os: macos-latest        # arm64 (M1+)
+            os-label: macos-arm64
+            archive-ext: zip
+            shell: bash
+
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      # -- repo --------------------------------------------------------
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # -- toolchain ---------------------------------------------------
+      # Windows: gcc via MinGW (egor-tensin/setup-mingw). Linux:
+      # gcc + cmake are preinstalled on ubuntu-latest. macOS: clang
+      # is the system default; cmake comes from Homebrew (already
+      # available on macos-latest runners).
+      - name: install MinGW (windows)
+        if: runner.os == 'Windows'
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+
+      - name: install cmake (windows)
+        if: runner.os == 'Windows'
+        run: choco install --no-progress -y cmake
+
+      - name: install chromium (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y chromium-browser
+          # Some PyInstaller + matplotlib + VTK Qt bundles need extra
+          # X libs at runtime; on the CI runner we don't *run* the
+          # bundle (only build it), so these are not strictly required.
+
+      - name: install chromium (macos)
+        if: runner.os == 'macOS'
+        run: brew install --cask --no-quarantine chromium
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # -- C build -----------------------------------------------------
+      # GCC on Win/Linux (the user explicitly wants gcc/clang over
+      # MSVC for the optimiser); clang is the system default on
+      # macOS. INTERPROCEDURAL_OPTIMIZATION = LTO; the OMP-SIMD
+      # option turns on -fopenmp-simd in spody-core's inner loops.
+      - name: configure cmake (windows)
+        if: runner.os == 'Windows'
+        run: >
+          cmake -B build -G "MinGW Makefiles"
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+          -DSPODY_ENABLE_OMP_SIMD=ON
+
+      - name: configure cmake (unix)
+        if: runner.os != 'Windows'
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+          -DSPODY_ENABLE_OMP_SIMD=ON
+
+      - name: build spody
+        run: cmake --build build --config Release --target spody --parallel
+
+      # -- python deps -------------------------------------------------
+      - name: install gui + docs deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./python[dev]
+
+      # -- bundle ------------------------------------------------------
+      # build_bundle.py auto-rebuilds the manual PDF and runs
+      # PyInstaller; the manual builder picks up the chromium /
+      # Edge installed above.
+      - name: build bundle
+        run: python python/build_bundle.py
+
+      # -- archive -----------------------------------------------------
+      # Filename pattern: spody-gui-<tag>-<os-label>.<ext> (e.g.
+      # spody-gui-v0.1.0-alpha-win64.zip). Computed once and
+      # reused across the upload step.
+      - name: compute archive name (windows)
+        if: runner.os == 'Windows'
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag) { $tag = "dev" }
+          $name = "spody-gui-$tag-${{ matrix.os-label }}.${{ matrix.archive-ext }}"
+          echo "ARCHIVE_NAME=$name" >> $env:GITHUB_ENV
+          echo "Archive will be: $name"
+
+      - name: compute archive name (unix)
+        if: runner.os != 'Windows'
+        run: |
+          tag="${GITHUB_REF_NAME:-dev}"
+          name="spody-gui-${tag}-${{ matrix.os-label }}.${{ matrix.archive-ext }}"
+          echo "ARCHIVE_NAME=${name}" >> "$GITHUB_ENV"
+          echo "Archive will be: ${name}"
+
+      - name: pack (windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path python/dist/spody-gui `
+                           -DestinationPath "$env:ARCHIVE_NAME"
+
+      - name: pack (macos)
+        if: runner.os == 'macOS'
+        run: |
+          # Use ditto so resource forks and HFS metadata are preserved
+          # (important for any future code-signed binaries).
+          ditto -c -k --sequesterRsrc python/dist/spody-gui "$ARCHIVE_NAME"
+
+      - name: pack (linux)
+        if: runner.os == 'Linux'
+        run: |
+          tar -C python/dist -czf "$ARCHIVE_NAME" spody-gui
+
+      - name: compute sha256 (windows)
+        if: runner.os == 'Windows'
+        run: |
+          $hash = (Get-FileHash "$env:ARCHIVE_NAME" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $env:ARCHIVE_NAME" | Out-File -Encoding ascii "${env:ARCHIVE_NAME}.sha256"
+          Get-Content "${env:ARCHIVE_NAME}.sha256"
+
+      - name: compute sha256 (unix)
+        if: runner.os != 'Windows'
+        run: |
+          shasum -a 256 "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+          cat "${ARCHIVE_NAME}.sha256"
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spody-gui-${{ matrix.os-label }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  # -- aggregate + publish ------------------------------------------
+  release:
+    name: draft release
+    needs: build
+    # Only push tags trigger the release. workflow_dispatch builds
+    # the artifacts (useful for testing the workflow without tagging)
+    # but doesn't publish.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: list assets
+        run: |
+          echo "Tag: ${GITHUB_REF_NAME}"
+          find artifacts -type f -print
+
+      - name: draft github release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: true
+          # Mark as pre-release for -alpha/-beta/-rc tags so GitHub's
+          # "Latest" badge skips them. The contains() check is loose
+          # on purpose -- any of these suffixes flips the flag.
+          prerelease: >-
+            ${{
+              contains(github.ref_name, '-alpha') ||
+              contains(github.ref_name, '-beta')  ||
+              contains(github.ref_name, '-rc')
+            }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
+            artifacts/**/*.sha256

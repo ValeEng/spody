@@ -54,11 +54,28 @@ PDF_OUT  = HERE / "spody-user-manual.pdf"
 # release.
 APP_VERSION = "0.1.0-alpha"
 
-# Candidate locations for Microsoft Edge on Windows (no install needed
-# in either modern path -- one of them is always present on Win10/11).
-EDGE_CANDIDATES = [
+# Candidates for a Chromium-class browser, queried in order. The
+# print-to-PDF flag (`--print-to-pdf`) is identical across Edge,
+# Chrome and Chromium since they all share the Chromium codebase.
+#
+# Windows: msedge ships with Win10/11.
+# macOS:   Chromium / Chrome installed via brew or .dmg; Safari is
+#          NOT Chromium-based so it cannot do --print-to-pdf.
+# Linux:   chromium / chromium-browser / google-chrome from the
+#          distro package manager. Edge for Linux also works if
+#          someone installed it, but it's rare on CI runners.
+BROWSER_BINARY_NAMES = [
+    "msedge", "chrome", "google-chrome",
+    "chromium", "chromium-browser",
+]
+BROWSER_FIXED_PATHS = [
+    # Windows -- Edge installed by default
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    # macOS -- typical .app installations
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 ]
 
 # Markdown extensions used across every chapter. Order matters only
@@ -159,31 +176,38 @@ def _wrap_html(body: str, toc: str) -> str:
 """
 
 
-def _find_edge() -> str | None:
-    """First Edge binary that exists on this machine, or None."""
-    for cand in EDGE_CANDIDATES:
+def _find_browser() -> str | None:
+    """First Chromium-class browser binary that exists on this machine,
+    or None. Tries PATH lookups first (where CI runners install
+    chromium / google-chrome), then the OS-specific fixed paths."""
+    for name in BROWSER_BINARY_NAMES:
+        found = shutil.which(name)
+        if found:
+            return found
+    for cand in BROWSER_FIXED_PATHS:
         if Path(cand).is_file():
             return cand
-    # Last-chance look on PATH (Linux/macOS dev installs).
-    return shutil.which("msedge")
+    return None
 
 
 def _print_to_pdf(src_html: Path, dst_pdf: Path) -> int:
-    """Drive Edge headless to render the HTML to a print-quality PDF.
-    The `file://` URL is absolute so Edge resolves it regardless of
-    its own cwd; the --no-pdf-header-footer flag is omitted on
-    purpose so the @page rules in style.css apply."""
-    edge = _find_edge()
-    if edge is None:
+    """Drive a Chromium-class browser headless to render the HTML to
+    a print-quality PDF. The `file://` URL is absolute so the browser
+    resolves it regardless of its own cwd; the --no-pdf-header-footer
+    flag is omitted on purpose so the @page rules in style.css apply."""
+    browser = _find_browser()
+    if browser is None:
         sys.stderr.write(
-            "[error] msedge.exe not found in the standard locations.\n"
-            "Edge ships with Windows 10/11; if you really don't have it,\n"
-            "open spody-user-manual.html in your browser and print to PDF.\n"
+            "[error] no Chromium-class browser found.\n"
+            "Install one of: Microsoft Edge (Windows-default), Google\n"
+            "Chrome, or Chromium (`apt install chromium`, `brew install\n"
+            "chromium`). Alternatively open spody-user-manual.html in\n"
+            "your browser and print to PDF manually.\n"
         )
         return 1
-    print(f">>> printing via {edge}")
+    print(f">>> printing via {browser}")
     args = [
-        edge,
+        browser,
         "--headless",
         "--disable-gpu",
         "--no-pdf-header-footer",          # let the CSS @page rules win
@@ -197,8 +221,8 @@ def _print_to_pdf(src_html: Path, dst_pdf: Path) -> int:
         src_html.as_uri(),
     ]
     proc = subprocess.run(args, capture_output=True, text=True)
-    # Edge's headless mode is chatty on stderr even on success; only
-    # surface output when something actually failed.
+    # Headless mode is chatty on stderr even on success; only surface
+    # output when something actually failed.
     if proc.returncode != 0 or not dst_pdf.is_file():
         sys.stderr.write(proc.stderr or "(no stderr)")
         return proc.returncode or 1

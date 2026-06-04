@@ -46,13 +46,25 @@ from pathlib import Path
 
 HERE        = Path(__file__).resolve().parent             # python/
 REPO_ROOT   = HERE.parent                                  # spody/
-DEFAULT_C   = REPO_ROOT / "build" / "Release" / "spody.exe"
 SPEC_FILE   = HERE / "spody_gui.spec"
 BUILD_DIR   = HERE / "build"
 DIST_DIR    = HERE / "dist"
 BUNDLE_DIR  = DIST_DIR / "spody-gui"
 MANUAL_DIR  = REPO_ROOT / "docs" / "user-manual"
 MANUAL_PDF  = MANUAL_DIR / "spody-user-manual.pdf"
+
+# Where the C engine lands after a cmake build. CMake's multi-config
+# generators (MSVC) put the binary under <build>/<Config>/<name>;
+# single-config generators (Makefiles, Ninja) put it under
+# <build>/<name>. We try both and the platform suffix on the name.
+import platform as _platform
+_EXE_SUFFIX = ".exe" if _platform.system() == "Windows" else ""
+_DEFAULT_C_CANDIDATES = [
+    REPO_ROOT / "build" / "Release" / f"spody{_EXE_SUFFIX}",  # MSVC
+    REPO_ROOT / "build" / f"spody{_EXE_SUFFIX}",              # Make/Ninja
+]
+DEFAULT_C = next((p for p in _DEFAULT_C_CANDIDATES if p.is_file()),
+                 _DEFAULT_C_CANDIDATES[0])
 
 
 def main() -> int:
@@ -160,7 +172,18 @@ def _summary() -> None:
     for p in sorted(BUNDLE_DIR.iterdir()):
         suffix = "/" if p.is_dir() else ""
         print(f"      {p.name}{suffix}")
-    print("\nReady. Zip dist/spody-gui/ and ship.")
+    # OS-specific advice for packaging the bundle into a release
+    # artifact. The GitHub Actions workflow does this automatically;
+    # for local dev the commands below are convenient.
+    if _platform.system() == "Windows":
+        print("\nReady. Pack with:\n  Compress-Archive -Path "
+              f"{BUNDLE_DIR} -DestinationPath spody-gui-<version>-win64.zip")
+    elif _platform.system() == "Darwin":
+        print("\nReady. Pack with:\n  ditto -c -k --sequesterRsrc "
+              f"{BUNDLE_DIR} spody-gui-<version>-macos-arm64.zip")
+    else:
+        print("\nReady. Pack with:\n  tar -C dist -czf "
+              "spody-gui-<version>-linux-x86_64.tar.gz spody-gui")
 
 
 def _pretty_size(p: Path) -> str:
