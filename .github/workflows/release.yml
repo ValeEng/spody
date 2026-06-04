@@ -116,20 +116,23 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y chromium-browser
 
-      - name: install chromium + libomp (macos)
+      - name: install chrome + libomp (macos)
         if: runner.os == 'macOS'
         run: |
           # Apple Clang ships without OpenMP; libomp is needed for
           # CMake's find_package(OpenMP) to succeed and link the
           # parallel-batch loop in spody. Brew puts it under
           # /opt/homebrew/opt/libomp on arm64 and marks it keg-only,
-          # so CMake needs an explicit OpenMP_ROOT hint (set on the
-          # cmake configure step below).
+          # so CMake needs the OpenMP_C_* hints set on the cmake
+          # configure step below.
           brew install libomp
-          # --no-quarantine was dropped by recent Homebrew; harmless
-          # for our use because we drive chromium via --headless,
-          # which bypasses Gatekeeper anyway.
-          brew install --cask chromium
+          # Google Chrome (not the chromium cask) because Homebrew
+          # deprecated chromium on 2026-09-01: it doesn't pass macOS
+          # Gatekeeper and will stop installing after that date.
+          # Chrome and Chromium share the same engine for headless
+          # PDF; build_pdf.py finds Chrome at the standard install
+          # path /Applications/Google Chrome.app/... .
+          brew install --cask google-chrome
 
       - name: set up python
         uses: actions/setup-python@v5
