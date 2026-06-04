@@ -321,8 +321,11 @@ def _hermite_interp_pos(t_q: np.ndarray, t: np.ndarray,
         H2 = -2s^3 + 3s^2         (value at right)
         H3 = s^3 - s^2            (deriv at right, scaled by h)
     """
+    # Validity is `t_q in [t[0], t[-1]]`, not `idx in [0, N-2]` --
+    # at the exact endpoints s collapses to 0 or 1 and the Hermite
+    # basis trivially returns r[0] or r[-1], which is correct.
+    in_range = (t_q >= t[0]) & (t_q <= t[-1])
     idx = np.searchsorted(t, t_q) - 1
-    valid = (idx >= 0) & (idx < len(t) - 1)
     idx_safe = np.clip(idx, 0, len(t) - 2)
     t0 = t[idx_safe]
     h  = t[idx_safe + 1] - t0
@@ -336,7 +339,7 @@ def _hermite_interp_pos(t_q: np.ndarray, t: np.ndarray,
          + (h * H1)[:, None] * v[idx_safe]
          + H2[:, None] * r[idx_safe + 1]
          + (h * H3)[:, None] * v[idx_safe + 1])
-    out[~valid] = np.nan
+    out[~in_range] = np.nan
     return out
 
 
@@ -344,9 +347,8 @@ def _align_or_interp(a: np.ndarray, b: np.ndarray
                       ) -> tuple[np.ndarray, np.ndarray, bool, str]:
     """Return (a_aligned, b_aligned, was_interpolated, note).
 
-    Fast path: A and B share the same sample count + endpoints (within
-    1 s, the resolution at which spody writes output.interval_s) ->
-    both passed through unchanged.
+    Fast path: A and B share the same time grid sample-by-sample
+    (within 1 ms) -> both passed through unchanged.
 
     Slow path: B is interpolated onto A's grid restricted to the
     overlapping time window [max(t_A[0], t_B[0]),
@@ -357,14 +359,22 @@ def _align_or_interp(a: np.ndarray, b: np.ndarray
     interpolated, not direct.
 
     Raises ValueError if there's no time overlap at all (the two
-    runs cover disjoint windows)."""
+    runs cover disjoint windows).
+
+    Note: an earlier version of this function fast-pathed on length +
+    endpoint match alone. That misfires badly for two adaptive (`mode
+    = "step"`) runs that happen to land on the same accepted-step
+    count: their endpoints coincide (both stop at the requested
+    duration_s) but the middle samples can drift apart by *seconds*,
+    turning what should be a m-level diff into a km-level garbage
+    plot. The current check requires every t-pair to match within
+    1 ms, which costs one O(N) numpy pass but stays honest."""
     same_len = len(a) == len(b)
-    same_endpoints = (
+    same_grid = (
         same_len
-        and abs(a["t"][0]  - b["t"][0])  < 1.0
-        and abs(a["t"][-1] - b["t"][-1]) < 1.0
+        and np.allclose(a["t"], b["t"], atol=1e-3, rtol=0.0)
     )
-    if same_endpoints:
+    if same_grid:
         return a, b, False, ""
 
     t_lo = max(a["t"][0],  b["t"][0])
