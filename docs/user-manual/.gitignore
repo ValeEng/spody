@@ -1,0 +1,5 @@
+# Build artifacts -- regenerated on demand by build_pdf.py.
+# The Markdown source under source/ and the style.css are the
+# tracked truth; HTML and PDF are derived from them.
+spody-user-manual.html
+spody-user-manual.pdf

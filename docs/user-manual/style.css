@@ -1,0 +1,257 @@
+/* SpOdy user manual print stylesheet.
+ *
+ * Designed for Edge headless --print-to-pdf. Page size + margins set
+ * via @page; the rest is "tidy technical document" -- serif body for
+ * readability over many pages, monospaced for code, lined tables,
+ * page breaks before every top-level chapter. */
+
+@page {
+    size: A4;
+    margin: 22mm 18mm 22mm 18mm;
+    @bottom-center {
+        content: counter(page) " / " counter(pages);
+        font-family: "Segoe UI", system-ui, sans-serif;
+        font-size: 9pt;
+        color: #666;
+    }
+    @top-right {
+        content: "SpOdy user manual";
+        font-family: "Segoe UI", system-ui, sans-serif;
+        font-size: 9pt;
+        color: #999;
+    }
+}
+
+* { box-sizing: border-box; }
+
+body {
+    font-family: "Charter", "Georgia", "Times New Roman", serif;
+    font-size: 11pt;
+    line-height: 1.45;
+    color: #1a1a1a;
+    margin: 0;
+    counter-reset: h1counter;
+}
+
+/* ---- Cover page ------------------------------------------------- */
+.cover {
+    height: 257mm;            /* A4 minus margins */
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    page-break-after: always;
+}
+.cover .title {
+    margin-top: 60mm;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 36pt;
+    font-weight: 600;
+    color: #1a1a1a;
+    letter-spacing: -0.5pt;
+}
+.cover .subtitle {
+    margin-top: 4mm;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 16pt;
+    color: #666;
+    font-weight: 300;
+}
+.cover .meta {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 10pt;
+    color: #888;
+}
+
+/* ---- TOC ------------------------------------------------------- */
+.toc {
+    page-break-after: always;
+}
+.toc h1 {
+    margin-top: 0;
+    border: none;
+    counter-reset: none;
+}
+.toc h1::before { content: ""; }
+.toc ul {
+    list-style: none;
+    padding-left: 0;
+    font-family: "Segoe UI", system-ui, sans-serif;
+}
+.toc ul ul {
+    padding-left: 8mm;
+    font-size: 95%;
+    color: #555;
+}
+.toc li { margin: 1mm 0; }
+.toc a { text-decoration: none; color: inherit; }
+
+/* ---- Headings: auto-numbered ----------------------------------- */
+h1 {
+    counter-increment: h1counter;
+    counter-reset: h2counter;
+    page-break-before: always;
+    margin-top: 0;
+    padding-bottom: 4mm;
+    border-bottom: 0.5pt solid #999;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 22pt;
+    font-weight: 600;
+    color: #1a1a1a;
+}
+h1::before {
+    content: counter(h1counter) ". ";
+    color: #888;
+    font-weight: 400;
+}
+h2 {
+    counter-increment: h2counter;
+    counter-reset: h3counter;
+    margin-top: 10mm;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 15pt;
+    font-weight: 600;
+    color: #1a1a1a;
+    page-break-after: avoid;
+}
+h2::before {
+    content: counter(h1counter) "." counter(h2counter) "  ";
+    color: #888;
+    font-weight: 400;
+}
+h3 {
+    counter-increment: h3counter;
+    margin-top: 6mm;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 12pt;
+    font-weight: 600;
+    color: #333;
+    page-break-after: avoid;
+}
+h3::before {
+    content: counter(h1counter) "." counter(h2counter) "." counter(h3counter) "  ";
+    color: #888;
+    font-weight: 400;
+}
+h4 {
+    margin-top: 5mm;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 11pt;
+    font-weight: 600;
+    color: #333;
+    page-break-after: avoid;
+}
+
+p { margin: 2.5mm 0; orphans: 3; widows: 3; }
+
+/* ---- Code ------------------------------------------------------ */
+code {
+    font-family: "Consolas", "JetBrains Mono", "Courier New", monospace;
+    font-size: 92%;
+    background: #f3f3f3;
+    padding: 0.5pt 2pt;
+    border-radius: 2pt;
+    color: #b03030;
+}
+pre {
+    background: #f7f7f7;
+    border: 0.4pt solid #ddd;
+    border-radius: 2pt;
+    padding: 3mm;
+    overflow-x: auto;
+    font-family: "Consolas", "JetBrains Mono", "Courier New", monospace;
+    font-size: 9.5pt;
+    line-height: 1.35;
+    page-break-inside: avoid;
+}
+pre code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+}
+
+/* ---- Tables ---------------------------------------------------- */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 4mm 0;
+    font-size: 10pt;
+    page-break-inside: avoid;
+}
+th, td {
+    border: 0.4pt solid #ccc;
+    padding: 1.5mm 3mm;
+    text-align: left;
+    vertical-align: top;
+}
+th {
+    background: #f3f3f3;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-weight: 600;
+}
+tr:nth-child(even) td { background: #fafafa; }
+
+/* ---- Lists ----------------------------------------------------- */
+ul, ol { margin: 2mm 0; padding-left: 7mm; }
+li { margin: 0.8mm 0; }
+
+/* ---- Callouts (admonitions) ------------------------------------ */
+blockquote {
+    border-left: 2pt solid #888;
+    padding: 2mm 5mm;
+    margin: 3mm 0;
+    background: #f7f7f7;
+    color: #444;
+    font-style: italic;
+    page-break-inside: avoid;
+}
+
+/* ---- Notes / tips / warnings (custom .note / .tip / .warn) ----- */
+.note, .tip, .warn {
+    margin: 4mm 0;
+    padding: 3mm 4mm;
+    border-left: 2pt solid;
+    border-radius: 0 2pt 2pt 0;
+    font-size: 10pt;
+    page-break-inside: avoid;
+}
+.note { background: #eef4fb; border-color: #4a8cd3; }
+.tip  { background: #eefaee; border-color: #4caf50; }
+.warn { background: #fbeeee; border-color: #d04040; }
+.note::before { content: "ⓘ  Note. ";    font-weight: 600; color: #2a5b9c; }
+.tip::before  { content: "✓  Tip. ";     font-weight: 600; color: #2e7d32; }
+.warn::before { content: "⚠  Warning. "; font-weight: 600; color: #a02020; }
+
+/* ---- Links: muted, no underline in print ----------------------- */
+a { color: #1a4d7d; text-decoration: none; }
+
+/* ---- Figure captions ------------------------------------------- */
+figure { margin: 4mm 0; page-break-inside: avoid; }
+figcaption {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 9pt;
+    color: #666;
+    margin-top: 1.5mm;
+    text-align: center;
+}
+img { max-width: 100%; }
+
+/* ---- Inline kbd ------------------------------------------------ */
+kbd {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 90%;
+    background: #f3f3f3;
+    border: 0.4pt solid #ccc;
+    border-bottom-width: 1pt;
+    border-radius: 2pt;
+    padding: 0.3mm 1.5mm;
+    color: #333;
+}
+
+/* ---- Definition lists ------------------------------------------ */
+dt {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-weight: 600;
+    margin-top: 2.5mm;
+}
+dd { margin-left: 6mm; margin-bottom: 1.5mm; }

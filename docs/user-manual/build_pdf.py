@@ -1,0 +1,191 @@
+"""Build the SpOdy user manual as a single PDF.
+
+Pipeline:
+    1. Read every `.md` in `source/` in lexical order (numeric prefix).
+    2. Render with the Python `markdown` library (extensions for
+       tables, fenced code, code highlighting via Pygments, and
+       attribute lists used for admonition classes).
+    3. Wrap the body in a self-contained HTML template that pulls
+       `style.css` inline so the PDF needs no external assets.
+    4. Drive Microsoft Edge in headless mode (`--print-to-pdf`) to
+       render the HTML to A4 with margins + page-numbered footer.
+
+Edge is picked because it's preinstalled on Windows 10/11 with the
+exact Chromium-quality print-to-PDF stack we need; no GTK / LaTeX /
+extra installs required. The script falls back to instructions if
+the Edge binary isn't where it expects.
+
+Run from this directory:
+
+    python build_pdf.py            # writes spody-user-manual.pdf
+    python build_pdf.py --html-only  # leaves spody-user-manual.html
+"""
+from __future__ import annotations
+
+import argparse
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import markdown
+
+HERE = Path(__file__).resolve().parent
+SRC_DIR  = HERE / "source"
+STYLE    = HERE / "style.css"
+HTML_OUT = HERE / "spody-user-manual.html"
+PDF_OUT  = HERE / "spody-user-manual.pdf"
+
+# Candidate locations for Microsoft Edge on Windows (no install needed
+# in either modern path -- one of them is always present on Win10/11).
+EDGE_CANDIDATES = [
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+
+# Markdown extensions used across every chapter. Order matters only
+# for `toc` which needs to run last.
+MD_EXTENSIONS = [
+    "fenced_code",
+    "tables",
+    "codehilite",     # syntax highlighting through Pygments
+    "attr_list",      # {.note} / {.tip} class attributes on blocks
+    "def_list",
+    "footnotes",
+    "smarty",
+    "toc",
+]
+MD_EXT_CONFIG = {
+    "codehilite": {"guess_lang": False, "noclasses": True,
+                   "linenums": False, "pygments_style": "default"},
+    "toc":        {"title": "Table of contents", "toc_depth": "1-3"},
+}
+
+
+def main() -> int:
+    args = _parse_args()
+    chapters = _collect_chapters()
+    if not chapters:
+        sys.stderr.write(f"[error] no .md files under {SRC_DIR}\n")
+        return 2
+
+    print(f">>> rendering {len(chapters)} chapter(s) to HTML")
+    body_md = "\n\n".join(p.read_text(encoding="utf-8") for p in chapters)
+    md_engine = markdown.Markdown(
+        extensions=MD_EXTENSIONS, extension_configs=MD_EXT_CONFIG,
+    )
+    body_html = md_engine.convert(body_md)
+    toc_html  = md_engine.toc
+
+    html = _wrap_html(body_html, toc_html)
+    HTML_OUT.write_text(html, encoding="utf-8")
+    print(f"  wrote {HTML_OUT.relative_to(HERE)}")
+
+    if args.html_only:
+        return 0
+
+    rc = _print_to_pdf(HTML_OUT, PDF_OUT)
+    if rc == 0:
+        size_kb = PDF_OUT.stat().st_size / 1024
+        print(f">>> {PDF_OUT.relative_to(HERE)}  ({size_kb:.1f} KB)")
+    return rc
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--html-only", action="store_true",
+                   help="stop after writing the HTML "
+                        "(skip the Edge headless step).")
+    return p.parse_args()
+
+
+def _collect_chapters() -> list[Path]:
+    """Numeric-prefix sort so source/00-intro.md comes before
+    01-install.md regardless of filesystem order."""
+    return sorted(p for p in SRC_DIR.glob("*.md") if p.is_file())
+
+
+def _wrap_html(body: str, toc: str) -> str:
+    """Inline the CSS into a self-contained HTML doc + add cover and
+    TOC blocks. Keeping everything in one file (no external links)
+    means the HTML is portable and the print step has nothing to
+    fetch over the network."""
+    css = STYLE.read_text(encoding="utf-8")
+    cover = """\
+<section class="cover">
+  <div>
+    <div class="title">SpOdy</div>
+    <div class="subtitle">User manual &mdash; v0.1</div>
+  </div>
+  <div class="meta">
+    Desktop frontend for the SpOdy orbital propagator.<br>
+    Patran-style file-based workflow: fill a TOML, run the binary,
+    inspect the output.
+  </div>
+</section>
+"""
+    toc_section = f'<section class="toc">{toc}</section>'
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpOdy user manual</title>
+<style>{css}</style>
+</head>
+<body>
+{cover}
+{toc_section}
+{body}
+</body>
+</html>
+"""
+
+
+def _find_edge() -> str | None:
+    """First Edge binary that exists on this machine, or None."""
+    for cand in EDGE_CANDIDATES:
+        if Path(cand).is_file():
+            return cand
+    # Last-chance look on PATH (Linux/macOS dev installs).
+    return shutil.which("msedge")
+
+
+def _print_to_pdf(src_html: Path, dst_pdf: Path) -> int:
+    """Drive Edge headless to render the HTML to a print-quality PDF.
+    The `file://` URL is absolute so Edge resolves it regardless of
+    its own cwd; the --no-pdf-header-footer flag is omitted on
+    purpose so the @page rules in style.css apply."""
+    edge = _find_edge()
+    if edge is None:
+        sys.stderr.write(
+            "[error] msedge.exe not found in the standard locations.\n"
+            "Edge ships with Windows 10/11; if you really don't have it,\n"
+            "open spody-user-manual.html in your browser and print to PDF.\n"
+        )
+        return 1
+    print(f">>> printing via {edge}")
+    args = [
+        edge,
+        "--headless",
+        "--disable-gpu",
+        "--no-pdf-header-footer",          # let the CSS @page rules win
+        # Build a sidebar outline of all h1..h6 tags in PDF readers
+        # that support it (Edge, Acrobat). Combined with the anchor
+        # links the markdown 'toc' extension already injects into the
+        # rendered TOC, the user gets two ways to navigate: click a
+        # TOC entry to jump, or use the PDF outline panel.
+        "--generate-pdf-document-outline",
+        f"--print-to-pdf={dst_pdf}",
+        src_html.as_uri(),
+    ]
+    proc = subprocess.run(args, capture_output=True, text=True)
+    # Edge's headless mode is chatty on stderr even on success; only
+    # surface output when something actually failed.
+    if proc.returncode != 0 or not dst_pdf.is_file():
+        sys.stderr.write(proc.stderr or "(no stderr)")
+        return proc.returncode or 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
