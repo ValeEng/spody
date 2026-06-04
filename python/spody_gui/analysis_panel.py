@@ -299,31 +299,114 @@ def _plot_traj_nu(ax: Axes, d: np.ndarray) -> None:
 # ----------------------------------------------------------------------
 # Diff plots (two trajectories required).
 #
-# Diffs subtract trajectory B from trajectory A sample-by-sample, so
-# they need both to be sampled on the same time grid. The dispatcher
-# validates length equality (and t[0]/t[-1] match within a small
-# tolerance) before calling these; the plot functions themselves
-# trust that pre-check and just compute the delta arrays.
+# Diffs subtract trajectory B from trajectory A sample-by-sample. The
+# dispatcher (_plot_diff, _on_tile_clicked) aligns the two grids
+# upfront via `_align_or_interp` -- if they match, both pass through
+# unchanged; if not, B is interpolated onto A's grid (cubic Hermite
+# for position using v as derivative, linear for velocity) restricted
+# to the overlapping time window. The plot functions below trust the
+# alignment and just compute the deltas.
 # ----------------------------------------------------------------------
-def _ensure_same_grid(a: np.ndarray, b: np.ndarray) -> None:
-    """Validation reused by every diff plot. Raises ValueError if A and
-    B don't share the same sample count + endpoints (the same grid
-    spody emits for two runs with matching `output.interval_s`)."""
-    if len(a) != len(b):
+def _hermite_interp_pos(t_q: np.ndarray, t: np.ndarray,
+                         r: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Cubic Hermite interpolation of position using v as derivative.
+
+    `t` (N,), `r` (N, 3), `v` (N, 3), `t_q` (M,). Returns r_q (M, 3).
+    Caller must ensure `t_q` lies inside `[t[0], t[-1]]`; out-of-range
+    queries return NaN.
+
+    Hermite basis at s = (t_q - t_i) / h, h = t_{i+1} - t_i:
+        H0 = 2s^3 - 3s^2 + 1     (value at left)
+        H1 = s^3 - 2s^2 + s       (deriv at left,  scaled by h)
+        H2 = -2s^3 + 3s^2         (value at right)
+        H3 = s^3 - s^2            (deriv at right, scaled by h)
+    """
+    idx = np.searchsorted(t, t_q) - 1
+    valid = (idx >= 0) & (idx < len(t) - 1)
+    idx_safe = np.clip(idx, 0, len(t) - 2)
+    t0 = t[idx_safe]
+    h  = t[idx_safe + 1] - t0
+    s  = (t_q - t0) / h
+    s2, s3 = s * s, s * s * s
+    H0 = 2 * s3 - 3 * s2 + 1
+    H1 = s3 - 2 * s2 + s
+    H2 = -2 * s3 + 3 * s2
+    H3 = s3 - s2
+    out = (H0[:, None] * r[idx_safe]
+         + (h * H1)[:, None] * v[idx_safe]
+         + H2[:, None] * r[idx_safe + 1]
+         + (h * H3)[:, None] * v[idx_safe + 1])
+    out[~valid] = np.nan
+    return out
+
+
+def _align_or_interp(a: np.ndarray, b: np.ndarray
+                      ) -> tuple[np.ndarray, np.ndarray, bool, str]:
+    """Return (a_aligned, b_aligned, was_interpolated, note).
+
+    Fast path: A and B share the same sample count + endpoints (within
+    1 s, the resolution at which spody writes output.interval_s) ->
+    both passed through unchanged.
+
+    Slow path: B is interpolated onto A's grid restricted to the
+    overlapping time window [max(t_A[0], t_B[0]),
+    min(t_A[-1], t_B[-1])]. Position uses cubic Hermite with B's v
+    as the derivative; velocity uses linear interp on each
+    component. The returned `note` is short, human-readable, and
+    rendered into the plot title so the user sees the diff is
+    interpolated, not direct.
+
+    Raises ValueError if there's no time overlap at all (the two
+    runs cover disjoint windows)."""
+    same_len = len(a) == len(b)
+    same_endpoints = (
+        same_len
+        and abs(a["t"][0]  - b["t"][0])  < 1.0
+        and abs(a["t"][-1] - b["t"][-1]) < 1.0
+    )
+    if same_endpoints:
+        return a, b, False, ""
+
+    t_lo = max(a["t"][0],  b["t"][0])
+    t_hi = min(a["t"][-1], b["t"][-1])
+    if t_hi - t_lo < 1.0:
         raise ValueError(
-            f"diff requires matching sample counts (A: {len(a)}, B: {len(b)}). "
-            "Use the same simulation.duration_s + output.interval_s in both "
-            "TOMLs.")
-    if not (np.isclose(a["t"][0], b["t"][0], atol=1.0)
-            and np.isclose(a["t"][-1], b["t"][-1], atol=1.0)):
-        raise ValueError(
-            f"diff requires matching time grids "
+            f"diff requires overlapping time windows "
             f"(A: [{a['t'][0]:.1f}, {a['t'][-1]:.1f}] s, "
-            f"B: [{b['t'][0]:.1f}, {b['t'][-1]:.1f}] s).")
+            f"B: [{b['t'][0]:.1f}, {b['t'][-1]:.1f}] s -- no overlap).")
+
+    # Clip A to the overlap so the dense reference doesn't extrapolate.
+    mask = (a["t"] >= t_lo) & (a["t"] <= t_hi)
+    a_clip = a[mask]
+    if len(a_clip) < 2:
+        raise ValueError(
+            "diff: less than 2 overlapping samples after restricting "
+            "to the common window.")
+
+    t_q = a_clip["t"]
+    b_r = np.column_stack((b["x"],  b["y"],  b["z"]))
+    b_v = np.column_stack((b["vx"], b["vy"], b["vz"]))
+    r_i = _hermite_interp_pos(t_q, b["t"], b_r, b_v)
+    v_i = np.column_stack([
+        np.interp(t_q, b["t"], b_v[:, i]) for i in range(3)
+    ])
+
+    b_aligned = np.empty(len(a_clip), dtype=a.dtype)
+    b_aligned["t"]  = t_q
+    b_aligned["x"]  = r_i[:, 0]
+    b_aligned["y"]  = r_i[:, 1]
+    b_aligned["z"]  = r_i[:, 2]
+    b_aligned["vx"] = v_i[:, 0]
+    b_aligned["vy"] = v_i[:, 1]
+    b_aligned["vz"] = v_i[:, 2]
+
+    note = (f"B interpolated onto A's grid "
+            f"({len(b)} -> {len(a_clip)} samples, "
+            f"cubic Hermite on r, linear on v)")
+    return a_clip, b_aligned, True, note
 
 
 def _plot_diff_r(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
-    _ensure_same_grid(a, b)
     dx = a["x"] - b["x"]; dy = a["y"] - b["y"]; dz = a["z"] - b["z"]
     dr = np.sqrt(dx * dx + dy * dy + dz * dz)
     ax.semilogy(a["t"], dr)
@@ -333,7 +416,6 @@ def _plot_diff_r(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
 
 
 def _plot_diff_v(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
-    _ensure_same_grid(a, b)
     dvx = a["vx"] - b["vx"]; dvy = a["vy"] - b["vy"]; dvz = a["vz"] - b["vz"]
     dv = np.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
     ax.semilogy(a["t"], dv)
@@ -343,7 +425,6 @@ def _plot_diff_v(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
 
 
 def _plot_diff_xyz(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
-    _ensure_same_grid(a, b)
     for name in ("x", "y", "z"):
         ax.plot(a["t"], a[name] - b[name], label=f"Δ{name}")
     ax.set_xlabel("t [s]"); ax.set_ylabel("Δposition [km]")
@@ -359,7 +440,6 @@ def _plot_diff_ric(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
     you whether your delta is mostly down-track (timing / energy
     drift), radial (altitude error), or out-of-plane (RAAN / i drift).
     """
-    _ensure_same_grid(a, b)
     r_A = np.stack((a["x"],  a["y"],  a["z"]),  axis=-1)
     v_A = np.stack((a["vx"], a["vy"], a["vz"]), axis=-1)
     dr_in = np.stack((a["x"] - b["x"],
@@ -1196,7 +1276,17 @@ class AnalysisPanel(QWidget):
             except (OSError, ValueError) as exc:
                 QMessageBox.critical(self, "Diff read failed", str(exc))
                 return
+            # Align once; every subplot then operates on identical
+            # (possibly interpolated) arrays.
+            try:
+                data_a, data_b, was_interp, _note = _align_or_interp(
+                    data_a, data_b)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Tile incompatible", str(exc))
+                return
             subtitle = f"A = {paths[0].name}    B = {paths[1].name}"
+            if was_interp:
+                subtitle += "    (B interpolated)"
         else:   # mode == "single"
             if self._data is None:
                 QMessageBox.information(
@@ -1232,7 +1322,9 @@ class AnalysisPanel(QWidget):
             self._figure.tight_layout()
             self._canvas.draw_idle()
         except ValueError as exc:
-            # _ensure_same_grid raises this when diff files don't line up.
+            # Bubbled up from a plot fn (e.g. degenerate orbital
+            # element math); kept as a clean message rather than a
+            # raw traceback dialog.
             QMessageBox.warning(self, "Tile incompatible", str(exc))
             return
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
@@ -1368,26 +1460,35 @@ class AnalysisPanel(QWidget):
             QMessageBox.critical(self, "Diff read failed", str(exc))
             return
 
+        # Align upfront so the plot fn just subtracts; same path
+        # whether the grids match or B had to be interpolated.
+        try:
+            data_a, data_b, was_interp, note = _align_or_interp(data_a, data_b)
+        except ValueError as exc:
+            # Disjoint windows or fewer than 2 overlapping samples --
+            # expected failure mode, surface as info not crash.
+            QMessageBox.warning(self, "Diff incompatible", str(exc))
+            return
+
         try:
             self._stack.setCurrentIndex(0)        # diff plots are 2D only
             self._figure.clear()
             ax = self._figure.add_subplot(111)
             spec.fn(ax, data_a, data_b)
-            ax.set_title(
-                f"{ax.get_title()}\nA = {paths[0].name}    B = {paths[1].name}",
-                fontsize="small")
+            subtitle = f"A = {paths[0].name}    B = {paths[1].name}"
+            if was_interp:
+                subtitle += "    (B interpolated)"
+            ax.set_title(f"{ax.get_title()}\n{subtitle}", fontsize="small")
             self._figure.tight_layout()
             self._canvas.draw_idle()
-        except ValueError as exc:
-            # Raised by _ensure_same_grid when the two files don't share
-            # the same time grid -- expected failure mode, not a bug.
-            QMessageBox.warning(self, "Diff incompatible", str(exc))
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
             QMessageBox.critical(self, "Diff failed", repr(exc))
             return
 
-        self._info_label.setText(
-            f"Diff: {spec.label}\nA = {paths[0]}\nB = {paths[1]}")
+        info = f"Diff: {spec.label}\nA = {paths[0]}\nB = {paths[1]}"
+        if was_interp:
+            info += f"\n{note}"
+        self._info_label.setText(info)
         self._info_label.setStyleSheet("")
 
     def _plot_active(self) -> None:
