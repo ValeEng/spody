@@ -16,8 +16,11 @@
 # is independent of this build and uses the executable via file-based IO.
 # =============================================================================
 
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.12)
 project(spody VERSION 0.1.0 LANGUAGES C)
+# 3.12 baseline: needed for the <Pkg>_ROOT find_package hint to be
+# honored (policy CMP0074 defaults to NEW from 3.12). Used by the
+# macOS workflow to point at libomp from a non-system prefix.
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)

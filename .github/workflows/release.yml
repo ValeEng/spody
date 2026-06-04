@@ -160,14 +160,30 @@ jobs:
       - name: configure cmake (macos)
         if: runner.os == 'macOS'
         run: |
-          # libomp is keg-only on Homebrew; point CMake's
-          # find_package(OpenMP) at it explicitly. Without this hint
-          # the standard probe misses libomp and the build fails.
+          # Apple Clang doesn't accept plain -fopenmp; its driver
+          # has no built-in OpenMP runtime, so CMake's standard
+          # FindOpenMP probe fails even when libomp is on disk. The
+          # well-known workaround is to pre-seed the OpenMP_C_*
+          # variables that FindOpenMP would otherwise populate from
+          # the probe -- once these are set, FindOpenMP trusts them
+          # and stops probing.
+          #
+          # Layout it expects:
+          #   -Xpreprocessor -fopenmp   tell the preprocessor to
+          #                              recognise #pragma omp
+          #                              (without trying to wire in
+          #                              a non-existent runtime via
+          #                              the driver)
+          #   -I<libomp>/include        omp.h
+          #   -lomp -L<libomp>/lib      libomp.dylib (link time)
+          LIBOMP_PREFIX="$(brew --prefix libomp)"
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
             -DSPODY_ENABLE_OMP_SIMD=ON \
-            -DOpenMP_ROOT="$(brew --prefix libomp)"
+            -DOpenMP_C_FLAGS="-Xpreprocessor -fopenmp -I${LIBOMP_PREFIX}/include" \
+            -DOpenMP_C_LIB_NAMES="omp" \
+            -DOpenMP_omp_LIBRARY="${LIBOMP_PREFIX}/lib/libomp.dylib"
 
       - name: build spody
         run: cmake --build build --config Release --target spody --parallel
