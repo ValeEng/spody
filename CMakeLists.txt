@@ -72,3 +72,27 @@ endif()
 if(UNIX OR APPLE)
     target_link_libraries(spody PRIVATE m)
 endif()
+
+# -----------------------------------------------------------------------------
+# OpenMP -- parallel batch execution (cmd_batch in src/main.c)
+# -----------------------------------------------------------------------------
+# Default ON: the distributed bundle ships with OpenMP linked in so
+# `batch.thread_number > 1` actually runs cases in parallel (see the
+# manual chapter 7). Opt out with -DSPODY_WITH_OPENMP=OFF for a leaner
+# build that explicitly rejects multi-thread batches at run time.
+#
+# macOS note: Apple Clang ships without libomp; install it via Homebrew
+# (`brew install libomp`) and CMake's FindOpenMP locates it under
+# /opt/homebrew/opt/libomp (arm64) or /usr/local/opt/libomp (intel)
+# automatically.
+option(SPODY_WITH_OPENMP
+    "Link OpenMP into spody for parallel batch execution" ON)
+if(SPODY_WITH_OPENMP)
+    find_package(OpenMP REQUIRED COMPONENTS C)
+    target_link_libraries(spody PRIVATE OpenMP::OpenMP_C)
+    target_compile_definitions(spody PRIVATE SPODY_HAVE_OPENMP=1)
+    message(STATUS "OpenMP for batch: enabled")
+else()
+    message(STATUS "OpenMP for batch: DISABLED  "
+                   "(batch.thread_number > 1 will be rejected at run time)")
+endif()

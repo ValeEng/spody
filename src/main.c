@@ -29,7 +29,9 @@
  *   spody info
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
   #include <direct.h>
@@ -39,12 +41,30 @@
   #define spody_chdir chdir
 #endif
 
+#ifdef SPODY_HAVE_OPENMP
+  #include <omp.h>
+#endif
+
 #include "spody_core.h"
 #include "app_diagnostics.h"
 #include "app_io.h"
 #include "toml_input.h"
 #include "sim_setup.h"
 #include "sim_run.h"
+
+/* Monotonic wall-clock seconds. Resolution + thread-safety: with
+ * OpenMP linked in we get omp_get_wtime, the only portable wall-time
+ * primitive that is safe to call from inside a parallel region.
+ * Without OpenMP we fall back to clock() (CPU seconds, equivalent to
+ * wall on a single-threaded run); that path is only hit for builds
+ * that explicitly opt out via -DSPODY_WITH_OPENMP=OFF. */
+static double now_seconds(void) {
+#ifdef SPODY_HAVE_OPENMP
+    return omp_get_wtime();
+#else
+    return (double)clock() / (double)CLOCKS_PER_SEC;
+#endif
+}
 
 #define SPODY_APP_VERSION "0.1.0-alpha"
 
@@ -306,17 +326,28 @@ static int cmd_batch(int argc, char **argv) {
         return 1;
     }
 
-    /* Parallel batch is not built yet; reject anything > 1 explicitly so
-     * the user knows it's not silently ignored. */
-    if (cfg.batch->thread_number != 1) {
+    /* Resolve the thread count: capped at omp_get_max_threads on
+     * OpenMP builds, hard-rejected above 1 on non-OpenMP builds. */
+    int n_threads = cfg.batch->thread_number;
+    if (n_threads < 1) n_threads = 1;
+#ifdef SPODY_HAVE_OPENMP
+    int max_threads = omp_get_max_threads();
+    if (n_threads > max_threads) {
+        spody_log_printf("  threads   : %d requested, capped at %d "
+                         "(omp_get_max_threads)\n", n_threads, max_threads);
+        n_threads = max_threads;
+    }
+#else
+    if (n_threads != 1) {
         spody_error_set(&err, SPODY_ERR_BAD_VALUE,
-                "batch.thread_number = %d: parallel execution requires "
-                "an OpenMP build (not yet available, use thread_number = 1)",
+                "batch.thread_number = %d: this binary was built without "
+                "OpenMP (-DSPODY_WITH_OPENMP=OFF); use thread_number = 1.",
                 cfg.batch->thread_number);
         spody_error_print(&err);
         spody_log_close_mirror(); spody_free_input(&cfg);
         return 1;
     }
+#endif
 
     /* Create <output_dir>/batch (output_dir itself must already exist). */
     char batch_subdir[SPODY_MAX_PATH];
@@ -350,6 +381,11 @@ static int cmd_batch(int argc, char **argv) {
     spody_log_printf("  cases     : %d  (%d columns)\n",
            cfg.batch->n_cases, cfg.batch->n_columns);
     spody_log_printf("  output    : %s\n", batch_subdir);
+#ifdef SPODY_HAVE_OPENMP
+    spody_log_printf("  threads   : %d  (OpenMP)\n", n_threads);
+#else
+    spody_log_printf("  threads   : 1   (no OpenMP)\n");
+#endif
 
     /* SimulationShared is opened ONCE, reused across every case --
      * exactly what the two-phase setup was designed for. */
@@ -363,48 +399,117 @@ static int cmd_batch(int argc, char **argv) {
         return 1;
     }
 
-    clock_t t0 = clock();
-    int failed_at = -1;     /* -1 = all OK; else index of failing case */
-    for (int i = 0; i < cfg.batch->n_cases; ++i) {
-        const char *id = cfg.batch->case_ids[i];
-        InputConfig  cfg_i;
-        spody_apply_batch_case(&cfg, cfg.batch, i, &cfg_i);
-        spody_io_case_output_paths(&cfg_i, cfg.batch, batch_subdir, i);
-
-        spody_log_printf("  [%d/%d] %s: ", i + 1, cfg.batch->n_cases, id);
-        fflush(stdout);
-
-        SimulationWorker w;
-        if (spody_build_worker(&cfg_i, &shared, &w, &err) != SPODY_OK) {
-            spody_log_printf("setup failed -- %s\n", err.msg);
-            failed_at = i;
-            break;
-        }
-
-        clock_t ct0 = clock();
-        int rc = spody_run_simulation(&cfg_i, &w, &err);
-        double cw = (double)(clock() - ct0) / (double)CLOCKS_PER_SEC;
-        spody_free_worker(&w);
-
-        if (rc != SPODY_OK) {
-            spody_log_printf("FAILED after %.2f s -- %s\n", cw, err.msg);
-            failed_at = i;
-            break;
-        }
-        spody_log_printf("done in %.2f s\n", cw);
-    }
-    double wall_s = (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
-
-    spody_free_shared(&shared);
-
-    if (failed_at >= 0) {
-        spody_log_printf("\nbatch stopped at case %d/%d after %.2f s total.\n",
-               failed_at + 1, cfg.batch->n_cases, wall_s);
+    /* Per-case status + error message. Allocated once before the
+     * loop so the parallel section only writes to disjoint slots
+     * (no realloc, no shared mutation hazard). The message slot is
+     * sized after SpodyError.msg so any error string the engine can
+     * produce fits without truncation. */
+    enum { CASE_MSG_MAX = sizeof(((SpodyError *)0)->msg) };
+    int   n_cases     = cfg.batch->n_cases;
+    int  *case_failed = (int  *)calloc((size_t)n_cases, sizeof(int));
+    char *case_errmsg = (char *)calloc((size_t)n_cases, CASE_MSG_MAX);
+    if (!case_failed || !case_errmsg) {
+        spody_log_printf("\nout of memory.\n");
+        free(case_failed); free(case_errmsg);
+        spody_free_shared(&shared);
         spody_log_close_mirror(); spody_free_input(&cfg);
         return 1;
     }
-    spody_log_printf("\nbatch done: %d/%d cases in %.2f s total.\n",
-           cfg.batch->n_cases, cfg.batch->n_cases, wall_s);
+
+    /* Semantics with parallel execution: every case is run to
+     * completion, even if earlier cases fail. This is more useful
+     * than the sequential "break on first failure" -- in a 100-case
+     * sweep, knowing WHICH cases fail (not just the first) is what
+     * the user wants for diagnosis. The final summary repeats the
+     * full list of failed cases with their error messages. */
+    double t0 = now_seconds();
+
+    /* MSVC's bundled OpenMP is stuck at 2.0, which requires the
+     * loop counter to be declared OUTSIDE the for-init clause
+     * (C89 form). GCC/Clang accept either form, so the C89 style
+     * is the portable choice. */
+    int i;
+#ifdef SPODY_HAVE_OPENMP
+    /* parallel for     = combined directive: create the team + split
+     *                    the loop iterations among it.
+     * schedule(dyn,1)  = each thread grabs 1 iteration at a time
+     *                    from a shared queue; mandatory because per-
+     *                    case runtimes vary a lot (different
+     *                    harmonics + step counts) and static would
+     *                    leave threads idle at the tail.
+     * num_threads(N)   = honour the TOML's batch.thread_number;
+     *                    without this, OMP_NUM_THREADS / the host
+     *                    core count would win, silently ignoring
+     *                    what the user wrote. */
+    #pragma omp parallel for schedule(dynamic, 1) num_threads(n_threads)
+#endif
+    for (i = 0; i < n_cases; ++i) {
+        const char *id = cfg.batch->case_ids[i];
+        InputConfig  cfg_i;
+        SpodyError   err_i = {0};
+        spody_apply_batch_case(&cfg, cfg.batch, i, &cfg_i);
+        spody_io_case_output_paths(&cfg_i, cfg.batch, batch_subdir, i);
+
+        SimulationWorker w;
+        if (spody_build_worker(&cfg_i, &shared, &w, &err_i) != SPODY_OK) {
+            case_failed[i] = 1;
+            snprintf(&case_errmsg[i * CASE_MSG_MAX], CASE_MSG_MAX,
+                     "setup: %s", err_i.msg);
+            #pragma omp critical(log)
+            spody_log_printf("  [%d/%d] %s: SETUP FAILED -- %s\n",
+                             i + 1, n_cases, id, err_i.msg);
+            continue;
+        }
+
+        double ct0 = now_seconds();
+        int rc = spody_run_simulation(&cfg_i, &w, &err_i);
+        double cw = now_seconds() - ct0;
+        spody_free_worker(&w);
+
+        if (rc != SPODY_OK) {
+            case_failed[i] = 1;
+            snprintf(&case_errmsg[i * CASE_MSG_MAX], CASE_MSG_MAX,
+                     "%s", err_i.msg);
+            #pragma omp critical(log)
+            spody_log_printf("  [%d/%d] %s: FAILED after %.2f s -- %s\n",
+                             i + 1, n_cases, id, cw, err_i.msg);
+        } else {
+            #pragma omp critical(log)
+            spody_log_printf("  [%d/%d] %s: done in %.2f s\n",
+                             i + 1, n_cases, id, cw);
+        }
+    }
+    double wall_s = now_seconds() - t0;
+
+    spody_free_shared(&shared);
+
+    /* Tally + final summary. Lists every failed case at the bottom
+     * with its error message, so the user has a grep-friendly view
+     * without scrolling back through interleaved per-case lines. */
+    int n_failed = 0;
+    for (int i = 0; i < n_cases; ++i) {
+        if (case_failed[i]) ++n_failed;
+    }
+
+    if (n_failed > 0) {
+        spody_log_printf("\nbatch finished: %d/%d OK, %d failed "
+                         "in %.2f s total (wall).\n",
+                         n_cases - n_failed, n_cases, n_failed, wall_s);
+        spody_log_printf("failed cases:\n");
+        for (int i = 0; i < n_cases; ++i) {
+            if (!case_failed[i]) continue;
+            spody_log_printf("  [%d/%d] %s: %s\n",
+                             i + 1, n_cases,
+                             cfg.batch->case_ids[i],
+                             &case_errmsg[i * CASE_MSG_MAX]);
+        }
+        free(case_failed); free(case_errmsg);
+        spody_log_close_mirror(); spody_free_input(&cfg);
+        return 1;
+    }
+    spody_log_printf("\nbatch done: %d/%d cases in %.2f s total (wall).\n",
+           n_cases, n_cases, wall_s);
+    free(case_failed); free(case_errmsg);
 
     spody_log_close_mirror(); spody_free_input(&cfg);
     return 0;

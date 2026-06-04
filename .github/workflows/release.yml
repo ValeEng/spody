@@ -115,9 +115,16 @@ jobs:
           # X libs at runtime; on the CI runner we don't *run* the
           # bundle (only build it), so these are not strictly required.
 
-      - name: install chromium (macos)
+      - name: install chromium + libomp (macos)
         if: runner.os == 'macOS'
-        run: brew install --cask --no-quarantine chromium
+        run: |
+          # Apple Clang ships without OpenMP; libomp is needed for
+          # CMake's find_package(OpenMP) to succeed and link the
+          # parallel-batch loop in spody. Brew puts it under
+          # /opt/homebrew/opt/libomp on arm64, which CMake 3.20+
+          # locates automatically.
+          brew install libomp
+          brew install --cask --no-quarantine chromium
 
       - name: set up python
         uses: actions/setup-python@v5
