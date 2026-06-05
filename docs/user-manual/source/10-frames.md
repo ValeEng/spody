@@ -37,9 +37,11 @@ evaluate body-fixed gravity harmonics at each step.
 > sensor-frame snapshot of a debris cloud (or any collection of
 > objects whose deltas are measured in the radial / in-track /
 > cross-track basis of a reference satellite), the GUI rotates the
-> state columns to ICRF automatically at Generate-TOML. The C
-> engine never sees the RIC schema. See chapter 7
-> ("RIC-frame batch input") for the workflow.
+> state columns to ICRF automatically at Generate-TOML and emits
+> `cases_file` pointing at the rotated copy. The TOML also carries
+> `cases_frame` and `cases_source_file` as GUI-only round-trip
+> metadata (`spody.exe` ignores them). See chapter 7 ("RIC-frame
+> batch input") for the workflow.
 
 ## The body-fixed frame
 

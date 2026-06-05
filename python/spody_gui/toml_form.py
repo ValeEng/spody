@@ -1358,15 +1358,28 @@ class TomlForm(QWidget):
             flat.pop("output.interval_s", None)
 
         # Resolve cases_file from the source path + frame combo. The
-        # TOML only ever carries `cases_file` (the file spody.exe reads):
-        # cases_frame and cases_source_file are GUI-only runtime state
-        # and are deliberately NOT persisted. This keeps the canonical
-        # TOML identical to what a CLI user would write by hand and
-        # avoids polluting the schema with keys that have meaning only
-        # inside the GUI.
+        # form has a SINGLE path widget (always showing the user-picked
+        # source); the TOML carries three batch keys whose contract is:
+        #
+        #   cases_source_file = the path the user chose (= widget text)
+        #   cases_frame       = "icrf" | "ric" (what frame the source is in)
+        #   cases_file        = what spody.exe actually reads
+        #                       == cases_source_file when icrf
+        #                       == <stem>_wrt_icrf.csv when ric (the
+        #                          rotated copy the GUI writes at Generate)
+        #
+        # The triple is emitted regardless of mode so loading is
+        # symmetric and the schema is self-describing: any reader can
+        # tell from cases_frame alone whether cases_file is a direct
+        # copy or a derived rotation. spody.exe ignores cases_frame and
+        # cases_source_file today (parser only reads keys it knows);
+        # they also reserve the schema for a future engine-side RIC
+        # handler that would no longer need the GUI-side rotation.
         source = flat.pop("batch.cases_source_file", None)
         frame  = flat.pop("batch.cases_frame", "icrf")
         if source:
+            flat["batch.cases_source_file"] = source
+            flat["batch.cases_frame"]       = frame
             if frame == "ric":
                 p = Path(source)
                 flat["batch.cases_file"] = str(

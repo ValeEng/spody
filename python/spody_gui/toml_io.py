@@ -70,7 +70,14 @@ _KEY_ORDER: dict[str, tuple[str, ...]] = {
     "output":        ("mode", "interval_s", "csv_file", "bin_file", "log_file",
                       "accelerations_file", "events_log"),
     "events":        ("eclipse_threshold",),
-    "batch":         ("name", "output_dir", "thread_number", "cases_file"),
+    # cases_frame ("icrf" | "ric") + cases_source_file together
+    # describe what the user picked and in which frame; cases_file is
+    # what spody.exe reads (== cases_source_file in icrf, derived
+    # `<stem>_wrt_icrf.csv` in ric, written by the GUI at Generate).
+    # spody.exe ignores the two extras today; they round-trip the GUI
+    # state and reserve the schema for a future engine-side RIC handler.
+    "batch":         ("name", "output_dir", "thread_number",
+                      "cases_file", "cases_frame", "cases_source_file"),
 }
 
 

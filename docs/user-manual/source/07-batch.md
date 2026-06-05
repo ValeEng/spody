@@ -148,22 +148,22 @@ side.
 The GUI bridges this gap so a user with state measurements in the
 **RIC frame of a reference satellite** (the typical "debris cloud
 seen from the chaser" use case) does not have to rotate them by
-hand. Two controls in the form's `[batch]` block do the work:
+hand. The form has a single cases-CSV path field (always showing
+the user-picked source) plus a `cases_frame` combo (`icrf` |
+`ric`), and emits three coordinated keys inside `[batch]`:
 
-| Form control              | Persisted? | Effect |
-|---------------------------|------------|--------|
-| `cases_file` path field   | yes &mdash; as `batch.cases_file` | The file you pick. |
-| `cases_frame` combo       | **no** &mdash; runtime only | `"icrf"` (default) or `"ric"`. |
+| TOML key            | Meaning                                                              |
+|---------------------|----------------------------------------------------------------------|
+| `cases_source_file` | The path the user picked &mdash; the file the form shows.            |
+| `cases_frame`       | `"icrf"` (default) or `"ric"`: the frame the source CSV is in.       |
+| `cases_file`        | The file `spody.exe` actually reads. See the rule below.             |
 
-The frame combo is deliberately **runtime-only**: the saved TOML
-always contains a single `cases_file` key, exactly the schema a CLI
-user would write by hand. The GUI behaviour depends on the combo at
-the moment of Generate:
+The contract between the three keys is:
 
-- **`cases_frame = "icrf"`** (default). The picked path is written
-  verbatim to `cases_file`; `spody.exe` reads it as-is.
-- **`cases_frame = "ric"`**. The picked path is treated as the
-  RIC-frame source CSV. At **Generate TOML** the GUI:
+- **`cases_frame = "icrf"`**: `cases_file` equals
+  `cases_source_file` byte for byte. The picked CSV goes straight
+  to `spody.exe`.
+- **`cases_frame = "ric"`**: at **Generate-TOML** the GUI
   1. reads the column-mapping table to find which CSV columns
      target `initial_state.position_km[i]` /
      `initial_state.velocity_kms[i]`;
@@ -176,15 +176,15 @@ the moment of Generate:
      vector is *not* added to the result);
   4. writes the rotated copy to `<stem>_wrt_icrf.csv` next to the
      source;
-  5. emits `cases_file = "<stem>_wrt_icrf.csv"` in the saved TOML so
-     `spody.exe` finds the rotated file.
+  5. emits `cases_file = "<stem>_wrt_icrf.csv"` so `spody.exe` reads
+     the rotated copy. `cases_source_file` and `cases_frame` round
+     out the triple so the form restores its RIC state on the next
+     Load without the user re-picking the source.
 
-A consequence of the GUI-only nature of `cases_frame`: if you save a
-RIC scenario, close the GUI, and re-open the TOML, the form will see
-`cases_file = "<stem>_wrt_icrf.csv"` and default the combo to
-`icrf`. The rotated CSV is still on disk and `spody batch` runs
-fine; you only have to flip the combo back to `ric` if you want to
-regenerate the rotated copy from an updated source.
+`spody.exe` ignores `cases_frame` and `cases_source_file` today &mdash;
+its TOML parser only reads the keys it knows about. The two extras
+are also a placeholder for a future engine-side RIC handler that
+would take the source CSV directly.
 
 ### Live rotated preview
 

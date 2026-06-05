@@ -39,6 +39,8 @@ name = "debris_ric_demo"
 output_dir = "output"
 thread_number = 1
 cases_file = "cases_ric_wrt_icrf.csv"
+cases_frame = "ric"
+cases_source_file = "cases_ric.csv"
 
 [batch.columns]
 Cr = "debris.Cr"

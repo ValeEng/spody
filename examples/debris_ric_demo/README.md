@@ -37,14 +37,14 @@ inertial state**. The RIC pipeline lives entirely in the GUI:
    - writes the rotated copy to `cases_ric_wrt_icrf.csv` next to the
      source. Pure change of basis — **no** addition of the reference
      state.
-   - rewrites `cases_file` in the saved TOML to point at the rotated
-     copy, so `spody.exe` finds the right file.
-
-   The `cases_frame` choice and the original source-file path are
-   **runtime-only GUI state**: they are NOT persisted to the TOML.
-   This keeps the saved TOML identical to what a CLI user would have
-   written by hand and avoids polluting the schema with keys that
-   only matter inside the GUI.
+   - emits three coordinated keys in `[batch]`:
+     `cases_source_file` (the file you picked),
+     `cases_frame` (`"icrf"` or `"ric"`),
+     `cases_file` (what `spody.exe` reads &mdash; equal to the source
+     when icrf, the rotated copy when ric). `spody.exe` ignores the
+     first two; they round-trip the form's RIC state so re-opening
+     the TOML restores the combo + source path without you having to
+     re-pick anything.
 2. **C side** (`spody.exe`, `mode = "delta"` in `[batch.columns]`).
    For each case spody computes
    ```
