@@ -137,7 +137,17 @@ jobs:
       - name: set up python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          # Pinned at 3.9 because python311.dll on the GH Win Server
+          # runner declares an import on api-ms-win-core-path-l1-1-0.dll
+          # which isn't a physical file -- it's a virtual API Set
+          # Schema entry resolved by Windows at LoadLibrary time. The
+          # PyInstaller bootloader's SetDefaultDllDirectories call
+          # interferes with apiset resolution on some end-user Win10
+          # builds, producing 'LoadLibrary: access to invalid memory
+          # location'. Python 3.9 predates the new apiset dependency
+          # and bundles cleanly. Bump to 3.10+ once we have a proper
+          # apiset workaround (likely a PyInstaller runtime hook).
+          python-version: '3.9'
 
       # -- C build -----------------------------------------------------
       # GCC on Win/Linux (the user explicitly wants gcc/clang over
