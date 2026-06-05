@@ -258,7 +258,7 @@ static int cmd_propagate(int argc, char **argv) {
     }
 
     clock_t t0 = clock();
-    int rc = spody_run_simulation(&cfg, &w, &err);
+    int rc = spody_run_simulation(&cfg, &w, NULL, &err);
     double wall_s = (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
 
     if (rc != SPODY_OK) {
@@ -399,6 +399,31 @@ static int cmd_batch(int argc, char **argv) {
         return 1;
     }
 
+    /* Aggregated events sink: when the user enabled events_log in the
+     * TOML, open ONE file `<batch_subdir>/<batch_name>_events.bin` and
+     * share it across all per-case workers. spody_run_simulation
+     * appends BatchEventRecord rows (case_idx + EventRecord) under an
+     * OpenMP critical, so concurrent cases don't interleave bytes.
+     * Single per-case _events.bin files are suppressed below by
+     * blanking cfg_i->events_log right after the case-output paths
+     * are computed. */
+    FILE *batch_events_fp = NULL;
+    char  batch_events_path[SPODY_MAX_PATH] = {0};
+    if (cfg.events_log[0]) {
+        snprintf(batch_events_path, sizeof batch_events_path,
+                 "%s/%s_events.bin", batch_subdir, cfg.batch->name);
+        if (spody_open_batch_events(batch_events_path, &batch_events_fp) != 0) {
+            spody_error_set(&err, SPODY_ERR_IO,
+                    "cannot open aggregated events file '%s'",
+                    batch_events_path);
+            spody_error_print(&err);
+            spody_free_shared(&shared);
+            spody_log_close_mirror(); spody_free_input(&cfg);
+            return 1;
+        }
+        spody_log_printf("  events    : %s  (aggregated)\n", batch_events_path);
+    }
+
     /* Per-case status + error message. Allocated once before the
      * loop so the parallel section only writes to disjoint slots
      * (no realloc, no shared mutation hazard). The message slot is
@@ -449,6 +474,10 @@ static int cmd_batch(int argc, char **argv) {
         SpodyError   err_i = {0};
         spody_apply_batch_case(&cfg, cfg.batch, i, &cfg_i);
         spody_io_case_output_paths(&cfg_i, cfg.batch, batch_subdir, i);
+        /* In batch mode events are aggregated into batch_events_fp;
+         * blank the per-case slot so spody_run_simulation does NOT
+         * open a second file alongside it. */
+        if (batch_events_fp) cfg_i.events_log[0] = '\0';
 
         SimulationWorker w;
         if (spody_build_worker(&cfg_i, &shared, &w, &err_i) != SPODY_OK) {
@@ -461,8 +490,15 @@ static int cmd_batch(int argc, char **argv) {
             continue;
         }
 
+        /* Per-thread sink: the FILE* is shared, the case_idx is
+         * per-iteration. Declaring local_sink inside the loop body
+         * gives every iteration (and so every thread executing it)
+         * its own auto-storage copy -- no race on case_idx. */
+        BatchEventSink local_sink = { batch_events_fp, (int32_t)i };
+        BatchEventSink *sink_ptr  = batch_events_fp ? &local_sink : NULL;
+
         double ct0 = now_seconds();
-        int rc = spody_run_simulation(&cfg_i, &w, &err_i);
+        int rc = spody_run_simulation(&cfg_i, &w, sink_ptr, &err_i);
         double cw = now_seconds() - ct0;
         spody_free_worker(&w);
 
@@ -480,6 +516,14 @@ static int cmd_batch(int argc, char **argv) {
         }
     }
     double wall_s = now_seconds() - t0;
+
+    /* Close the aggregated events file before tearing down anything
+     * else; both success and failure paths below need to flush the
+     * trailing records, so do it in one place. */
+    if (batch_events_fp) {
+        fclose(batch_events_fp);
+        batch_events_fp = NULL;
+    }
 
     spody_free_shared(&shared);
 

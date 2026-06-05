@@ -33,6 +33,16 @@ h_max_s = 600.0
 mode = "fixed"
 interval_s = 60.0
 bin_file = "ignored_in_batch.bin"
+# Presence enables the aggregated batch events file at
+# <batch_subdir>/<batch_name>_events.bin (format SPDYEVTB v1).
+# The string is ignored in batch mode, only its presence matters.
+events_log = "ignored_in_batch.bin"
+
+[events]
+# Enable eclipse detection so the aggregated events file is exercised
+# by the demo (LRO grazes the Moon's shadow in this 1-hour window).
+# threshold 0.5 = penumbra midpoint; entry AND exit each fire a record.
+eclipse_threshold = 0.5
 
 [batch]
 name = "debris_ric_demo"

@@ -140,6 +140,28 @@ static int emit_breakdown(FILE *fp, const ForceModelContext *ctx,
 #define SPODY_EVT_MAGIC   "SPDYEVT_"
 #define SPODY_EVT_VERSION 1u
 
+/* Aggregated batch events file: SPDYEVTB v1 record is a BatchEventRecord
+ * (88 bytes), prepended with int32 case_idx + 4-byte pad so the embedded
+ * EventRecord stays 8-byte aligned. Single-propagate runs continue to
+ * write the legacy EventRecord (SPDYEVT_, 80 bytes) so existing readers
+ * and existing files keep working. */
+#define SPODY_EVTB_MAGIC   "SPDYEVTB"
+#define SPODY_EVTB_VERSION 1u
+
+typedef struct {
+    int32_t     case_idx;       /* 0-based row index in cases_file */
+    int32_t     _pad;           /* keep `ev` 8-byte aligned */
+    EventRecord ev;             /* 80 bytes: see spody_events.h */
+} BatchEventRecord;
+
+/* Compile-time guard: any drift in BatchEventRecord layout would break
+ * the Python reader, so fail the build instead of silently producing
+ * files that can't be parsed. */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(BatchEventRecord) == 88,
+               "BatchEventRecord must be 88 bytes for SPDYEVTB v1");
+#endif
+
 static int write_evt_header(FILE *fp) {
     if (fwrite(SPODY_EVT_MAGIC, 1, 8, fp) != 8) return -1;
     uint32_t hdr[4] = {
@@ -149,6 +171,32 @@ static int write_evt_header(FILE *fp) {
         0u
     };
     if (fwrite(hdr, sizeof(uint32_t), 4, fp) != 4) return -1;
+    return 0;
+}
+
+static int write_batch_evt_header(FILE *fp) {
+    if (fwrite(SPODY_EVTB_MAGIC, 1, 8, fp) != 8) return -1;
+    uint32_t hdr[4] = {
+        SPODY_EVTB_VERSION,
+        (uint32_t)sizeof(BatchEventRecord),
+        0u,
+        0u
+    };
+    if (fwrite(hdr, sizeof(uint32_t), 4, fp) != 4) return -1;
+    return 0;
+}
+
+int spody_open_batch_events(const char *path, FILE **out_fp) {
+    *out_fp = NULL;
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    /* Small buffer: events are rare; tying memory up here for nothing. */
+    setvbuf(fp, NULL, _IOFBF, 4096);
+    if (write_batch_evt_header(fp) < 0) {
+        fclose(fp);
+        return -1;
+    }
+    *out_fp = fp;
     return 0;
 }
 
@@ -163,6 +211,33 @@ static int emit_event(FILE *fp, const SpodyEvent *ev) {
     for (int i = 0; i < 6; ++i) r.y[i] = ev->y_trigger[i];
     if (fwrite(&r, sizeof r, 1, fp) != 1) return -1;
     return 0;
+}
+
+/* Append one BatchEventRecord under a critical section so concurrent
+ * cases in a parallel batch don't interleave their bytes. `local_ok` is
+ * a function-local auto variable so each thread has its own copy of the
+ * return value -- declaring it outside the critical would make it shared
+ * and last-writer-wins. */
+static int emit_event_batch(BatchEventSink *sink, const SpodyEvent *ev) {
+    if (!sink || !sink->fp) return 0;
+    BatchEventRecord r;
+    r.case_idx     = sink->case_idx;
+    r._pad         = 0;
+    r.ev.t           = ev->t_trigger;
+    r.ev.kind        = (int)ev->kind;
+    r.ev.naif_id     = ev->naif_id;
+    r.ev.radius_km   = ev->radius_km;
+    r.ev.distance_km = ev->distance_at_trigger;
+    for (int i = 0; i < 6; ++i) r.ev.y[i] = ev->y_trigger[i];
+
+    int local_ok;
+    #ifdef _OPENMP
+    #pragma omp critical(batch_events)
+    #endif
+    {
+        local_ok = (fwrite(&r, sizeof r, 1, sink->fp) == 1);
+    }
+    return local_ok ? 0 : -1;
 }
 
 /* --------------------------------------------------------------------------
@@ -246,7 +321,9 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
 static int check_events(SpodyEvent *events, int n_events,
                         const ForceModelContext *ctx,
                         const IntegratorAllData *integ,
-                        FILE *evt_fp, int *first_idx) {
+                        FILE *evt_fp,
+                        BatchEventSink *batch_sink,
+                        int *first_idx) {
     int stop = 0;
     for (int i = 0; i < n_events; ++i) {
         if (spody_event_check_refined(&events[i], ctx, integ) != 1) continue;
@@ -257,7 +334,16 @@ static int check_events(SpodyEvent *events, int n_events,
         const int do_stop = (act == SPODY_EVENT_ACTION_STOP
                           || act == SPODY_EVENT_ACTION_LOG_AND_STOP);
 
-        if (do_log && evt_fp && emit_event(evt_fp, &events[i]) < 0) return -1;
+        /* Two independent sinks: the legacy per-run file (evt_fp, used in
+         * single-propagate runs) and the aggregated batch file
+         * (batch_sink, used by cmd_batch). cmd_batch blanks the cfg's
+         * events_log so evt_fp is NULL in batch mode -- the two sinks
+         * never write simultaneously in normal use. */
+        if (do_log) {
+            if (evt_fp && emit_event(evt_fp, &events[i]) < 0) return -1;
+            if (batch_sink && emit_event_batch(batch_sink, &events[i]) < 0)
+                return -1;
+        }
         if (do_stop && !stop) {
             *first_idx = i;
             stop = 1;
@@ -271,6 +357,7 @@ static int check_events(SpodyEvent *events, int n_events,
  * -------------------------------------------------------------------------- */
 
 int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
+                          BatchEventSink *batch_sink,
                           SpodyError *err) {
     spody_error_clear(err);
 
@@ -403,7 +490,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
              * propagation immediately (after logging). */
             int first = -1;
             int ev_rc = check_events(events, n_events, &w->ctx, &w->integ,
-                                      evt, &first);
+                                      evt, batch_sink, &first);
             if (ev_rc < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
                         "events_log write failed at t=%.6g s", w->integ.t);
@@ -477,7 +564,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
 
             int first = -1;
             int ev_rc = check_events(events, n_events, &w->ctx, &w->integ,
-                                      evt, &first);
+                                      evt, batch_sink, &first);
             if (ev_rc < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
                         "events_log write failed at t=%.6g s", w->integ.t);
