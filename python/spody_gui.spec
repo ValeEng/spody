@@ -93,22 +93,45 @@ excludes = [
     "PyQt6",
 ]
 
-# Windows apiset shims that PyInstaller's auto-analysis sometimes
-# misses on Win Server runners. python311.dll imports
-# api-ms-win-core-path-l1-1-0.dll; the build runner has it in
-# System32 so PyInstaller classifies it as 'OS shim, don't bundle'.
-# Some end-user Win10 builds lack that exact shim and the bundle
-# then fails at LoadLibrary(python311.dll) with a generic
-# 'access to invalid memory location' dialog. Force-include the
-# whole api-ms-win-core/crt set from System32 so the bundle is
-# self-contained regardless of the target Win10 patch level.
-import glob as _glob, os as _os
+# Windows apiset shims (api-ms-win-core-*.dll, api-ms-win-crt-*.dll).
+#
+# python311.dll declares an import on api-ms-win-core-path-l1-1-0.dll;
+# end-user Win10 builds where that exact shim is missing from System32
+# fail at LoadLibrary(python311.dll) with a generic 'access to invalid
+# memory location' dialog. PyInstaller's auto-analysis classifies
+# these as OS shims and does NOT bundle them, even when the build
+# runner itself has them.
+#
+# Fix: collect the full UCRT shim set from every location on the
+# build host that ships them, dedup by basename (first-wins), and
+# pass the result to Analysis(binaries=...). Order matters: we
+# prefer the Windows SDK Redist folder because it always has the
+# complete set; System32 may be missing a few on Server SKUs.
+import glob as _glob, os as _os, sys as _sys
 _extra_binaries = []
 if _os.name == "nt":
-    _sys32 = _os.path.join(_os.environ.get("WINDIR", r"C:\Windows"), "System32")
-    for _pat in ("api-ms-win-core-*.dll", "api-ms-win-crt-*.dll"):
-        for _dll in _glob.glob(_os.path.join(_sys32, _pat)):
-            _extra_binaries.append((_dll, "."))
+    _candidates = []
+    # 1) Windows SDK Redist (most complete; preinstalled on GH runners)
+    for _kit in _glob.glob(r"C:\Program Files (x86)\Windows Kits\10\Redist\*\ucrt\DLLs\x64"):
+        _candidates.append(_kit)
+    # 2) The Python install's own DLLs/ folder
+    _candidates.append(_os.path.join(_os.path.dirname(_sys.executable), "DLLs"))
+    _candidates.append(_os.path.dirname(_sys.executable))
+    # 3) System32 (often partial on Server)
+    _candidates.append(_os.path.join(_os.environ.get("WINDIR", r"C:\Windows"), "System32"))
+
+    _seen = set()
+    for _dir in _candidates:
+        if not _os.path.isdir(_dir):
+            continue
+        for _pat in ("api-ms-win-core-*.dll", "api-ms-win-crt-*.dll"):
+            for _dll in _glob.glob(_os.path.join(_dir, _pat)):
+                _name = _os.path.basename(_dll).lower()
+                if _name in _seen:
+                    continue
+                _seen.add(_name)
+                _extra_binaries.append((_dll, "."))
+    print(f"[spec] bundling {len(_extra_binaries)} api-ms-win-* shims")
 
 
 a = Analysis(
