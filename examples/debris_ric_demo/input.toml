@@ -32,11 +32,16 @@ h_max_s = 600.0
 [output]
 mode = "fixed"
 interval_s = 60.0
-bin_file = "ignored_in_batch.bin"
+# In batch mode the per-case file paths below are rewritten by spody.exe
+# (e.g. bin_file becomes `<batch_subdir>/<batch_name>_<case_id>_state_icrf.bin`);
+# only the PRESENCE of each key matters as a "emit this stream per case"
+# toggle. The strings here are written by the GUI auto-naming so a CLI
+# user opening the file sees the same convention.
+output_dir = "output"
+bin_file   = "output/debris_ric_demo_state_icrf.bin"
 # Presence enables the aggregated batch events file at
 # <batch_subdir>/<batch_name>_events.bin (format SPDYEVTB v1).
-# The string is ignored in batch mode, only its presence matters.
-events_log = "ignored_in_batch.bin"
+events_log = "output/debris_ric_demo_events.bin"
 
 [events]
 # Enable eclipse detection so the aggregated events file is exercised

@@ -49,10 +49,10 @@ On Windows the binary is `build\Release\spody.exe`.
 
 Outputs (8641 records each):
 
-| File                       | Format                                              | Size   |
-|----------------------------|-----------------------------------------------------|--------|
-| `output/lro_6day.csv`      | header + `%.15e` CSV (`t, x, y, z, vx, vy, vz`)     | ~1.4 MB |
-| `output/lro_6day.bin`      | magic `SPDYOUT_` + 16 B header + 56 B raw records   | ~484 KB |
+| File                              | Format                                              | Size   |
+|-----------------------------------|-----------------------------------------------------|--------|
+| `output/lro_6day_state_icrf.csv`  | header + `%.15e` CSV (`t, x, y, z, vx, vy, vz`)     | ~1.4 MB |
+| `output/lro_6day_state_icrf.bin`  | magic `SPDYOUT_` + 16 B header + 56 B raw records   | ~484 KB |
 
 Indicative wall time on a desktop x86-64 in Release: ~1.5 s. Adaptive
 RKDP45 takes a few hundred accepted steps; switching to

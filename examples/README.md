@@ -221,12 +221,22 @@ uses cubic Hermite + Brent root-finding, precision sub-millisecond on a
 [output]
 mode               = "fixed"
 interval_s         = 60.0
-csv_file           = "output/lro_6day.csv"
-bin_file           = "output/lro_6day.bin"
+output_dir         = "output"
+csv_file           = "output/lro_6day_state_icrf.csv"
+bin_file           = "output/lro_6day_state_icrf.bin"
 # log_file           = "output/lro_6day.log"
-# accelerations_file = "output/lro_6day_acc.bin"
+# accelerations_file = "output/lro_6day_acc_icrf.bin"
 # events_log         = "output/lro_6day_events.bin"
 ```
+
+The `output_dir` key is GUI-only metadata (spody.exe interprets each
+file path as-is, relative to the TOML's own directory). The five
+stream paths follow the `<sim_name>_<subject>_<frame>` convention the
+GUI auto-generates when you tick the corresponding checkbox in the
+form -- `_state_icrf` for the trajectory, `_acc_icrf` for the
+acceleration breakdown, plain `_events` / `.log` for the rest. A
+CLI-only user is free to pick any path; the convention only matters
+for the round-trip with the GUI form.
 
 ### `[events]`
 

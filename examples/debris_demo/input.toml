@@ -47,7 +47,11 @@ h_max_s  = 600.0
 [output]
 mode       = "fixed"
 interval_s = 60.0
-bin_file   = "ignored_in_batch.bin"     # presence = "emit binary per case"
+output_dir = "output"
+# In batch mode the per-case file paths below are rewritten by spody.exe
+# to `<batch_subdir>/<batch_name>_<case_id>_state_icrf.bin`; only the
+# PRESENCE of each key matters as a "emit this stream per case" toggle.
+bin_file   = "output/debris_am_sweep_state_icrf.bin"
 
 [batch]
 name          = "debris_am_sweep"

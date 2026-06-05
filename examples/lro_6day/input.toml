@@ -43,5 +43,6 @@ h_max_s  = 2700.0
 [output]
 mode       = "fixed"
 interval_s = 60.0
-csv_file   = "output/lro_6day.csv"
-bin_file   = "output/lro_6day.bin"
+output_dir = "output"
+csv_file   = "output/lro_6day_state_icrf.csv"
+bin_file   = "output/lro_6day_state_icrf.bin"

@@ -82,18 +82,23 @@ void spody_io_batch_log_path(const BatchConfig *batch,
 
 void spody_io_case_output_paths(InputConfig *cfg, const BatchConfig *batch,
                                 const char *batch_subdir, int case_idx) {
+    /* Per-case file names follow the same `<subject>_<frame>` pattern as
+     * the GUI's auto-naming for single-propagate runs, with the case id
+     * inserted between batch name and subject so the directory listing
+     * groups by case visually. Events are aggregated batch-wide (see
+     * cmd_batch) and so don't appear here. */
     const char *id = batch->case_ids[case_idx];
     if (cfg->csv_file[0]) {
-        snprintf(cfg->csv_file, sizeof cfg->csv_file, "%s/%s_%s.csv",
-                 batch_subdir, batch->name, id);
+        snprintf(cfg->csv_file, sizeof cfg->csv_file,
+                 "%s/%s_%s_state_icrf.csv", batch_subdir, batch->name, id);
     }
     if (cfg->bin_file[0]) {
-        snprintf(cfg->bin_file, sizeof cfg->bin_file, "%s/%s_%s.bin",
-                 batch_subdir, batch->name, id);
+        snprintf(cfg->bin_file, sizeof cfg->bin_file,
+                 "%s/%s_%s_state_icrf.bin", batch_subdir, batch->name, id);
     }
     if (cfg->accelerations_file[0]) {
         snprintf(cfg->accelerations_file, sizeof cfg->accelerations_file,
-                 "%s/%s_%s_acc.bin", batch_subdir, batch->name, id);
+                 "%s/%s_%s_acc_icrf.bin", batch_subdir, batch->name, id);
     }
     if (cfg->events_log[0]) {
         snprintf(cfg->events_log, sizeof cfg->events_log,

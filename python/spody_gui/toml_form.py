@@ -144,11 +144,12 @@ _TOOLTIPS: dict[str, str] = {
     "integrator.h_max_s":            "Maximum step size in seconds; > h_min_s.",
     "output.mode":                   "'fixed' = uniform interval_s sampling; 'step' = one record per accepted step.",
     "output.interval_s":             "Sample interval in seconds; required when mode = fixed.",
-    "output.csv_file":               "Trajectory CSV output. Leave empty to skip.",
-    "output.bin_file":               "Trajectory binary output (SPDYOUT_). Leave empty to skip.",
-    "output.log_file":               "Tee stdout/stderr into this file. Leave empty to skip.",
-    "output.accelerations_file":     "Per-force acceleration breakdown (SPDYACC_). Leave empty to skip.",
-    "output.events_log":             "Event triggers binary (SPDYEVT_). Leave empty to skip.",
+    "output.output_dir":             "Directory that holds the output files. Empty = TOML's own directory. Path is interpreted relative to the TOML file's dir.",
+    "output.csv_file":               "State vector CSV stream. Auto-named '<sim_name>_state_icrf.csv' under output_dir.",
+    "output.bin_file":               "State vector binary stream (SPDYOUT_). Auto-named '<sim_name>_state_icrf.bin'.",
+    "output.log_file":               "Tee stdout/stderr to a file. Auto-named '<sim_name>.log'.",
+    "output.accelerations_file":     "Per-force acceleration breakdown (SPDYACC_). Auto-named '<sim_name>_acc_icrf.bin'.",
+    "output.events_log":             "Event triggers binary. Per-run SPDYEVT_ ('<sim_name>_events.bin') in single-propagate; aggregated SPDYEVTB ('<batch_name>_events.bin') in batch.",
     "events.eclipse_threshold":      "Sunlight-fraction crossing that fires the eclipse event; in [0, 1].",
     "batch.name":                    "Batch run name; drives the per-case output file names.",
     "batch.output_dir":              "Existing directory; a 'batch/' subdir is auto-created inside it.",
@@ -214,6 +215,31 @@ _UNIT = {
 def _unit_suffix(key: str) -> str:
     u = _UNIT.get(key, "")
     return f"  [{u}]" if u else ""
+
+
+# Standard file-name suffixes for the auto-named output streams. Keys are
+# the same dotted TOML paths as the form widgets; values are appended to
+# the simulation's `[simulation].name` to form the basename. Pattern is
+# `_<subject>_<frame>` for streams whose payload is in a specific frame
+# (state, acc), bare suffix for the rest (events have no frame; log is
+# plain text).
+_OUTPUT_FILE_SUFFIX: dict[str, str] = {
+    "output.csv_file":           "_state_icrf.csv",
+    "output.bin_file":           "_state_icrf.bin",
+    "output.accelerations_file": "_acc_icrf.bin",
+    "output.events_log":         "_events.bin",
+    "output.log_file":           ".log",
+}
+
+# Display label for each output checkbox: short + tells the user
+# what the auto-name will look like once a `[simulation].name` is set.
+_OUTPUT_CHECK_LABEL: dict[str, str] = {
+    "output.csv_file":           "state vector CSV    (<sim_name>_state_icrf.csv)",
+    "output.bin_file":           "state vector binary (<sim_name>_state_icrf.bin)",
+    "output.accelerations_file": "accelerations       (<sim_name>_acc_icrf.bin)",
+    "output.events_log":         "events              (<sim_name>_events.bin)",
+    "output.log_file":           "log                 (<sim_name>.log)",
+}
 
 
 class TomlForm(QWidget):
@@ -356,6 +382,9 @@ class TomlForm(QWidget):
 
         # Hook tooltips after every widget has been registered.
         self._apply_tooltips()
+        # output preview needs simulation.name (built later than output);
+        # wire it now that every section has registered its widgets.
+        self._wire_output_preview_dependencies()
         # Seed the preview with the initial (mostly empty) form state.
         self._refresh_preview()
 
@@ -481,18 +510,45 @@ class TomlForm(QWidget):
         self._add_enum (f, "output.mode",               "mode", OUTPUT_MODES)
         self._add_float(f, "output.interval_s",         "interval_s")
         self._output_interval_row = f.rowCount() - 1
-        # Path fields below are optional -- empty string means the
-        # corresponding output stream is not emitted by spody.
-        self._add_path (f, "output.csv_file",           "csv_file",
-                        "CSV (*.csv);;All files (*)", save=True)
-        self._add_path (f, "output.bin_file",           "bin_file",
-                        "Binary (*.bin);;All files (*)", save=True)
-        self._add_path (f, "output.log_file",           "log_file",
-                        "Log (*.log *.txt);;All files (*)", save=True)
-        self._add_path (f, "output.accelerations_file", "accelerations_file",
-                        "Binary (*.bin);;All files (*)", save=True)
-        self._add_path (f, "output.events_log",         "events_log",
-                        "Binary (*.bin);;All files (*)", save=True)
+
+        # output_dir: directory that holds all enabled streams. Empty =
+        # the TOML's own folder. The 5 file paths below are auto-derived
+        # from this + [simulation].name + a standard suffix, so the
+        # user only ever picks ONE directory (not five paths).
+        self._add_path(f, "output.output_dir", "output_dir", "",
+                       pick_dir=True)
+
+        # Five on/off toggles for the optional output streams. The file
+        # path that spody.exe sees is composed at Generate time as
+        #     <output_dir>/<sim_name><suffix>
+        # using _OUTPUT_FILE_SUFFIX. Path fields are still emitted as
+        # `output.csv_file` etc. -- the engine sees no schema change.
+        for key in (
+            "output.csv_file",
+            "output.bin_file",
+            "output.accelerations_file",
+            "output.events_log",
+            "output.log_file",
+        ):
+            cb = QCheckBox(_OUTPUT_CHECK_LABEL[key])
+            cb.toggled.connect(self._touch)
+            cb.toggled.connect(lambda _checked: self._refresh_output_preview())
+            self._widgets[key] = cb
+            f.addRow("", cb)
+
+        # Live preview of the paths the next Generate will emit. Sits
+        # below the checkboxes so the user can sanity-check the
+        # combination of output_dir + sim_name + which streams are on.
+        self._output_preview_label = QLabel("")
+        self._output_preview_label.setStyleSheet("color: gray;")
+        self._output_preview_label.setWordWrap(True)
+        f.addRow("paths preview", self._output_preview_label)
+        # Auto-refresh when output_dir or simulation.name change.
+        self._widgets["output.output_dir"].textChanged.connect(
+            lambda _t: self._refresh_output_preview())
+        # `simulation.name` is wired later (when _build_simulation has
+        # registered it); the deferred connection happens at the bottom
+        # of __init__ via _wire_output_preview_dependencies.
 
         # Wire interval_s visibility to the mode combo. Note: the
         # field's value is also stripped from to_dict when mode='step'
@@ -508,6 +564,52 @@ class TomlForm(QWidget):
             return   # called too early during construction
         self._output_form.setRowVisible(self._output_interval_row,
                                         mode == "fixed")
+
+    # ------------------------------------------------------------------
+    # Output auto-naming
+    # ------------------------------------------------------------------
+    def _wire_output_preview_dependencies(self) -> None:
+        """Connect [simulation].name -> output preview. Called once at
+        the end of __init__ because the simulation widgets are built
+        after the output ones."""
+        sim_name_w = self._widgets.get("simulation.name")
+        if isinstance(sim_name_w, QLineEdit):
+            sim_name_w.textChanged.connect(
+                lambda _t: self._refresh_output_preview())
+        self._refresh_output_preview()
+
+    def _resolved_output_paths(self) -> dict[str, str]:
+        """Map each enabled `output.<stream>` key to the file path that
+        the next Generate would emit. Disabled streams are absent from
+        the returned dict. Used by both _refresh_output_preview (label
+        text) and to_dict (TOML emission)."""
+        sim_name_w = self._widgets.get("simulation.name")
+        sim_name = sim_name_w.text().strip() if isinstance(sim_name_w, QLineEdit) else ""
+        out_dir = self._widgets["output.output_dir"].text().strip()
+
+        out: dict[str, str] = {}
+        for key, suffix in _OUTPUT_FILE_SUFFIX.items():
+            cb = self._widgets.get(key)
+            if not isinstance(cb, QCheckBox) or not cb.isChecked():
+                continue
+            # Empty sim_name -> fall back to "output" so the file still
+            # has a coherent name; the validator will surface the empty
+            # simulation.name separately.
+            stem = sim_name if sim_name else "output"
+            name = f"{stem}{suffix}"
+            out[key] = f"{out_dir}/{name}" if out_dir else name
+        return out
+
+    def _refresh_output_preview(self) -> None:
+        if not hasattr(self, "_output_preview_label"):
+            return
+        paths = self._resolved_output_paths()
+        if not paths:
+            self._output_preview_label.setText("(no streams enabled)")
+            return
+        lines = [f"{key.rsplit('.', 1)[1]:>19}: {p}"
+                 for key, p in paths.items()]
+        self._output_preview_label.setText("\n".join(lines))
 
     def _build_events(self) -> QGroupBox:
         g = QGroupBox("[events]  (optional)")
@@ -1357,6 +1459,19 @@ class TomlForm(QWidget):
         if flat.get("output.mode") == "step":
             flat.pop("output.interval_s", None)
 
+        # Output stream paths: the form uses checkbox + auto-naming, so
+        # the five `output.<stream>` keys are stored as booleans in
+        # `flat`. Replace each True with the resolved path
+        # `<output_dir>/<sim_name><suffix>`; drop the falses. The
+        # auxiliary `output.output_dir` key is kept so the GUI can
+        # round-trip the user's choice on the next Load (spody.exe
+        # ignores it).
+        paths = self._resolved_output_paths()
+        for key in _OUTPUT_FILE_SUFFIX:
+            flat.pop(key, None)
+            if key in paths:
+                flat[key] = paths[key]
+
         # Resolve cases_file from the source path + frame combo. The
         # form has a SINGLE path widget (always showing the user-picked
         # source); the TOML carries three batch keys whose contract is:
@@ -1432,6 +1547,29 @@ class TomlForm(QWidget):
                         batch_in["cases_source_file"] = batch_in["cases_file"]
                 batch_in.pop("cases_file", None)
                 data = {**data, "batch": batch_in}
+
+            # Normalise [output]: the five stream paths in the TOML
+            # become booleans (presence -> True). If the TOML doesn't
+            # carry `output.output_dir`, derive a best-guess from the
+            # first non-empty stream path; if all paths are bare names
+            # the output_dir stays empty (= TOML's own dir).
+            output_in = data.get("output")
+            if isinstance(output_in, dict):
+                output_in = dict(output_in)
+                derived_dir = output_in.get("output_dir", "")
+                for key in ("csv_file", "bin_file", "accelerations_file",
+                            "events_log", "log_file"):
+                    val = output_in.get(key, "")
+                    if isinstance(val, str) and val:
+                        output_in[key] = True
+                        if not derived_dir:
+                            d = os.path.dirname(val)
+                            if d:
+                                derived_dir = d
+                    else:
+                        output_in[key] = False
+                output_in["output_dir"] = derived_dir
+                data = {**data, "output": output_in}
 
             flat = _flatten_dotted(
                 {k: v for k, v in data.items() if k in self._FORM_OWNED_TOP}

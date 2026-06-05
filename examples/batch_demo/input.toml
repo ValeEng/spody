@@ -54,9 +54,14 @@ h_max_s  = 600.0
 [output]
 mode       = "fixed"
 interval_s = 60.0
-csv_file   = "ignored_in_batch.csv"     # presence = "emit CSV per case"
-bin_file   = "ignored_in_batch.bin"     # presence = "emit binary per case"
-log_file   = "ignored_in_batch.log"     # presence = "tee stdout/stderr to a log file"
+# In batch mode the per-case file paths below are rewritten by spody.exe
+# (e.g. bin_file becomes `<batch_subdir>/<batch_name>_<case_id>_state_icrf.bin`);
+# only the PRESENCE of each key matters as a "emit this stream per case"
+# toggle. The strings here mirror the GUI's auto-naming convention.
+output_dir = "output"
+csv_file   = "output/lro_batch_demo_state_icrf.csv"
+bin_file   = "output/lro_batch_demo_state_icrf.bin"
+log_file   = "output/lro_batch_demo.log"
 
 [batch]
 name          = "mass_srp_sweep"
