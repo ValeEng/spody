@@ -100,7 +100,12 @@ exe = EXE(
     name="spody-gui",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    # strip=True asks PyInstaller to run `strip` on the bundled
+    # binaries (ELF on Linux, Mach-O on macOS). Big win on those
+    # OSes because PySide6 / VTK ship with full debug symbols in
+    # the wheel -- bundle shrinks ~30..50%. No-op on Windows (PE
+    # debug info already external).
+    strip=True,
     upx=False,                # UPX often trips antivirus heuristics
     console=False,            # windowed app: no extra cmd window
                               # (flip to True to see Python tracebacks
@@ -118,7 +123,7 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=False,
+    strip=True,               # same rationale as EXE.strip above
     upx=False,
     upx_exclude=[],
     name="spody-gui",
