@@ -32,6 +32,14 @@ evaluate body-fixed gravity harmonics at each step.
 > SPICE toolkit's `spkez` plus `pxform` calls are the canonical
 > way to do this; the SpOdy bundle does not include a SPICE
 > wrapper.
+>
+> One exception is **batch input in RIC**: if your cases CSV is a
+> sensor-frame snapshot of a debris cloud (or any collection of
+> objects whose deltas are measured in the radial / in-track /
+> cross-track basis of a reference satellite), the GUI rotates the
+> state columns to ICRF automatically at Generate-TOML. The C
+> engine never sees the RIC schema. See chapter 7
+> ("RIC-frame batch input") for the workflow.
 
 ## The body-fixed frame
 

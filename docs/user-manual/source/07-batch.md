@@ -137,6 +137,96 @@ Mixing both modes across columns is supported. Mixing across
 *cases* (i.e. the same column behaving as delta in one row and
 override in the next) is not.
 
+## RIC-frame batch input
+
+The propagation engine (`spody.exe`) **only accepts ICRF central-
+inertial state**: every cell that ends up overriding
+`initial_state.position_km[i]` or `velocity_kms[i]` must be in that
+frame. There is no `frame =` knob at the cases-CSV level on the C
+side.
+
+The GUI bridges this gap so a user with state measurements in the
+**RIC frame of a reference satellite** (the typical "debris cloud
+seen from the chaser" use case) does not have to rotate them by
+hand. Two controls in the form's `[batch]` block do the work:
+
+| Form control              | Persisted? | Effect |
+|---------------------------|------------|--------|
+| `cases_file` path field   | yes &mdash; as `batch.cases_file` | The file you pick. |
+| `cases_frame` combo       | **no** &mdash; runtime only | `"icrf"` (default) or `"ric"`. |
+
+The frame combo is deliberately **runtime-only**: the saved TOML
+always contains a single `cases_file` key, exactly the schema a CLI
+user would write by hand. The GUI behaviour depends on the combo at
+the moment of Generate:
+
+- **`cases_frame = "icrf"`** (default). The picked path is written
+  verbatim to `cases_file`; `spody.exe` reads it as-is.
+- **`cases_frame = "ric"`**. The picked path is treated as the
+  RIC-frame source CSV. At **Generate TOML** the GUI:
+  1. reads the column-mapping table to find which CSV columns
+     target `initial_state.position_km[i]` /
+     `initial_state.velocity_kms[i]`;
+  2. computes the rotation
+     `R = ric_basis([initial_state].position_km, .velocity_kms)` &mdash;
+     the reference orbit comes straight from `[initial_state]`, so
+     no extra input is required;
+  3. rotates each row's position triplet and velocity triplet by
+     `R @ vec` (**pure change of basis** &mdash; the reference
+     vector is *not* added to the result);
+  4. writes the rotated copy to `<stem>_wrt_icrf.csv` next to the
+     source;
+  5. emits `cases_file = "<stem>_wrt_icrf.csv"` in the saved TOML so
+     `spody.exe` finds the rotated file.
+
+A consequence of the GUI-only nature of `cases_frame`: if you save a
+RIC scenario, close the GUI, and re-open the TOML, the form will see
+`cases_file = "<stem>_wrt_icrf.csv"` and default the combo to
+`icrf`. The rotated CSV is still on disk and `spody batch` runs
+fine; you only have to flip the combo back to `ric` if you want to
+regenerate the rotated copy from an updated source.
+
+### Live rotated preview
+
+When the combo is set to `ric`, a second preview table appears
+under the standard cases-CSV preview, showing the first 10 rows
+*after* rotation. It refreshes automatically when you change the
+source path, the frame combo, or re-read the columns. A **Refresh
+preview** button on top of it forces a recompute after edits to
+`[initial_state]` or to the column-mapping table.
+
+### Pairing with delta mode
+
+Because the GUI rotates *components without translation*, the
+typical RIC workflow pairs each rotated state column with `mode =
+"delta"` (see "Override vs delta" above). With the rotated cell
+playing the role of an offset and `[initial_state]` playing the
+role of the base, the engine computes per case
+
+```
+final[i] = initial_state.<vec>[i] + rotated_cell
+```
+
+which is the absolute ICRF state to integrate. Override mode is
+also accepted (in which case the rotated cell *replaces* the base
+value &mdash; useful only if the CSV's row magnitudes are already
+on the order of the reference state, which is unusual for sensor-
+frame measurements).
+
+### Sensor-frame snapshot convention
+
+The GUI uses a **sensor-frame snapshot** convention for the velocity:
+no `omega x r` term is added. The `dv` components are treated as
+plain vector projections onto the instantaneous RIC axes &mdash;
+exactly what an onboard sensor (radar / lidar / optical relnav)
+would report when tracking a relative target. This is **not** the
+Hill / Clohessy-Wiltshire rotating-frame convention used in
+rendezvous literature; if you have CW residuals from another tool
+and want SpOdy to interpret them, transform them before passing
+the CSV in.
+
+See `examples/debris_ric_demo/` for a runnable end-to-end example.
+
 ## The data preview
 
 Below the mapping table, a small read-only table previews the

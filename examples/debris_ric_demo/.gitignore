@@ -1,0 +1,6 @@
+# Rotated copy of cases_ric.csv, written by the GUI at Generate-TOML
+# (cases_frame = "ric" workflow).
+cases_ric_wrt_icrf.csv
+
+# Per-case outputs.
+output/

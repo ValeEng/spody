@@ -1,0 +1,51 @@
+[simulation]
+name = "debris_ric_demo"
+et_start_s = 306547266.1824111
+duration_s = 3600.0
+
+[debris]
+am_srp = 0.02
+Cr = 1.3
+
+[initial_state]
+frame = "central_inertial"
+position_km = [1622.0302336, 512.0849824, -529.3426143]
+velocity_kms = [0.648832282, -0.519033001, 1.440002498]
+
+[force_model]
+central_body = "Moon"
+harmonics_file = "../../external/spody-core/raw_data/GRGM1200B/gggrx_1200b_sha.tab"
+harmonics_degree = 20
+third_bodies = ["Sun", "Earth"]
+srp = true
+
+[ephemeris]
+file = "../../external/spody-core/raw_data/DE440/de440.spody"
+
+[integrator]
+type = "rkdp45"
+rel_tol = 1e-09
+h_init_s = 60.0
+h_min_s = 1e-05
+h_max_s = 600.0
+
+[output]
+mode = "fixed"
+interval_s = 60.0
+bin_file = "ignored_in_batch.bin"
+
+[batch]
+name = "debris_ric_demo"
+output_dir = "output"
+thread_number = 1
+cases_file = "cases_ric_wrt_icrf.csv"
+
+[batch.columns]
+Cr = "debris.Cr"
+am_srp = "debris.am_srp"
+dr_x_km = { target = "initial_state.position_km[0]", mode = "delta" }
+dr_y_km = { target = "initial_state.position_km[1]", mode = "delta" }
+dr_z_km = { target = "initial_state.position_km[2]", mode = "delta" }
+dv_x_kms = { target = "initial_state.velocity_kms[0]", mode = "delta" }
+dv_y_kms = { target = "initial_state.velocity_kms[1]", mode = "delta" }
+dv_z_kms = { target = "initial_state.velocity_kms[2]", mode = "delta" }

@@ -558,11 +558,21 @@ class TomlForm(QWidget):
                          minimum=1, maximum=cpu_n,
                          hint=f"(1..{cpu_n} cores available on this machine)")
 
-        # cases_file with a Browse that ALSO re-reads the CSV columns
-        # immediately (and a separate Re-read button for manual edits
-        # to the path).
+        # The single user-facing path field. spody.exe natively only
+        # accepts ICRF state, so the path's role depends on cases_frame:
+        #   icrf -> passed verbatim to spody.exe as cases_file
+        #   ric  -> the GUI rotates this file at Generate and writes
+        #           <stem>_wrt_icrf.csv next to it; spody.exe reads the
+        #           rotated copy.
+        # Internally the widget is mapped to "batch.cases_source_file";
+        # the actual `cases_file` key written to the TOML is computed in
+        # to_dict() so the two paths can't drift out of sync.
         self._batch_cases_edit = QLineEdit()
         self._batch_cases_edit.textChanged.connect(self._touch)
+        self._batch_cases_edit.textChanged.connect(
+            lambda _: self._update_cases_frame_status())
+        self._batch_cases_edit.textChanged.connect(
+            lambda _: self._update_ric_preview())
         cases_browse = QPushButton("Browse...")
         cases_browse.clicked.connect(self._on_browse_cases_file)
         cases_reread = QPushButton("Re-read columns")
@@ -573,13 +583,36 @@ class TomlForm(QWidget):
         cases_row.addWidget(cases_browse)
         cases_row.addWidget(cases_reread)
         f.addRow("cases_file", _hwrap(cases_row))
-        self._widgets["batch.cases_file"] = self._batch_cases_edit
+        self._widgets["batch.cases_source_file"] = self._batch_cases_edit
 
         # Status line just under the cases_file row -- tells the user
         # whether the CSV was readable and how many columns came back.
         self._batch_cases_status = QLabel("")
         self._batch_cases_status.setStyleSheet("color: gray;")
         f.addRow("", self._batch_cases_status)
+
+        # Frame selector for the state-vector columns in the cases file.
+        # spody.exe only knows ICRF; this combo tells the GUI whether
+        # the user's CSV is already in ICRF (used as-is) or in RIC
+        # (rotated at Generate-TOML using [initial_state] as the
+        # reference orbit). The cases_frame key is only emitted when
+        # not the default.
+        self._batch_cases_frame_combo = QComboBox()
+        for frame_name in ("icrf", "ric"):
+            self._batch_cases_frame_combo.addItem(frame_name)
+        self._batch_cases_frame_combo.currentTextChanged.connect(
+            self._on_cases_frame_changed)
+        self._batch_cases_frame_combo.currentTextChanged.connect(
+            lambda _: self._touch())
+        self._widgets["batch.cases_frame"] = self._batch_cases_frame_combo
+        f.addRow("cases_frame", self._batch_cases_frame_combo)
+
+        # Status line under the frame combo: shows the path spody.exe
+        # will actually read (== source for icrf, == rotated copy for ric).
+        self._batch_frame_status = QLabel("")
+        self._batch_frame_status.setStyleSheet("color: gray;")
+        self._batch_frame_status.setWordWrap(True)
+        f.addRow("", self._batch_frame_status)
 
         # The column-mapping table.
         self._batch_columns_table = QTableWidget(0, 3)
@@ -622,6 +655,42 @@ class TomlForm(QWidget):
         mono.setStyleHint(QFont.StyleHint.Monospace)
         self._batch_preview_table.setFont(mono)
         f.addRow(self._batch_preview_table)
+
+        # Rotated preview: visible only when cases_frame == "ric". Shows
+        # the first N rows of what spody.exe would actually read once
+        # the RIC->ICRF rotation is applied. Auto-refreshed on source /
+        # frame / column-re-read; a Refresh button covers edits to the
+        # column mapping or [initial_state].
+        self._batch_rotated_preview_container = QWidget()
+        rp_v = QVBoxLayout(self._batch_rotated_preview_container)
+        rp_v.setContentsMargins(0, 0, 0, 0)
+
+        rp_header = QHBoxLayout()
+        rp_header.setContentsMargins(0, 0, 0, 0)
+        rp_header.addWidget(QLabel("Rotated preview (post RIC -> ICRF):"), 1)
+        rp_refresh = QPushButton("Refresh preview")
+        rp_refresh.clicked.connect(self._update_ric_preview)
+        rp_header.addWidget(rp_refresh)
+        rp_v.addLayout(rp_header)
+
+        self._batch_rotated_preview_status = QLabel("")
+        self._batch_rotated_preview_status.setStyleSheet("color: gray;")
+        rp_v.addWidget(self._batch_rotated_preview_status)
+
+        self._batch_rotated_preview_table = QTableWidget(0, 0)
+        self._batch_rotated_preview_table.verticalHeader().setDefaultSectionSize(20)
+        self._batch_rotated_preview_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
+        self._batch_rotated_preview_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._batch_rotated_preview_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection)
+        self._batch_rotated_preview_table.setMinimumHeight(140)
+        self._batch_rotated_preview_table.setFont(mono)
+        rp_v.addWidget(self._batch_rotated_preview_table)
+
+        f.addRow(self._batch_rotated_preview_container)
+        self._batch_rotated_preview_container.setVisible(False)
 
         v.addWidget(self._batch_box)
         self._batch_box.setVisible(False)
@@ -791,6 +860,163 @@ class TomlForm(QWidget):
             self._batch_cases_edit.setText(path)
             self._refresh_batch_columns()
 
+    # ------------------------------------------------------------------
+    # cases_frame (icrf | ric) handler + status label
+    # ------------------------------------------------------------------
+    def _on_cases_frame_changed(self, frame: str) -> None:
+        """Refresh the status label + rotated preview after a frame
+        switch. No other side effects -- the path field is always the
+        user-picked source, and the actual cases_file written to the
+        TOML is computed at Generate (to_dict)."""
+        self._update_cases_frame_status()
+        self._update_ric_preview()
+
+    def _resolved_cases_file(self) -> str:
+        """Compute the cases_file value that spody.exe will see, from
+        the current source path + frame combo. Returns an empty string
+        when the source field is empty."""
+        src = self._batch_cases_edit.text().strip()
+        if not src:
+            return ""
+        if self._batch_cases_frame_combo.currentText() != "ric":
+            # icrf or unset: the source IS the file spody.exe reads.
+            return src
+        # ric: rotated copy alongside the source. Preserve relative-ness
+        # (cases_file in the TOML is interpreted relative to the TOML
+        # file's directory).
+        p = Path(src)
+        return str(p.with_name(f"{p.stem}_wrt_icrf.csv"))
+
+    def _update_cases_frame_status(self) -> None:
+        """Single-line help text under the frame combo telling the user
+        what spody.exe will actually read. spody.exe only accepts ICRF
+        natively; this status keeps that explicit."""
+        derived = self._resolved_cases_file()
+        frame = self._batch_cases_frame_combo.currentText()
+        if not derived:
+            self._batch_frame_status.setText(
+                "Pick a cases CSV above.")
+            return
+        if frame == "ric":
+            self._batch_frame_status.setText(
+                f"RIC source. At Generate the GUI rotates the state "
+                f"columns and writes '{Path(derived).name}'; spody.exe "
+                f"reads THAT file.")
+        else:
+            self._batch_frame_status.setText(
+                f"ICRF source. spody.exe reads it directly "
+                f"('{Path(derived).name}').")
+
+    # ------------------------------------------------------------------
+    # Rotated preview (visible only when cases_frame == "ric")
+    # ------------------------------------------------------------------
+    def _clear_rotated_preview(self) -> None:
+        self._batch_rotated_preview_table.setRowCount(0)
+        self._batch_rotated_preview_table.setColumnCount(0)
+
+    def _update_ric_preview(self) -> None:
+        """Recompute the first 10 rotated rows of the source CSV and
+        push them into the rotated-preview table. No-op (and hidden)
+        when frame != ric or batch is disabled. Silent on errors --
+        only the status line shows the reason."""
+        is_ric = (self._batch_check.isChecked() and
+                  self._batch_cases_frame_combo.currentText() == "ric")
+        self._batch_rotated_preview_container.setVisible(is_ric)
+        if not is_ric:
+            return
+
+        try:
+            data = self.to_dict()
+        except ValueError as exc:
+            self._batch_rotated_preview_status.setText(
+                f"(preview unavailable: form has invalid values -- {exc})")
+            self._clear_rotated_preview()
+            return
+
+        resolved = self._resolve_ric_inputs(self._current_path, data)
+        if not resolved or resolved[0] != "ok":
+            msg = resolved[1] if resolved else "unknown"
+            self._batch_rotated_preview_status.setText(
+                f"(preview unavailable: {msg})")
+            self._clear_rotated_preview()
+            return
+        _, src, _out, r_ref, v_ref, pos_cols, vel_cols = resolved
+
+        # Build R once; bail with a clean status if the reference orbit
+        # is degenerate.
+        from .frames import ric_basis
+        import csv as csv_mod
+        import numpy as np
+        try:
+            R = ric_basis(r_ref, v_ref)
+        except ValueError as exc:
+            self._batch_rotated_preview_status.setText(
+                f"(preview unavailable: {exc})")
+            self._clear_rotated_preview()
+            return
+
+        # Read first 10 data rows of the source.
+        PREVIEW_N = 10
+        try:
+            with src.open(encoding="utf-8", newline="") as fp:
+                data_lines = [
+                    ln for ln in fp
+                    if ln.strip() and not ln.lstrip().startswith("#")
+                ]
+        except OSError as exc:
+            self._batch_rotated_preview_status.setText(
+                f"(preview unavailable: {exc})")
+            self._clear_rotated_preview()
+            return
+        if not data_lines:
+            self._batch_rotated_preview_status.setText(
+                f"(preview: {src.name} has a header but no data rows)")
+            self._clear_rotated_preview()
+            return
+
+        reader = csv_mod.DictReader(data_lines, skipinitialspace=True)
+        header = [h.strip() for h in (reader.fieldnames or [])]
+        reader.fieldnames = header
+        rows: list[dict[str, str]] = []
+        for row_idx, row in enumerate(reader, start=1):
+            if len(rows) >= PREVIEW_N:
+                break
+            out_row = dict(row)
+            try:
+                if pos_cols is not None:
+                    r_ric = np.array([float(row[c]) for c in pos_cols])
+                    r_eci = R @ r_ric
+                    for c, v in zip(pos_cols, r_eci):
+                        out_row[c] = repr(float(v))
+                if vel_cols is not None:
+                    v_ric = np.array([float(row[c]) for c in vel_cols])
+                    v_eci = R @ v_ric
+                    for c, v in zip(vel_cols, v_eci):
+                        out_row[c] = repr(float(v))
+            except (KeyError, TypeError, ValueError) as exc:
+                self._batch_rotated_preview_status.setText(
+                    f"(preview: row {row_idx} skipped -- {exc})")
+                continue
+            rows.append(out_row)
+
+        self._batch_rotated_preview_table.setRowCount(0)
+        self._batch_rotated_preview_table.setColumnCount(len(header))
+        self._batch_rotated_preview_table.setHorizontalHeaderLabels(header)
+        for r_idx, row in enumerate(rows):
+            self._batch_rotated_preview_table.insertRow(r_idx)
+            for c_idx, col in enumerate(header):
+                self._batch_rotated_preview_table.setItem(
+                    r_idx, c_idx,
+                    QTableWidgetItem(row.get(col, "")))
+
+        # Help line: cite which columns were rotated.
+        bits = []
+        if pos_cols: bits.append(f"pos={list(pos_cols)}")
+        if vel_cols: bits.append(f"vel={list(vel_cols)}")
+        self._batch_rotated_preview_status.setText(
+            f"(rotated preview: first {len(rows)} rows from {src.name}; "
+            f"{', '.join(bits)})")
+
     def _refresh_batch_columns(self) -> None:
         """(Re-)read the CSV at cases_file and rebuild both the
         [batch.columns] mapping table and the data-preview table.
@@ -841,6 +1067,9 @@ class TomlForm(QWidget):
         self._batch_cases_status.setText(
             f"({len(mapping_columns)} non-id columns read from {p.name})")
         self._populate_preview(header, preview_rows, total_rows, p)
+        # New columns may have changed which targets are mapped to
+        # initial_state -- the rotated preview depends on that.
+        self._update_ric_preview()
 
     def _clear_preview(self) -> None:
         """Empty the preview table + clear the 'first N of M' label."""
@@ -1128,6 +1357,23 @@ class TomlForm(QWidget):
         if flat.get("output.mode") == "step":
             flat.pop("output.interval_s", None)
 
+        # Resolve cases_file from the source path + frame combo. The
+        # TOML only ever carries `cases_file` (the file spody.exe reads):
+        # cases_frame and cases_source_file are GUI-only runtime state
+        # and are deliberately NOT persisted. This keeps the canonical
+        # TOML identical to what a CLI user would write by hand and
+        # avoids polluting the schema with keys that have meaning only
+        # inside the GUI.
+        source = flat.pop("batch.cases_source_file", None)
+        frame  = flat.pop("batch.cases_frame", "icrf")
+        if source:
+            if frame == "ric":
+                p = Path(source)
+                flat["batch.cases_file"] = str(
+                    p.with_name(f"{p.stem}_wrt_icrf.csv"))
+            else:
+                flat["batch.cases_file"] = source
+
         result = _explode_dotted(flat)
 
         # [batch.columns] comes from the dynamic table, not from a flat
@@ -1155,6 +1401,25 @@ class TomlForm(QWidget):
         self._loading = True
         try:
             self._reset_widgets()
+
+            # Normalise the [batch] schema for the load path: the form
+            # has ONE path widget (`batch.cases_source_file`) backing
+            # both modes. For ICRF / legacy TOMLs the user's chosen
+            # path lives in `cases_file`; redirect it so the source
+            # widget gets populated. RIC TOMLs already carry the path
+            # in `cases_source_file`; their `cases_file` is the derived
+            # copy (recomputed by to_dict) and we just drop it from the
+            # flat view so it doesn't try to find a non-existent widget.
+            batch_in = data.get("batch")
+            if isinstance(batch_in, dict):
+                batch_in = dict(batch_in)
+                if batch_in.get("cases_frame") != "ric":
+                    if ("cases_file" in batch_in
+                            and "cases_source_file" not in batch_in):
+                        batch_in["cases_source_file"] = batch_in["cases_file"]
+                batch_in.pop("cases_file", None)
+                data = {**data, "batch": batch_in}
+
             flat = _flatten_dotted(
                 {k: v for k, v in data.items() if k in self._FORM_OWNED_TOP}
             )
@@ -1257,16 +1522,146 @@ class TomlForm(QWidget):
 
     def write_to(self, path: Path) -> bool:
         """Serialise the form via to_dict + write_toml. Returns True
-        on success; surfaces I/O / value errors via a message box."""
+        on success; surfaces I/O / value errors via a message box.
+
+        When the cases_frame combo reads "ric", also performs the
+        RIC -> ICRF rotation on the source CSV at this point: rotating
+        at Generate (rather than at Run) keeps the side effect visible
+        on disk and lets a downstream `spody batch <toml>` from the
+        terminal work without re-opening the GUI."""
         from .toml_io import write_toml
         try:
             data = self.to_dict()
+        except ValueError as exc:
+            QMessageBox.critical(self, "Generate failed", f"{path}\n{exc}")
+            return False
+
+        # Rotation is driven by the live combo state, not by the TOML
+        # dict (the GUI deliberately no longer persists cases_frame /
+        # cases_source_file -- see to_dict). If rotation fails the TOML
+        # is also not written so the user sees one atomic failure.
+        if (self._batch_check.isChecked()
+                and self._batch_cases_frame_combo.currentText() == "ric"):
+            if not self._rotate_ric_cases(path, data):
+                return False
+
+        try:
             write_toml(path, data)
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Generate failed", f"{path}\n{exc}")
             return False
         self.set_current_path(path)
         self.clear_modified()
+        return True
+
+    def _resolve_ric_inputs(self, toml_path: Path | None,
+                            data: dict[str, Any]) -> tuple | None:
+        """Shared resolver for the RIC pipeline (used by both the
+        Generate-time rotation and the live preview).
+
+        Returns a tuple `(src_abs, out_abs, r_ref, v_ref, pos_cols,
+        vel_cols)` on success, or `None` after a logged warning when
+        any precondition fails. Warnings are surfaced through
+        QMessageBox by `_rotate_ric_cases` (Generate path) and silenced
+        in the preview path -- preview callers should branch on `None`
+        and show a placeholder instead.
+
+        `toml_path` may be None when the form has never been saved;
+        in that case the cases path must already be absolute, otherwise
+        we can't resolve it.
+        """
+        import numpy as np
+
+        src_raw = self._batch_cases_edit.text().strip()
+        if not src_raw:
+            return ("error", "Pick a RIC-frame source CSV in the "
+                             "cases_file field first.")
+        src = Path(src_raw)
+        if not src.is_absolute():
+            if toml_path is None:
+                return ("error",
+                        "The cases_file path is relative but the TOML "
+                        "has not been saved yet; save first or pick an "
+                        "absolute path.")
+            src = (toml_path.parent / src).resolve()
+        if not src.is_file():
+            return ("error", f"cases_file not found:\n  {src}")
+        out = src.with_name(f"{src.stem}_wrt_icrf.csv")
+
+        init = data.get("initial_state", {})
+        r_ref = init.get("position_km")
+        v_ref = init.get("velocity_kms")
+        if not (isinstance(r_ref, list) and len(r_ref) == 3 and
+                isinstance(v_ref, list) and len(v_ref) == 3):
+            return ("error",
+                    "[initial_state].position_km and velocity_kms must "
+                    "be fully filled -- they define the reference orbit "
+                    "whose axes the cases CSV uses.")
+
+        cols_map: dict[str, Any] = data.get("batch", {}).get("columns", {})
+        pos_by_idx: dict[int, str] = {}
+        vel_by_idx: dict[int, str] = {}
+        for csv_col, spec in cols_map.items():
+            target = spec["target"] if isinstance(spec, dict) else spec
+            for i in range(3):
+                if target == f"initial_state.position_km[{i}]":
+                    pos_by_idx[i] = csv_col
+                elif target == f"initial_state.velocity_kms[{i}]":
+                    vel_by_idx[i] = csv_col
+
+        def _full_triplet(d: dict[int, str]) -> tuple[str, str, str] | None:
+            if len(d) == 3 and all(i in d for i in range(3)):
+                return (d[0], d[1], d[2])
+            if not d:
+                return None
+            return ...   # partial sentinel
+
+        pos_cols = _full_triplet(pos_by_idx)
+        vel_cols = _full_triplet(vel_by_idx)
+        if pos_cols is ... or vel_cols is ...:
+            return ("error",
+                    "Partial position or velocity triplet in "
+                    "[batch.columns]: rotation needs all 3 components "
+                    "of a vector or none.")
+        if pos_cols is None and vel_cols is None:
+            return ("error",
+                    "No state columns wired in [batch.columns]. RIC "
+                    "rotation has nothing to do -- either map "
+                    "position/velocity columns or switch frame to icrf.")
+
+        return ("ok", src, out,
+                np.asarray(r_ref, dtype=float),
+                np.asarray(v_ref, dtype=float),
+                pos_cols, vel_cols)
+
+    def _rotate_ric_cases(self, toml_path: Path, data: dict[str, Any]) -> bool:
+        """Generate <stem>_wrt_icrf.csv from the user's RIC source CSV.
+        Returns True on success or False after a message box. Reuses
+        `_resolve_ric_inputs` for input validation."""
+        from .frames import rotate_state_csv_ric_to_eci
+
+        resolved = self._resolve_ric_inputs(toml_path, data)
+        if resolved is None or resolved[0] == "error":
+            QMessageBox.warning(self, "RIC rotation",
+                                resolved[1] if resolved else "unknown error")
+            return False
+        _, src, out, r_ref, v_ref, pos_cols, vel_cols = resolved
+
+        try:
+            info = rotate_state_csv_ric_to_eci(
+                src, out,
+                r_ref_km=r_ref, v_ref_kms=v_ref,
+                pos_columns=pos_cols, vel_columns=vel_cols,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            QMessageBox.critical(self, "RIC rotation failed", str(exc))
+            return False
+
+        # Brief on-the-fly status so the user gets immediate feedback
+        # without an extra dialog.
+        self._batch_cases_status.setText(
+            f"(RIC -> ICRF: {info['n_rows']} rows written to "
+            f"{out.name})")
         return True
 
     # ==================================================================

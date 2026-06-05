@@ -1,0 +1,28 @@
+# Debris cloud measured in the sensor / RIC frame of the reference satellite
+# defined by [initial_state] in input.toml. The GUI's "Import RIC..." button
+# (in the [batch] section) converts this file to ICRF and writes the
+# resolved CSV that spody.exe consumes. See README.md.
+#
+# Columns:
+#   id        : case name; per-case output files use it as a suffix
+#   dr_x_km   : radial offset    (along  r_hat = r_ref / |r_ref|)
+#   dr_y_km   : in-track offset  (along  s_hat orthogonal to r in the orbit plane)
+#   dr_z_km   : cross-track off. (along  c_hat = (r_ref x v_ref) / |r_ref x v_ref|)
+#   dv_x_kms  : radial   velocity  (same sensor-frame snapshot convention)
+#   dv_y_kms  : in-track velocity
+#   dv_z_kms  : cross-track velocity
+#   am_srp    : passed through to debris.am_srp via [batch.columns]
+#   Cr        : passed through to debris.Cr     via [batch.columns]
+#
+# Convention: snapshot / sensor-frame -- the GUI does NOT add an omega x r
+# term to the velocity. dv components are treated as plain vector
+# projections onto the instantaneous RIC axes (i.e. what an onboard sensor
+# would report). See docstring of python/spody_gui/frames.py.
+id,     dr_x_km, dr_y_km, dr_z_km, dv_x_kms, dv_y_kms, dv_z_kms, am_srp, Cr
+ref,    0.0,     0.0,     0.0,     0.0,      0.0,      0.0,      0.020,  1.3
+lead,   0.0,     1.0,     0.0,     0.0,      0.0,      0.0,      0.020,  1.3
+trail, -0.0,    -1.0,     0.0,     0.0,      0.0,      0.0,      0.020,  1.3
+high,   0.5,     0.0,     0.0,     0.0,      0.0,      0.0,      0.050,  1.3
+low,   -0.5,     0.0,     0.0,     0.0,      0.0,      0.0,      0.005,  1.3
+side_p, 0.0,     0.0,     0.5,     0.0,      0.0,      0.0,      0.020,  1.5
+side_n, 0.0,     0.0,    -0.5,     0.0,      0.0,      0.0,      0.020,  1.8
