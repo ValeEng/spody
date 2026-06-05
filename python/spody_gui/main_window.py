@@ -397,12 +397,22 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _locate_user_manual() -> Path | None:
         """Return the first existing manual path among the bundle and
-        dev-checkout candidates, or None when neither is present."""
+        dev-checkout candidates, or None when neither is present.
+
+        Bundle layout note: PyInstaller's one-folder mode (v6+) places
+        every `datas` entry under `_internal/` -- so the PDF declared
+        in spody_gui.spec as `(.., 'docs')` actually lands at
+        `<exe>/_internal/docs/spody-user-manual.pdf`, NOT at
+        `<exe>/docs/...`. We probe both for forward compatibility in
+        case a later spec setting (contents_directory='.') moves it."""
         candidates = []
         if getattr(sys, "frozen", False):
-            # PyInstaller bundle: PDF copied alongside the exe.
-            candidates.append(Path(sys.executable).parent / "docs"
+            exe_dir = Path(sys.executable).parent
+            # PyInstaller 6.x one-folder default:
+            candidates.append(exe_dir / "_internal" / "docs"
                               / "spody-user-manual.pdf")
+            # Fallback for contents_directory='.' / older layouts:
+            candidates.append(exe_dir / "docs" / "spody-user-manual.pdf")
         # Dev checkout: spody_gui/main_window.py -> spody_gui/ ->
         # python/ -> <repo>/  ->  docs/user-manual/...
         candidates.append(

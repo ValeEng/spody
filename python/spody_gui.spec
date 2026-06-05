@@ -75,14 +75,36 @@ datas = [
 ]
 
 # User manual PDF -- shipped under docs/ next to spody-gui.exe so
-# Help > User manual finds it. Included conditionally: if the PDF
-# has not been (re)built, the bundle still builds but the menu
-# entry shows a 'not found' dialog. build_bundle.py rebuilds the
-# PDF before invoking PyInstaller so this path is normally present.
+# Help > User manual finds it. The PDF is now tracked in git
+# (docs/user-manual/spody-user-manual.pdf, ~1.6 MB), so this path
+# is normally always there on a clean checkout.
+#
+# Critical: the file-existence check uses an ABSOLUTE path derived
+# from `__file__`. PyInstaller cd's to the build subdirectory before
+# evaluating the spec, so a vanilla `os.path.isfile("../docs/...")`
+# resolves against the build dir (NOT the spec dir) and silently
+# returns False even when the PDF is right there. The `datas` entry
+# itself can stay relative because PyInstaller's own data-path
+# resolution uses the spec dir, not cwd -- see the examples/* lines
+# above that work the same way.
 import os as _os
-_pdf = "../docs/user-manual/spody-user-manual.pdf"
-if _os.path.isfile(_pdf):
-    datas.append((_pdf, "docs"))
+# SPECPATH is injected by PyInstaller into the spec's namespace and
+# resolves to the absolute directory containing this spec file.
+# `__file__` is NOT defined here -- PyInstaller exec's the spec
+# without setting it, so we have to use the engine-provided global.
+_pdf_abs = _os.path.normpath(_os.path.join(
+    SPECPATH, "..", "docs", "user-manual", "spody-user-manual.pdf"))
+print(f"[spec] PDF probe: {_pdf_abs} exists={_os.path.isfile(_pdf_abs)}")
+if _os.path.isfile(_pdf_abs):
+    # Both source and destination paths use absolute / explicit
+    # forms. Relative source paths (like the examples/* above) work
+    # via PyInstaller's own resolution machinery; using the absolute
+    # path here matches the conditional's reasoning and avoids any
+    # cwd-vs-spec-dir ambiguity.
+    datas.append((_pdf_abs, "docs"))
+else:
+    print(f"[spec] WARNING: user manual PDF not found; "
+          "bundle will ship without Help > User manual")
 
 # Drop modules we know we don't ship. tkinter ships with Python but
 # matplotlib's QtAgg backend doesn't need it; excluding shaves ~15 MB.
