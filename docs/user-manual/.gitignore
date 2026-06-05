@@ -1,5 +1,11 @@
 # Build artifacts -- regenerated on demand by build_pdf.py.
 # The Markdown source under source/ and the style.css are the
-# tracked truth; HTML and PDF are derived from them.
+# tracked truth.
+#
+# spody-user-manual.html: intermediate (browser preview only), not tracked.
+# spody-user-manual.pdf : shipped inside the PyInstaller bundle via the
+#   spec's 'datas' entry; we keep it tracked so bundle builds don't
+#   depend on Chromium-class browser availability in CI. Rebuild with
+#   `python build_pdf.py` and re-commit when the Markdown source under
+#   source/ changes.
 spody-user-manual.html
-spody-user-manual.pdf
