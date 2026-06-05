@@ -93,11 +93,28 @@ excludes = [
     "PyQt6",
 ]
 
+# Windows apiset shims that PyInstaller's auto-analysis sometimes
+# misses on Win Server runners. python311.dll imports
+# api-ms-win-core-path-l1-1-0.dll; the build runner has it in
+# System32 so PyInstaller classifies it as 'OS shim, don't bundle'.
+# Some end-user Win10 builds lack that exact shim and the bundle
+# then fails at LoadLibrary(python311.dll) with a generic
+# 'access to invalid memory location' dialog. Force-include the
+# whole api-ms-win-core/crt set from System32 so the bundle is
+# self-contained regardless of the target Win10 patch level.
+import glob as _glob, os as _os
+_extra_binaries = []
+if _os.name == "nt":
+    _sys32 = _os.path.join(_os.environ.get("WINDIR", r"C:\Windows"), "System32")
+    for _pat in ("api-ms-win-core-*.dll", "api-ms-win-crt-*.dll"):
+        for _dll in _glob.glob(_os.path.join(_sys32, _pat)):
+            _extra_binaries.append((_dll, "."))
+
 
 a = Analysis(
     ["run_spody_gui.py"],
     pathex=["."],
-    binaries=[],
+    binaries=_extra_binaries,
     datas=datas,
     hiddenimports=vtk_hidden,
     hookspath=[],
