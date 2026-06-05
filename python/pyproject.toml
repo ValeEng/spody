@@ -11,11 +11,15 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Valerio (@ValeEng)" }]
 
-# Two packages live here:
+# Three packages live here:
 #   spody_io   -- standalone NumPy-based readers for the spody output
 #                 binaries; reusable from notebooks / scripts.
+#   spopy      -- pure-Python re-implementation of spody-core's read-
+#                 side helpers (DE440 ephemeris + ICRF<->Moon PA
+#                 rotations) that the GUI needs at interactive speed
+#                 without spawning subprocesses or loading a shared lib.
 #   spody_gui  -- the PySide6 desktop application that wraps the spody
-#                 binary and (soon) embeds viewers built on spody_io.
+#                 binary and embeds viewers built on spody_io + spopy.
 dependencies = [
     "PySide6    >= 6.5, < 7",
     "numpy      >= 1.20",
@@ -39,4 +43,4 @@ spody-gui = "spody_gui.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["spody_gui*", "spody_io*"]
+include = ["spody_gui*", "spody_io*", "spopy*"]
