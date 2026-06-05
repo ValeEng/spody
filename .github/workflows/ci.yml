@@ -54,7 +54,21 @@ jobs:
         # "file format not recognized". CI is a build + smoke test, not a
         # performance benchmark, so we just turn LTO off here. Local Release
         # builds keep it on by default.
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSPODY_WHOLE_PROGRAM_OPT=OFF
+        #
+        # SPODY_WITH_OPENMP=OFF for the same reason: the application's
+        # parallel-batch loop links OpenMP, and clang on the CI runners
+        # (Linux + macOS) does not auto-resolve libomp the way gcc finds
+        # libgomp or MSVC finds vcomp. Installing libomp on every clang
+        # job would let CI verify the OpenMP wiring too, but a smoke test
+        # 'does it build, does spody info run' doesn't need that. The
+        # release.yml workflow keeps OpenMP ON and installs libomp on
+        # macOS, so the shipped bundle is always built with the parallel
+        # loop linked in.
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DSPODY_WHOLE_PROGRAM_OPT=OFF
+          -DSPODY_WITH_OPENMP=OFF
 
       - name: Build
         run: cmake --build build --config Release --parallel
