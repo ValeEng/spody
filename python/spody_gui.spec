@@ -29,17 +29,33 @@
 # PyInstaller's built-in hooks; we just nudge a couple of VTK
 # submodules that aren't auto-detected.
 
-from PyInstaller.utils.hooks import collect_submodules
-
-# The Qt/VTK integration module isn't picked up by VTK's default hook,
-# nor is numpy_support which we use in vtk_canvas. Collecting the whole
-# vtkmodules subtree is heavier than necessary but harmless and makes
-# the bundle robust against future GUI code adding more VTK calls.
+# Explicit list of VTK modules we actually import (directly or via
+# side-effect) -- see vtk_canvas.py for the static imports. The
+# alternative `collect_submodules("vtkmodules")` pulls in the whole
+# subtree (VR / Web / GTK,Wx,Tk bindings / dozens of exotic IO
+# readers for Cesium3DTiles, CGNS, FLUENT, Exodus, EnSight, NetCDF,
+# Xdmf2, VTKm GPU accelerators, ...) -- adds ~800 MB of dead weight
+# to the macOS / Linux bundle, removing it here is the single
+# biggest size win we can do without pruning per-file.
+#
+# Transitive VTK deps (vtkCommonExecutionModel, vtkRenderingContext2D,
+# vtkImagingCore, ...) are pulled in automatically by the per-module
+# PyInstaller hooks in _pyinstaller_hooks_contrib once we declare
+# the top-level imports below.
 vtk_hidden = [
+    # vtk_canvas.py uses the Qt integration class which PyInstaller's
+    # static analysis can miss because of how it's lazy-imported.
     "vtkmodules.qt.QVTKRenderWindowInteractor",
+    # Bridge between numpy arrays and vtk arrays; we use it in
+    # set_central_body_texture / add_trajectory.
     "vtkmodules.util.numpy_support",
+    # The two side-effect imports in vtk_canvas.py (no symbols used,
+    # but loading the module registers the OpenGL / FreeType backends
+    # with vtkRenderingCore). Listed explicitly so PyInstaller's
+    # tree-shaking can't drop them.
+    "vtkmodules.vtkRenderingOpenGL2",
+    "vtkmodules.vtkRenderingFreeType",
 ]
-vtk_hidden += collect_submodules("vtkmodules")
 
 # Datas: (source-on-disk, destination-inside-bundle). Paths are
 # relative to the spec file's directory (python/). The examples
