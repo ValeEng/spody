@@ -163,10 +163,11 @@ exe = EXE(
     # debug info already external).
     strip=True,
     upx=False,                # UPX often trips antivirus heuristics
-    console=True,             # DEBUG: temporarily True so the CI build
-                              # surfaces Python tracebacks instead of a
-                              # generic 'Failed to load Python DLL' dialog.
-                              # Flip back to False before the next real tag.
+    console=False,            # windowed app: no extra cmd window
+                              # (flip to True to surface Python tracebacks
+                              # when the bundle crashes on startup -- saves
+                              # time vs decoding the generic
+                              # 'Failed to load Python DLL' message box)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
