@@ -79,9 +79,16 @@ from .settings import SettingsStore
 from .vtk_canvas import VtkCanvas
 
 # Recurse this many levels under the working dir when scanning for
-# *.bin files. 3 covers the common `output/batch/<case>.bin` pattern
-# without crawling huge data trees by accident.
+# *.bin files. 3 covers the common `output/<UTC-ISO8601>/<case>.bin`
+# pattern without crawling huge data trees by accident.
 SCAN_MAX_DEPTH = 3
+
+# Matches the per-run subfolder names spody.exe creates at launch
+# (compact ISO 8601 UTC, see spody_io_make_run_subdir in app_io.c).
+# Used by _refresh_tree to group output files by run instead of
+# listing them in a flat tree.
+import re as _re
+_RUN_FOLDER_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}T\d{6}Z$")
 
 # Roles used to store the per-item full path on tree items, so we
 # don't have to re-resolve from display text.
@@ -971,23 +978,50 @@ class AnalysisPanel(QWidget):
     # ------------------------------------------------------------------
     def _refresh_tree(self) -> None:
         """Rebuild the tree from the current working dir + external list.
-        Selection is dropped (no auto-load); the user picks an item to
-        load explicitly."""
+
+        Output files are grouped by the per-run timestamp folder spody.exe
+        creates at launch (`<output_dir>/<UTC-ISO8601>/...`): each run
+        becomes its own collapsible section, most-recent first. Anything
+        outside a run folder lands in a 'Loose files' tail group so the
+        flat layout from before this slice still surfaces.
+
+        Selection is dropped on every refresh (no auto-load); the user
+        picks an item to load explicitly."""
         self._tree.clear()
 
-        folder_header = self._make_header(
-            f"In folder ({self._working_dir})" if self._working_dir
-            else "In folder (none)"
-        )
-        self._tree.addTopLevelItem(folder_header)
-        if self._working_dir is not None:
-            for p in _scan_bin_files(self._working_dir, SCAN_MAX_DEPTH):
-                rel = p.relative_to(self._working_dir)
-                child = QTreeWidgetItem([str(rel).replace("\\", "/")])
-                child.setData(0, _PATH_ROLE, str(p))
-                child.setToolTip(0, str(p))
-                folder_header.addChild(child)
-        folder_header.setExpanded(True)
+        if self._working_dir is None:
+            self._tree.addTopLevelItem(self._make_header("In folder (none)"))
+        else:
+            files = _scan_bin_files(self._working_dir, SCAN_MAX_DEPTH)
+            grouped = self._group_files_by_run(files, self._working_dir)
+            self._tree.addTopLevelItem(self._make_header(
+                f"In folder ({self._working_dir}) -- "
+                f"{len(grouped)} run group(s), {len(files)} file(s)"))
+            # Render run groups newest-first (timestamps sort
+            # lexicographically the same as chronologically). Loose
+            # files (None key) go last.
+            run_keys = sorted((k for k in grouped if k is not None),
+                              reverse=True)
+            for key in run_keys:
+                header = self._make_header(f"  run: {key}")
+                self._tree.addTopLevelItem(header)
+                for p in grouped[key]:
+                    child = QTreeWidgetItem([p.name])
+                    child.setData(0, _PATH_ROLE, str(p))
+                    child.setToolTip(0, str(p))
+                    header.addChild(child)
+                header.setExpanded(True)
+            if None in grouped:
+                loose_header = self._make_header(
+                    f"  loose files ({len(grouped[None])})")
+                self._tree.addTopLevelItem(loose_header)
+                for p in grouped[None]:
+                    rel = p.relative_to(self._working_dir)
+                    child = QTreeWidgetItem([str(rel).replace("\\", "/")])
+                    child.setData(0, _PATH_ROLE, str(p))
+                    child.setToolTip(0, str(p))
+                    loose_header.addChild(child)
+                loose_header.setExpanded(False)
 
         external_header = self._make_header(
             f"External ({len(self._external)})"
@@ -999,6 +1033,36 @@ class AnalysisPanel(QWidget):
             child.setToolTip(0, str(p))
             external_header.addChild(child)
         external_header.setExpanded(True)
+
+    @staticmethod
+    def _group_files_by_run(files: list[Path], root: Path
+                            ) -> dict[str | None, list[Path]]:
+        """Walk each file's ancestors and find the closest one whose
+        name matches the run-folder pattern (compact ISO 8601 UTC, e.g.
+        '2026-06-05T195819Z'). The returned dict keys are those folder
+        names; files with no run-folder ancestor are bucketed under
+        None. Within each bucket files keep their scan order (which is
+        already path-sorted)."""
+        out: dict[str | None, list[Path]] = {}
+        try:
+            root_resolved = root.resolve()
+        except OSError:
+            root_resolved = root
+        for p in files:
+            run_key: str | None = None
+            try:
+                for ancestor in p.resolve().parents:
+                    # Stop once we reach the working dir; no point
+                    # looking further up.
+                    if ancestor == root_resolved:
+                        break
+                    if _RUN_FOLDER_RE.match(ancestor.name):
+                        run_key = ancestor.name
+                        break
+            except OSError:
+                pass
+            out.setdefault(run_key, []).append(p)
+        return out
 
     @staticmethod
     def _make_header(text: str) -> QTreeWidgetItem:
