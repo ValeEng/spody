@@ -204,6 +204,40 @@ jobs:
       - name: build bundle
         run: python python/build_bundle.py
 
+      # Diagnostic: where does the weight live? Helps when iterating
+      # on the bundle size, especially the VTK / PySide6 contributions.
+      - name: bundle composition (unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd python/dist/spody-gui
+          echo "=== top-level dirs ==="
+          du -sh */
+          echo ""
+          echo "=== top 25 heaviest entries in _internal/ ==="
+          du -sh _internal/* 2>/dev/null | sort -h | tail -25
+
+      - name: bundle composition (windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd python\dist\spody-gui
+          Write-Host "=== top-level dirs ==="
+          Get-ChildItem -Directory | ForEach-Object {
+            $mb = (Get-ChildItem $_.FullName -Recurse -File `
+                   -ErrorAction SilentlyContinue |
+                   Measure-Object -Property Length -Sum).Sum / 1MB
+            "{0,8:N1} MB  {1}" -f $mb, $_.Name
+          }
+          Write-Host ""
+          Write-Host "=== top 25 heaviest entries in _internal\ ==="
+          Get-ChildItem _internal | ForEach-Object {
+            if ($_.PSIsContainer) {
+              $size = (Get-ChildItem $_.FullName -Recurse -File `
+                       -ErrorAction SilentlyContinue |
+                       Measure-Object -Property Length -Sum).Sum
+            } else { $size = $_.Length }
+            [pscustomobject]@{ MB = [math]::Round($size/1MB,1); Name = $_.Name }
+          } | Sort-Object MB | Select-Object -Last 25 | Format-Table -AutoSize
+
       # -- archive -----------------------------------------------------
       # Filename pattern: spody-gui-<tag>-<os-label>.<ext> (e.g.
       # spody-gui-v0.1.0-alpha-win64.zip). Computed once and
