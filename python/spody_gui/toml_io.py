@@ -67,10 +67,10 @@ _KEY_ORDER: dict[str, tuple[str, ...]] = {
                       "third_bodies", "srp"),
     "ephemeris":     ("file",),
     "integrator":    ("type", "rel_tol", "h_init_s", "h_min_s", "h_max_s"),
-    # output_dir is a GUI-only memo (spody.exe interprets each file path
-    # relative to the TOML dir itself); the form keeps it so the next
-    # Load can recover the user's chosen directory and rewire the auto-
-    # naming checkboxes without scraping it from one of the stream paths.
+    # output_dir is the parent under which spody.exe creates the per-run
+    # `<UTC-ISO8601>/` folder for each invocation. The five file paths
+    # are still emitted but spody.exe only keeps their basenames when
+    # the run-folder layout is active (output_dir set).
     "output":        ("mode", "interval_s", "output_dir",
                       "csv_file", "bin_file", "log_file",
                       "accelerations_file", "events_log"),

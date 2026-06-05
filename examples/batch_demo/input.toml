@@ -5,7 +5,7 @@
 # seconds total). All paths are relative to this TOML file.
 #
 # Run with:    spody batch examples/batch_demo/input.toml
-# Expected:    examples/batch_demo/output/batch/{csv,bin} per case
+# Expected:    examples/batch_demo/output/<UTC-ISO8601>/{csv,bin} per case
 #
 # Notes on schema:
 #   - The whole top-level (sections [simulation] through [output]) acts as
@@ -15,7 +15,7 @@
 #   - In batch mode the VALUES of output.csv_file / output.bin_file are
 #     ignored; only their PRESENCE matters (= "emit this stream per case").
 #     Per-case paths are computed as
-#         <batch.output_dir>/batch/<batch.name>_<id>.<csv|bin>
+#         <batch.output_dir>/<UTC-ISO8601>/<batch.name>_<id>_state_icrf.<csv|bin>
 
 [simulation]
 name       = "lro_batch_demo"
@@ -65,7 +65,7 @@ log_file   = "output/lro_batch_demo.log"
 
 [batch]
 name          = "mass_srp_sweep"
-output_dir    = "output"                # must EXIST; "batch/" subdir is auto-created
+output_dir    = "output"                # must EXIST; <UTC-ISO8601>/ subdir is auto-created per run
 thread_number = 1                       # >1 reserved for future OpenMP build
 cases_file    = "cases.csv"
 

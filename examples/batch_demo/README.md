@@ -40,9 +40,10 @@ On Windows the binary is `build\Release\spody.exe`.
 ## What you should see
 
 Three lines of `[i/3] <id>: done in X.XX s` and a final summary.
-Output files land in [`output/batch/`](output/) as
-`mass_srp_sweep_<id>.{csv,bin}` (and a timestamped `.log` since
-`log_file` is enabled in [`input.toml`](input.toml)).
+Output files land in [`output/<UTC-ISO8601>/`](output/) as
+`mass_srp_sweep_<id>_state_icrf.{csv,bin}` alongside a snapshot
+of the source TOML (`input.toml`) and a timestamped `.log` since
+`log_file` is enabled in the input.
 
 The position residual across the three cases at `t = 1 h` is on the
 order of centimetres -- consistent with SRP being a tiny perturbation

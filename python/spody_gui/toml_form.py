@@ -144,7 +144,7 @@ _TOOLTIPS: dict[str, str] = {
     "integrator.h_max_s":            "Maximum step size in seconds; > h_min_s.",
     "output.mode":                   "'fixed' = uniform interval_s sampling; 'step' = one record per accepted step.",
     "output.interval_s":             "Sample interval in seconds; required when mode = fixed.",
-    "output.output_dir":             "Directory that holds the output files. Empty = TOML's own directory. Path is interpreted relative to the TOML file's dir.",
+    "output.output_dir":             "Parent directory for the per-run timestamp folder spody.exe creates at launch (<output_dir>/<UTC-ISO8601>/). Each run is self-contained: a snapshot of this TOML lands there as input.toml alongside all output files. Leave empty to write outputs to the TOML's own directory with no per-run folder.",
     "output.csv_file":               "State vector CSV stream. Auto-named '<sim_name>_state_icrf.csv' under output_dir.",
     "output.bin_file":               "State vector binary stream (SPDYOUT_). Auto-named '<sim_name>_state_icrf.bin'.",
     "output.log_file":               "Tee stdout/stderr to a file. Auto-named '<sim_name>.log'.",

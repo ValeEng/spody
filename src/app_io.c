@@ -38,17 +38,81 @@ const char *spody_io_basename(const char *path) {
     return last;
 }
 
-int spody_io_prepare_batch_subdir(const char *output_dir,
-                                  char *batch_subdir_out, size_t out_sz,
-                                  SpodyError *err) {
-    snprintf(batch_subdir_out, out_sz, "%s/batch", output_dir);
-    if (SPODY_MKDIR(batch_subdir_out) == 0) return SPODY_OK;
-    if (errno == EEXIST) return SPODY_OK;
+int spody_io_make_run_subdir(const char *output_dir,
+                             char *run_subdir_out, size_t out_sz,
+                             SpodyError *err) {
+    time_t now = time(NULL);
+    struct tm *tm = gmtime(&now);
+    char ts[32];
+    strftime(ts, sizeof ts, "%Y-%m-%dT%H%M%SZ", tm);
+    snprintf(run_subdir_out, out_sz, "%s/%s", output_dir, ts);
+
+    if (SPODY_MKDIR(run_subdir_out) == 0) return SPODY_OK;
+    if (errno == EEXIST) return SPODY_OK;   /* second-precision collision */
     spody_error_set(err, SPODY_ERR_IO,
-            "cannot create batch output dir '%s' (errno %d): "
+            "cannot create run output dir '%s' (errno %d): "
             "verify that output_dir '%s' exists",
-            batch_subdir_out, errno, output_dir);
+            run_subdir_out, errno, output_dir);
     return SPODY_ERR_IO;
+}
+
+int spody_io_copy_file(const char *src, const char *dst, SpodyError *err) {
+    FILE *fin = fopen(src, "rb");
+    if (!fin) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "cannot open source for copy: '%s' (errno %d)", src, errno);
+        return SPODY_ERR_IO;
+    }
+    FILE *fout = fopen(dst, "wb");
+    if (!fout) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "cannot open dest for copy: '%s' (errno %d)", dst, errno);
+        fclose(fin);
+        return SPODY_ERR_IO;
+    }
+    /* 64 KB chunks: small enough to live on the stack, large enough
+     * that the per-iteration overhead is negligible for typical TOMLs
+     * (a few KB). */
+    char buf[65536];
+    size_t n;
+    int rc = SPODY_OK;
+    while ((n = fread(buf, 1, sizeof buf, fin)) > 0) {
+        if (fwrite(buf, 1, n, fout) != n) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "write failed during copy to '%s' (errno %d)", dst, errno);
+            rc = SPODY_ERR_IO;
+            break;
+        }
+    }
+    if (rc == SPODY_OK && ferror(fin)) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "read failed during copy of '%s' (errno %d)", src, errno);
+        rc = SPODY_ERR_IO;
+    }
+    fclose(fout);
+    fclose(fin);
+    return rc;
+}
+
+/* Helper for spody_io_rewrite_outputs_to_run_subdir: replace path's
+ * directory with run_subdir, keep its basename. In-place rewrite into
+ * the same fixed-size buffer so callers don't reallocate. */
+static void rewrite_one_path(char *path, size_t path_sz,
+                             const char *run_subdir) {
+    if (!path[0]) return;
+    const char *bn = spody_io_basename(path);
+    char tmp[SPODY_MAX_PATH];
+    snprintf(tmp, sizeof tmp, "%s/%s", run_subdir, bn);
+    snprintf(path, path_sz, "%s", tmp);
+}
+
+void spody_io_rewrite_outputs_to_run_subdir(InputConfig *cfg,
+                                            const char *run_subdir) {
+    rewrite_one_path(cfg->csv_file,           sizeof cfg->csv_file,           run_subdir);
+    rewrite_one_path(cfg->bin_file,           sizeof cfg->bin_file,           run_subdir);
+    rewrite_one_path(cfg->log_file,           sizeof cfg->log_file,           run_subdir);
+    rewrite_one_path(cfg->accelerations_file, sizeof cfg->accelerations_file, run_subdir);
+    rewrite_one_path(cfg->events_log,         sizeof cfg->events_log,         run_subdir);
 }
 
 void spody_io_timestamp_filename(const char *base, char *out, size_t out_sz) {

@@ -183,7 +183,9 @@ static int cmd_propagate(int argc, char **argv) {
 
     /* --out redirects every output file (CSV / binary / log / accelerations
      * / events) to that directory, keeping only the basename from the TOML.
-     * Lets the user reuse the same TOML for ad-hoc runs without editing it. */
+     * Lets the user reuse the same TOML for ad-hoc runs without editing it.
+     * Acts as an escape hatch: when given, the per-run timestamp folder
+     * is disabled and the user is on their own about disambiguation. */
     if (out_dir) {
         struct { char *dst; size_t cap; } slots[] = {
             { cfg.csv_file,           sizeof cfg.csv_file           },
@@ -200,6 +202,28 @@ static int cmd_propagate(int argc, char **argv) {
                 snprintf(slots[i].dst, slots[i].cap, "%s", tmp);
             }
         }
+    } else if (cfg.output_dir[0]) {
+        /* Default behaviour when [output].output_dir is set: create a
+         * fresh timestamp subfolder under it, snapshot the source TOML
+         * inside, and rewrite every output path to live in that folder.
+         * Each run is then fully self-contained -- inputs + outputs in
+         * the same dir, named by the moment the run started. */
+        char run_subdir[SPODY_MAX_PATH];
+        if (spody_io_make_run_subdir(cfg.output_dir, run_subdir,
+                                     sizeof run_subdir, &err) != SPODY_OK) {
+            spody_error_print(&err);
+            spody_log_close_mirror(); spody_free_input(&cfg);
+            return 1;
+        }
+        spody_io_rewrite_outputs_to_run_subdir(&cfg, run_subdir);
+        char toml_copy[SPODY_MAX_PATH];
+        snprintf(toml_copy, sizeof toml_copy, "%s/input.toml", run_subdir);
+        if (spody_io_copy_file(toml_path, toml_copy, &err) != SPODY_OK) {
+            spody_error_print(&err);
+            spody_log_close_mirror(); spody_free_input(&cfg);
+            return 1;
+        }
+        spody_log_printf("  run dir    : %s\n", run_subdir);
     }
 
     /* Open the tee log mirror if requested. Done BEFORE the banner so the
@@ -349,10 +373,22 @@ static int cmd_batch(int argc, char **argv) {
     }
 #endif
 
-    /* Create <output_dir>/batch (output_dir itself must already exist). */
+    /* Create <output_dir>/<UTC-ISO8601>/ for this batch run and snapshot
+     * the source TOML inside it. Same self-contained per-run layout as
+     * single-propagate, just with the batch's own output_dir as parent. */
     char batch_subdir[SPODY_MAX_PATH];
-    if (spody_io_prepare_batch_subdir(cfg.batch->output_dir, batch_subdir,
-                                      sizeof batch_subdir, &err) != SPODY_OK) {
+    if (spody_io_make_run_subdir(cfg.batch->output_dir, batch_subdir,
+                                 sizeof batch_subdir, &err) != SPODY_OK) {
+        if (err.file[0] == '\0') {
+            snprintf(err.file, sizeof err.file, "%s", toml_path);
+        }
+        spody_error_print(&err);
+        spody_log_close_mirror(); spody_free_input(&cfg);
+        return 1;
+    }
+    char toml_copy[SPODY_MAX_PATH];
+    snprintf(toml_copy, sizeof toml_copy, "%s/input.toml", batch_subdir);
+    if (spody_io_copy_file(toml_path, toml_copy, &err) != SPODY_OK) {
         if (err.file[0] == '\0') {
             snprintf(err.file, sizeof err.file, "%s", toml_path);
         }

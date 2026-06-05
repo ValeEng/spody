@@ -285,7 +285,7 @@ overrides specific numeric fields.
 | Key            | Type           | Notes                                                       |
 |----------------|----------------|-------------------------------------------------------------|
 | `name`         | string         | batch identifier, used in output file names                 |
-| `output_dir`   | string (path)  | must exist; `batch/` is auto-created inside it              |
+| `output_dir`   | string (path)  | must exist; a per-run `<UTC-ISO8601>/` subfolder is created inside it |
 | `thread_number`| int            | 1 today (parallel batch reserved for a future OpenMP build) |
 | `cases_file`   | string (path)  | `.csv` (today) or `.spody` (reserved)                       |
 
@@ -358,7 +358,10 @@ C,  2500.0,   1.3
 ```
 
 Output for each case is written as
-`<output_dir>/batch/<batch.name>_<id>.<csv|bin>`.
+`<output_dir>/<UTC-ISO8601>/<batch.name>_<id>_state_icrf.<csv|bin>`,
+inside the per-run timestamp folder spody.exe creates at launch
+(alongside a snapshot of the source TOML as `input.toml` and, when
+events are enabled, the batch-wide aggregated `<batch.name>_events.bin`).
 
 ### Per-case validation
 

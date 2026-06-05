@@ -266,23 +266,27 @@ A few additional points:
 
 ## Output layout
 
-When the batch runs, the engine creates a `batch/` subfolder
-inside `batch.output_dir` and writes one set of files per case
-inside it:
+When the batch runs, the engine creates a per-run subfolder named
+after the UTC instant the run started (ISO 8601 compact, e.g.
+`2026-06-05T195819Z`) inside `batch.output_dir`, snapshots the
+source TOML inside as `input.toml`, and writes one set of files
+per case alongside it:
 
 ```
-<output_dir>/batch/
-  <name>_<case_id>.csv
-  <name>_<case_id>.bin
-  <name>_<case_id>_acc.bin   (if accelerations_file is set)
-  <name>_<case_id>_evt.bin   (if events_log is set)
+<batch.output_dir>/<UTC-ISO8601>/
+  input.toml                                       (snapshot of the source)
+  <name>_<case_id>_state_icrf.csv                  (if csv_file is set)
+  <name>_<case_id>_state_icrf.bin                  (if bin_file is set)
+  <name>_<case_id>_acc_icrf.bin                    (if accelerations_file is set)
+  <name>_events.bin                                (if events_log is set; aggregated)
 ```
 
 The `<name>` part comes from `batch.name`; the `<case_id>` part is
 the value of the `id` column or the auto-generated `case_NNNN`
-name. Existing files in `batch/` are overwritten without warning
-&mdash; the engine assumes you have moved or archived any previous
-runs you wanted to keep.
+name. Each invocation goes in its own timestamp folder, so the
+results of any prior run are never overwritten silently &mdash; the
+listing under `<batch.output_dir>/` is the chronological history
+of every batch run executed from that scenario.
 
 ## A complete worked example
 
@@ -302,9 +306,10 @@ The CSV at `examples/batch_demo/cases.csv` lists three cases
 (`A`, `B`, `C`) varying mass and reflectivity, exactly as in
 section 7.1. Press **RUN** to dispatch all three; the Run tab's
 terminal pane streams the case-by-case progress, and the resulting
-files land in `examples/batch_demo/output/batch/`. Switch to the
-Analysis tab afterwards: the working directory has auto-pointed at
-`examples/batch_demo/output/`, all three trajectories appear in
-the file tree, and you can `Ctrl`-click them all and press
-**Overlay selected** on a single-line plot (such as **Radial
-distance |r|**) to compare the cases visually.
+files land in `examples/batch_demo/output/<UTC-ISO8601>/`. Switch
+to the Analysis tab afterwards: the working directory has auto-
+pointed at `examples/batch_demo/output/`, the per-run folder
+appears as a group in the file tree, all three trajectories are
+inside it, and you can `Ctrl`-click them all and press **Overlay
+selected** on a single-line plot (such as **Radial distance |r|**)
+to compare the cases visually.

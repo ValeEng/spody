@@ -181,6 +181,12 @@ typedef struct {
     char            log_file[SPODY_MAX_PATH];           /* resolved path, "" if none */
     char            accelerations_file[SPODY_MAX_PATH]; /* per-force acc binary; "" disables */
     char            events_log[SPODY_MAX_PATH];         /* event triggers binary; "" disables */
+    /* Parent directory for the per-run timestamp subfolder. When set,
+     * spody.exe creates <output_dir>/<UTC-ISO8601>/ at launch, copies
+     * the source TOML inside, and rewrites every file path above so
+     * the run is fully self-contained. "" disables the run-folder
+     * layout: file paths above are used verbatim (legacy behaviour). */
+    char            output_dir[SPODY_MAX_PATH];
 
     /* [events] -- IMPACT is always on (no config). Eclipse is opt-in. */
     int    eclipse_event_enabled; /* 1 if [events].eclipse_threshold was set */

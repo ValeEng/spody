@@ -93,7 +93,7 @@ rotation:
 4. **Run → Batch** (`Ctrl+B`).
 
 Per-case binaries land in
-`examples/debris_ric_demo/output/batch/debris_ric_demo_{ref,lead,trail,high,low,side_p,side_n}.bin`.
+`examples/debris_ric_demo/output/<UTC-ISO8601>/debris_ric_demo_{ref,lead,trail,high,low,side_p,side_n}_state_icrf.bin`.
 
 ## Run (CLI only)
 

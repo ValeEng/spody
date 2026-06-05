@@ -43,12 +43,29 @@ extern "C" {
  * either platform. Returns a pointer into `path` (no allocation). */
 const char *spody_io_basename(const char *path);
 
-/* Compose <output_dir>/batch and create it if missing. Returns SPODY_OK
- * on success (including when the directory already existed). Fails if
- * output_dir itself does not exist (mkdir would fail with ENOENT). */
-int spody_io_prepare_batch_subdir(const char *output_dir,
-                                  char *batch_subdir_out, size_t out_sz,
-                                  SpodyError *err);
+/* Create <output_dir>/<UTC-ISO8601>/ for a fresh run and return the
+ * full path. The timestamp is captured once on entry (so every file
+ * within the run shares the same folder name) and uses the same
+ * compact "%Y-%m-%dT%H%M%SZ" format as spody_io_timestamp_filename.
+ *
+ * Returns SPODY_OK on success, SPODY_ERR_IO if the parent dir doesn't
+ * exist or the mkdir failed for any other reason (already-exists is
+ * very unlikely with the timestamp resolution but treated as OK). */
+int spody_io_make_run_subdir(const char *output_dir,
+                             char *run_subdir_out, size_t out_sz,
+                             SpodyError *err);
+
+/* Byte-for-byte copy of src -> dst. Used to snapshot the source TOML
+ * into a fresh run subdir so each run is self-contained. dst is opened
+ * with "wb" -- if it exists it's overwritten without warning. */
+int spody_io_copy_file(const char *src, const char *dst, SpodyError *err);
+
+/* Rewrite every non-empty output path in cfg so its basename is
+ * preserved but its directory is replaced by `run_subdir`. Used right
+ * after spody_io_make_run_subdir so the simulator writes files inside
+ * the freshly-created per-run folder instead of cfg's original paths. */
+void spody_io_rewrite_outputs_to_run_subdir(InputConfig *cfg,
+                                            const char *run_subdir);
 
 /* Inject a UTC timestamp before the extension of `base`. If `base` has
  * no extension, append the timestamp. Format: ISO 8601 compact UTC,

@@ -5,7 +5,7 @@
 # span a representative range for tumbling lunar debris.
 #
 # Run with:    spody batch examples/debris_demo/input.toml
-# Expected:    examples/debris_demo/output/batch/debris_am_sweep_*.bin
+# Expected:    examples/debris_demo/output/<UTC-ISO8601>/debris_am_sweep_*_state_icrf.bin
 #
 # Notes:
 #   - mass_kg does NOT appear (debris mode pins it to 1.0 internally so
@@ -55,7 +55,7 @@ bin_file   = "output/debris_am_sweep_state_icrf.bin"
 
 [batch]
 name          = "debris_am_sweep"
-output_dir    = "output"                # must EXIST; batch/ subdir is auto-created
+output_dir    = "output"                # must EXIST; <UTC-ISO8601>/ subdir is auto-created per run
 thread_number = 1
 cases_file    = "cases.csv"
 

@@ -518,18 +518,24 @@ static int parse_output(toml_table_t *root, const char *toml_dir,
     char rel_log[SPODY_MAX_PATH] = {0};
     char rel_acc[SPODY_MAX_PATH] = {0};
     char rel_evt[SPODY_MAX_PATH] = {0};
-    int has_csv = 0, has_bin = 0, has_log = 0, has_acc = 0, has_evt = 0;
+    char rel_dir[SPODY_MAX_PATH] = {0};
+    int has_csv = 0, has_bin = 0, has_log = 0, has_acc = 0, has_evt = 0, has_dir = 0;
     if ((rc = opt_string(t, "csv_file",           rel_csv, sizeof rel_csv, &has_csv))) return rc;
     if ((rc = opt_string(t, "bin_file",           rel_bin, sizeof rel_bin, &has_bin))) return rc;
     if ((rc = opt_string(t, "log_file",           rel_log, sizeof rel_log, &has_log))) return rc;
     if ((rc = opt_string(t, "accelerations_file", rel_acc, sizeof rel_acc, &has_acc))) return rc;
     if ((rc = opt_string(t, "events_log",         rel_evt, sizeof rel_evt, &has_evt))) return rc;
+    /* output_dir: where the per-run timestamp folder is created. Was a
+     * GUI-only memo before this slice; now it's the parent the C side
+     * uses to compose `<output_dir>/<timestamp>/<file>` per run. */
+    if ((rc = opt_string(t, "output_dir",         rel_dir, sizeof rel_dir, &has_dir))) return rc;
 
     cfg->csv_file[0]           = '\0';
     cfg->bin_file[0]           = '\0';
     cfg->log_file[0]           = '\0';
     cfg->accelerations_file[0] = '\0';
     cfg->events_log[0]         = '\0';
+    cfg->output_dir[0]         = '\0';
     if (has_csv) resolve_path(toml_dir, rel_csv,
                               cfg->csv_file, sizeof cfg->csv_file);
     if (has_bin) resolve_path(toml_dir, rel_bin,
@@ -540,6 +546,8 @@ static int parse_output(toml_table_t *root, const char *toml_dir,
                               cfg->accelerations_file, sizeof cfg->accelerations_file);
     if (has_evt) resolve_path(toml_dir, rel_evt,
                               cfg->events_log, sizeof cfg->events_log);
+    if (has_dir) resolve_path(toml_dir, rel_dir,
+                              cfg->output_dir, sizeof cfg->output_dir);
     return SPODY_OK;
 }
 
