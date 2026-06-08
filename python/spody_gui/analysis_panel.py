@@ -84,7 +84,13 @@ from spody_io import (
 from spody_io.headers import SPODY_EVTB_MAGIC
 from .astronomy import sun_direction_j2000
 from .settings import SettingsStore
+from .toml_io import read_toml
 from .vtk_canvas import VtkCanvas
+# spopy is the pure-Python re-implementation of the spody-core read
+# helpers. Used by the impact lat/lon map to project ICRF impact points
+# onto the Moon Principal Axes (body-fixed) frame for any ET. Imported
+# lazily inside the plot fn so non-events workflows don't pay the
+# numpy-heavy module import cost.
 
 # Recurse this many levels under the working dir when scanning for
 # *.bin files. 3 covers the common `output/<UTC-ISO8601>/<case>.bin`
@@ -142,8 +148,12 @@ class PlotSpec:
     """Dispatch mode. 'single' (default) calls `fn(ax_or_canvas, data)`
     against the currently-loaded file. 'diff' calls `fn(ax, data_a,
     data_b)` against exactly two selected files in the file tree
-    (sorted top-down). Diff specs ignore `overlay_fn` -- they don't
-    overlay, they subtract."""
+    (sorted top-down). 'context' calls `fn(ax, data, ctx)` with a
+    `PlotContext` carrying the loaded file's path so the plot fn can
+    locate the per-run input.toml snapshot (used by batch-event views
+    that need et_start_s / ephemeris path / duration). Diff and
+    context specs ignore `overlay_fn` -- they aren't single-file
+    plots."""
 
 
 def _plot_traj_r(ax: Axes, d: np.ndarray) -> None:
@@ -550,6 +560,132 @@ def _plot_acc_eclipse(ax: Axes, d: np.ndarray) -> None:
     ax.set_ylim(-0.05, 1.05); ax.grid(True, alpha=0.3)
 
 
+# ----------------------------------------------------------------------
+# Context plumbing for batch-event analyses
+# ----------------------------------------------------------------------
+# A handful of event plots (impact lat/lon map, survival timeline) need
+# information that isn't carried inside the events binary itself:
+# - simulation.et_start_s         to convert sim time `t` to ET
+# - simulation.duration_s         to know how long survivors lasted
+# - ephemeris.file                to evaluate Moon libration angles
+# - force_model.central_body      to sanity-check 'Moon' before lat/lon
+# - batch.cases_file              to count the total cases (survivors)
+#
+# All four live in the per-run input.toml snapshot spody.exe drops
+# inside the run folder (see spody_io_make_run_subdir in app_io.c).
+# The plot dispatcher builds a PlotContext from the loaded file's path
+# and hands it to the plot fn; the fn calls _resolve_run_context()
+# which walks up to find input.toml and parses out what it needs.
+
+@dataclass(frozen=True)
+class PlotContext:
+    """Side-channel context passed to context-aware plot functions
+    (PlotSpec.mode == 'context'). Carries the path of the currently
+    loaded file so the plot fn can locate the per-run input.toml
+    snapshot for et_start_s / ephemeris path / duration / cases_file.
+    """
+    path: Path
+
+
+def _find_run_input_toml(events_path: Path) -> Path | None:
+    """Walk up from `events_path` looking for an `input.toml` snapshot.
+
+    spody.exe drops one inside every run folder at launch (verbatim
+    copy of the TOML the user ran). Returns the first match found
+    walking ancestors; None if the file was opened from outside any
+    spody run folder (e.g. an external batch dropped in by hand)."""
+    for parent in events_path.parents:
+        candidate = parent / "input.toml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _resolve_ephemeris_path(eph_raw: str, toml_path: Path) -> Path | None:
+    """Best-effort resolution of `[ephemeris].file` from a run-folder
+    snapshot. The snapshot is a verbatim copy, so any relative path
+    inside it was written against the *original* TOML's directory --
+    NOT the snapshot's. Typical layout is
+    `<project>/<example>/input.toml` with `<output_dir>/<run>/` two
+    levels down, so the run folder's grandparent is usually where the
+    user originally lived; we try a few candidates so the lookup
+    survives most projects without asking the user.
+
+    Returns the first existing path or None."""
+    if not eph_raw:
+        return None
+    p = Path(eph_raw)
+    if p.is_absolute() and p.is_file():
+        return p
+    candidates = [
+        toml_path.parent / eph_raw,                  # inside run folder (rare)
+        toml_path.parent.parent / eph_raw,           # one up: <output_dir>/
+        toml_path.parent.parent.parent / eph_raw,    # two up: original TOML's dir
+        Path.cwd() / eph_raw,                        # whatever cwd is now
+    ]
+    for c in candidates:
+        try:
+            r = c.resolve()
+        except OSError:
+            continue
+        if r.is_file():
+            return r
+    return None
+
+
+def _resolve_run_context(events_path: Path) -> dict | None:
+    """Parse the per-run input.toml sitting next to the events file
+    and return the bits the impact-analysis plots need.
+
+    Returns None when the snapshot is missing (the caller surfaces a
+    user-facing hint inside the plot itself). Returns a dict otherwise:
+        et_start_s     : float
+        duration_s     : float
+        ephemeris_path : Path | None
+        central_body   : str
+        cases_file     : Path | None  (resolved next to the snapshot)
+        toml_path      : Path
+    """
+    toml_path = _find_run_input_toml(events_path)
+    if toml_path is None:
+        return None
+    try:
+        cfg = read_toml(toml_path)
+    except (OSError, ValueError):
+        return None
+    sim   = cfg.get("simulation",  {})
+    force = cfg.get("force_model", {})
+    eph   = cfg.get("ephemeris",   {})
+    batch = cfg.get("batch",       {})
+    cases_raw = batch.get("cases_file", "")
+    cases_path: Path | None = None
+    if cases_raw:
+        # cases_file is one of the few relative paths spody.exe reads
+        # *from the TOML's own directory*, so the snapshot copy makes
+        # it resolve relative to the run folder -- and the GUI copies
+        # the cases CSV into the run folder, so this just works.
+        cand = (toml_path.parent / cases_raw)
+        cases_path = cand if cand.is_file() else None
+    return {
+        "et_start_s":     float(sim.get("et_start_s", 0.0)),
+        "duration_s":     float(sim.get("duration_s", 0.0)),
+        "ephemeris_path": _resolve_ephemeris_path(eph.get("file", ""), toml_path),
+        "central_body":   str(force.get("central_body", "")),
+        "cases_file":     cases_path,
+        "toml_path":      toml_path,
+    }
+
+
+def _ctx_missing_message(ax: Axes, title: str, reason: str) -> None:
+    """Render a centred 'cannot draw' message on `ax` in lieu of the
+    real plot when the run-folder context is missing or wrong. Keeps
+    the title slot so the plot tree leaf remains recognisable."""
+    ax.text(0.5, 0.5, reason, ha="center", va="center",
+            transform=ax.transAxes, color="tab:red", wrap=True)
+    ax.set_title(title)
+    ax.set_xticks([]); ax.set_yticks([])
+
+
 def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
     if len(d) == 0:
         ax.set_title("No events recorded"); ax.set_xlabel("t [s]"); return
@@ -567,6 +703,212 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
     ax.set_xlabel("t [s]")
     ax.set_title(f"Event timeline ({len(d)} triggers)")
     ax.grid(True, axis="x", alpha=0.3)
+
+
+def _plot_events_time_to_impact_hist(ax: Axes, d: np.ndarray) -> None:
+    """Histogram of trigger time `t` across cases that impacted.
+    Operates on the batch-aggregated events file (SPDYEVTB) where each
+    row is one trigger. ECLIPSE / other kinds are filtered out -- only
+    IMPACT rows feed the histogram. No context dependency; the binary
+    alone has everything we need."""
+    mask = d["kind"] == EVENT_KIND_IMPACT
+    n_imp = int(mask.sum())
+    if n_imp == 0:
+        _ctx_missing_message(ax, "Time-to-impact histogram",
+                             "No IMPACT events in this batch.")
+        return
+    t_imp = d["t"][mask]
+    # Sturges' rule capped at 40 -- good for a few cases (4-8 bins)
+    # without producing a forest of single-count spikes on large
+    # debris clouds.
+    n_bins = max(5, min(40, int(np.log2(n_imp) + 1) * 2))
+    ax.hist(t_imp, bins=n_bins, color="tab:red", edgecolor="black", alpha=0.85)
+    ax.set_xlabel("t_trigger [s]"); ax.set_ylabel("# impacts")
+    ax.set_title(f"Time-to-impact distribution  ({n_imp} impacts, {n_bins} bins)")
+    ax.grid(True, axis="y", alpha=0.3)
+
+
+def _count_total_cases(ctx_info: dict, fallback_max: int) -> int:
+    """Total number of cases in the batch -- the universe over which
+    we compute survivors. Tries cases_file first (the canonical count)
+    and falls back to `max(case_idx)+1` from the events data if the
+    CSV isn't reachable. Empty file or unreadable CSV returns the
+    fallback too."""
+    cases_path: Path | None = ctx_info.get("cases_file")
+    if cases_path is not None:
+        try:
+            with cases_path.open("r", encoding="utf-8") as fp:
+                # Assume one header line + N data lines; this matches
+                # what the GUI's batch generator writes and what
+                # spody.exe expects. A blank tail line is tolerated.
+                n = sum(1 for line in fp if line.strip()) - 1
+            if n > 0:
+                return n
+        except OSError:
+            pass
+    return fallback_max
+
+
+def _plot_events_survival_timeline(ax: Axes, d: np.ndarray,
+                                   ctx: PlotContext) -> None:
+    """Horizontal-bar 'who falls when' chart: one bar per case_idx
+    ending at first IMPACT (red) or full sim duration (green = survivor).
+    Cases that recorded only non-IMPACT events (e.g. eclipses) still
+    count as survivors -- the bar extends to the full duration.
+
+    Needs the per-run TOML for `duration_s` and the total case count.
+    When the snapshot is missing we still draw the impacted cases only,
+    with a degraded title that says so."""
+    info = _resolve_run_context(ctx.path)
+    # Per-case earliest IMPACT time (np.inf for cases that survived).
+    if "case_idx" not in d.dtype.names:
+        _ctx_missing_message(
+            ax, "Survival timeline",
+            "This view needs a batch-aggregated events file (SPDYEVTB).")
+        return
+    impacts = d[d["kind"] == EVENT_KIND_IMPACT]
+    impact_t = {int(ci): float(t) for ci, t in zip(impacts["case_idx"],
+                                                    impacts["t"])}
+    # If a case has several IMPACTs (rare; predicate normally fires
+    # once and the integrator stops) we want the earliest.
+    for ci, t in zip(impacts["case_idx"], impacts["t"]):
+        ci_i = int(ci)
+        if t < impact_t.get(ci_i, np.inf):
+            impact_t[ci_i] = float(t)
+
+    seen_cases = set(int(c) for c in d["case_idx"]) | set(impact_t.keys())
+    fallback_max = (max(seen_cases) + 1) if seen_cases else 0
+    if info is not None:
+        duration = info["duration_s"]
+        total_n  = _count_total_cases(info, fallback_max)
+        title    = (f"Survival timeline -- {total_n} cases, "
+                    f"{len(impact_t)} impacted, "
+                    f"{total_n - len(impact_t)} survived")
+    else:
+        # No TOML in sight: show impacted cases only, with a banner.
+        duration = float(max((t for t in impact_t.values()), default=0.0))
+        total_n  = fallback_max
+        title    = (f"Survival timeline -- {len(impact_t)} impacted "
+                    "(no input.toml found: survivors hidden)")
+
+    if total_n == 0:
+        _ctx_missing_message(ax, "Survival timeline",
+                             "No cases to plot.")
+        return
+
+    # Sort: impacted cases by t_impact ascending (earliest at top),
+    # survivors at the bottom in case_idx order. Reads naturally.
+    impacted = sorted(impact_t.items(), key=lambda kv: kv[1])
+    survivors = sorted(i for i in range(total_n) if i not in impact_t)
+    order = [ci for ci, _ in impacted] + survivors
+
+    y_pos = np.arange(len(order))
+    widths = np.array([impact_t.get(ci, duration) for ci in order])
+    colors = ["tab:red" if ci in impact_t else "tab:green" for ci in order]
+    ax.barh(y_pos, widths, color=colors, edgecolor="black", linewidth=0.3)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels([f"case {ci}" for ci in order], fontsize="x-small")
+    ax.invert_yaxis()
+    ax.set_xlabel("t [s]")
+    if info is not None:
+        # Solid divider at the sim end so survivors visually 'reach' it.
+        ax.axvline(duration, color="black", linewidth=0.8, linestyle="--",
+                   alpha=0.5)
+    ax.set_title(title)
+    ax.grid(True, axis="x", alpha=0.3)
+
+
+def _plot_events_impact_map(ax: Axes, d: np.ndarray,
+                            ctx: PlotContext) -> None:
+    """Scatter of impact points projected to lat/lon on the Moon's
+    body-fixed Principal Axes frame.
+
+    Pipeline per impact row:
+        et    = sim.et_start_s + row.t
+        ang   = eph.lunar_libration_angles(et)
+        R     = icrf_to_moon_pa(*ang)
+        r_pa  = R @ row.y[0:3]                (ICRF -> Moon PA)
+        lat   = asin(z/|r|), lon = atan2(y, x)
+
+    Needs the per-run TOML for et_start_s + ephemeris path. Refuses
+    bodies other than the Moon (today spopy's libration model is lunar
+    only -- adding e.g. Earth IAU would mean a new Ephemeris helper)."""
+    if "case_idx" not in d.dtype.names:
+        _ctx_missing_message(
+            ax, "Impact lat/lon map",
+            "This view needs a batch-aggregated events file (SPDYEVTB).")
+        return
+    info = _resolve_run_context(ctx.path)
+    if info is None:
+        _ctx_missing_message(
+            ax, "Impact lat/lon map",
+            "No input.toml found next to this events file -- the run-folder "
+            "snapshot is needed for et_start_s and the ephemeris path.")
+        return
+    if info["central_body"].lower() != "moon":
+        _ctx_missing_message(
+            ax, "Impact lat/lon map",
+            f"Central body is '{info['central_body']}' -- the lat/lon "
+            "projection is currently Moon-only (Principal Axes via DE440 "
+            "lunar libration).")
+        return
+    if info["ephemeris_path"] is None:
+        _ctx_missing_message(
+            ax, "Impact lat/lon map",
+            "Could not locate the .spody ephemeris file referenced by the "
+            "snapshot. Check that the path inside input.toml is still valid.")
+        return
+
+    mask = d["kind"] == EVENT_KIND_IMPACT
+    n_imp = int(mask.sum())
+    if n_imp == 0:
+        _ctx_missing_message(ax, "Impact lat/lon map",
+                             "No IMPACT events in this batch.")
+        return
+
+    # Lazy import: keeps the analysis_panel module import cheap when
+    # the user only ever looks at trajectory plots.
+    from spopy import Ephemeris, icrf_to_moon_pa
+    try:
+        eph = Ephemeris(str(info["ephemeris_path"]))
+    except (OSError, ValueError) as exc:
+        _ctx_missing_message(
+            ax, "Impact lat/lon map",
+            f"Could not open ephemeris file:\n{exc}")
+        return
+
+    et_start = info["et_start_s"]
+    t_sim   = d["t"][mask]
+    y_state = d["y"][mask]                       # (N, 6) -- icrf km, km/s
+    case_id = d["case_idx"][mask]
+    r_icrf  = y_state[:, 0:3]
+
+    lat_deg = np.empty(n_imp); lon_deg = np.empty(n_imp)
+    for i in range(n_imp):
+        et = et_start + float(t_sim[i])
+        phi, theta, psi = eph.lunar_libration_angles(et)
+        R = icrf_to_moon_pa(phi, theta, psi)
+        r_pa = R @ r_icrf[i]
+        norm = np.linalg.norm(r_pa)
+        lat_deg[i] = np.degrees(np.arcsin(r_pa[2] / norm))
+        lon_deg[i] = np.degrees(np.arctan2(r_pa[1], r_pa[0]))
+
+    # Colour by case_idx so the user can spot which fragments hit
+    # where; turbo's high contrast survives well at small scatter sizes.
+    sc = ax.scatter(lon_deg, lat_deg, c=case_id, cmap="turbo",
+                    s=42, edgecolor="black", linewidth=0.4,
+                    vmin=case_id.min(), vmax=case_id.max())
+    ax.set_xlim(-180, 180); ax.set_ylim(-90, 90)
+    ax.set_xticks(np.arange(-180, 181, 30))
+    ax.set_yticks(np.arange(-90,  91,  30))
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Longitude [deg, PA frame]")
+    ax.set_ylabel("Latitude [deg, PA frame]")
+    ax.set_title(f"Impact locations on Moon (PA frame)  --  {n_imp} impacts")
+    ax.grid(True, alpha=0.3)
+    cb = ax.figure.colorbar(sc, ax=ax, label="case_idx",
+                            fraction=0.04, pad=0.02)
+    cb.ax.tick_params(labelsize="x-small")
 
 
 # ----------------------------------------------------------------------
@@ -732,6 +1074,19 @@ PLOTS: dict[str, list[PlotSpec]] = {
     ],
     "events": [
         PlotSpec("Events timeline",             "2d", _plot_events_timeline),
+    ],
+    "events_batch": [
+        # Timeline goes first so a fresh load always shows something
+        # sensible even when the run-folder snapshot is missing
+        # (timeline + histogram are context-free; the other two need
+        # input.toml).
+        PlotSpec("Events timeline",             "2d", _plot_events_timeline),
+        PlotSpec("Time-to-impact histogram",    "2d",
+                 _plot_events_time_to_impact_hist),
+        PlotSpec("Survival timeline per case",  "2d",
+                 _plot_events_survival_timeline, mode="context"),
+        PlotSpec("Impact lat/lon on Moon",      "2d",
+                 _plot_events_impact_map,        mode="context"),
     ],
 }
 
@@ -1614,17 +1969,21 @@ class AnalysisPanel(QWidget):
             return
 
         # Decide dispatch mode from the selection. Mixed is rejected:
-        # diff plots need 2 files, single plots need 1 -- their
-        # canvases would compete for the same file-tree selection.
-        modes = {s.mode for s in specs}
-        if len(modes) > 1:
+        # diff plots need 2 files, single+context plots need 1 -- but
+        # single and context are file-tree-compatible (both consume the
+        # one loaded file), so we collapse them for tiling purposes and
+        # let the per-spec branch below pass `ctx` where needed.
+        raw_modes = {s.mode for s in specs}
+        effective_modes = {("single" if m in ("single", "context") else m)
+                           for m in raw_modes}
+        if len(effective_modes) > 1:
             QMessageBox.information(
                 self, "Mixed plot modes",
                 "Tile cannot mix single-file and diff plots in one figure "
                 "(they read from the file tree differently). Pick from one "
                 "category at a time.")
             return
-        mode = modes.pop()
+        mode = effective_modes.pop()
 
         # Resolve the data argument(s) once -- every subplot draws into
         # the same dataset(s) so we read disk once, not N times.
@@ -1664,6 +2023,12 @@ class AnalysisPanel(QWidget):
         cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols)
 
+        # Built once: context specs all consume the same PlotContext
+        # (one file = one path) -- no need to re-build per subplot.
+        ctx = (PlotContext(path=self._path)
+               if mode == "single" and self._path is not None
+               else None)
+
         try:
             self._stack.setCurrentIndex(0)
             self._figure.clear()
@@ -1671,6 +2036,8 @@ class AnalysisPanel(QWidget):
                 ax = self._figure.add_subplot(rows, cols, i + 1)
                 if mode == "diff":
                     spec.fn(ax, data_a, data_b)
+                elif spec.mode == "context":
+                    spec.fn(ax, self._data, ctx)
                 else:
                     spec.fn(ax, self._data)
                 # Shrink labels in tile mode -- matplotlib's default
@@ -1865,19 +2232,33 @@ class AnalysisPanel(QWidget):
         if self._data is None or self._active_spec is None:
             return
         spec = self._active_spec
+        # Context-mode plots receive a PlotContext alongside the data
+        # array so they can resolve sibling files (input.toml, cases CSV,
+        # ephemeris .spody). Built once here so each plot fn stays a
+        # pure (ax, data, ctx) call. self._path is guaranteed non-None
+        # whenever self._data is (set together in load_file).
+        ctx = (PlotContext(path=self._path)
+               if spec.mode == "context" and self._path is not None
+               else None)
         try:
             if spec.dim == "2d":
                 self._stack.setCurrentIndex(0)
                 self._figure.clear()
                 ax = self._figure.add_subplot(111)
-                spec.fn(ax, self._data)
+                if ctx is not None:
+                    spec.fn(ax, self._data, ctx)
+                else:
+                    spec.fn(ax, self._data)
                 self._figure.tight_layout()
                 self._canvas.draw_idle()
             else:  # "3d"
                 self._stack.setCurrentIndex(1)
                 self._vtk.set_central_body_texture(self._configured_moon_texture())
                 self._vtk.clear_scene()
-                spec.fn(self._vtk, self._data)
+                if ctx is not None:
+                    spec.fn(self._vtk, self._data, ctx)
+                else:
+                    spec.fn(self._vtk, self._data)
                 self._vtk.reset_camera()
                 self._vtk.render()
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
