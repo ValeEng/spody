@@ -45,18 +45,22 @@ from matplotlib.backends.backend_qtagg import (
     NavigationToolbar2QT,
 )
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QTableView,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -74,6 +78,10 @@ from spody_io import (
     read_events,
     read_trajectory,
 )
+# The aggregated batch-events magic is exposed through the same
+# package but not re-exported by spody_io.__init__; import directly so
+# _detect_kind can tell the two events formats apart.
+from spody_io.headers import SPODY_EVTB_MAGIC
 from .astronomy import sun_direction_j2000
 from .settings import SettingsStore
 from .vtk_canvas import VtkCanvas
@@ -730,28 +738,35 @@ PLOTS: dict[str, list[PlotSpec]] = {
 
 # Friendly names for the kind tag shown in the type label.
 _KIND_LABEL = {
-    "traj":   "trajectory  (SPDYOUT_)",
-    "accel":  "accelerations  (SPDYACC_)",
-    "events": "events log  (SPDYEVT_)",
+    "traj":         "trajectory  (SPDYOUT_)",
+    "accel":        "accelerations  (SPDYACC_)",
+    "events":       "events log  (SPDYEVT_)",
+    "events_batch": "events log  (SPDYEVTB, batch-aggregated)",
 }
 
+# `read_events` auto-detects per-run vs batch by peeking the magic and
+# returns the matching numpy dtype; both kinds share the reader. The
+# split in this map is only there so PLOTS / _KIND_LABEL can address
+# them separately (batch events carry a `case_idx` column).
 _READERS = {
-    "traj":   read_trajectory,
-    "accel":  read_accelerations,
-    "events": read_events,
+    "traj":         read_trajectory,
+    "accel":        read_accelerations,
+    "events":       read_events,
+    "events_batch": read_events,
 }
 
 
 def _detect_kind(path: Path) -> str | None:
-    """Read the first 8 bytes and match against the three known magics."""
+    """Read the first 8 bytes and match against the known magics."""
     try:
         with path.open("rb") as fp:
             m = fp.read(8)
     except OSError:
         return None
-    if m == SPODY_BIN_MAGIC: return "traj"
-    if m == SPODY_ACC_MAGIC: return "accel"
-    if m == SPODY_EVT_MAGIC: return "events"
+    if m == SPODY_BIN_MAGIC:  return "traj"
+    if m == SPODY_ACC_MAGIC:  return "accel"
+    if m == SPODY_EVT_MAGIC:  return "events"
+    if m == SPODY_EVTB_MAGIC: return "events_batch"
     return None
 
 
@@ -777,6 +792,138 @@ def _scan_bin_files(root: Path, max_depth: int) -> list[Path]:
     walk(root, 0)
     out.sort(key=lambda p: str(p.relative_to(root)).lower())
     return out
+
+
+# ----------------------------------------------------------------------
+# Table view backing model (Tables tab)
+# ----------------------------------------------------------------------
+# Per-field display name maps for the events kinds, applied by
+# NumpyTableModel.data when the cell value is an integer code we
+# want to surface as a label (instead of the raw enum int).
+_EVENT_KIND_LABEL = {
+    EVENT_KIND_IMPACT:  "IMPACT",
+    EVENT_KIND_ECLIPSE: "ECLIPSE",
+}
+
+
+# Display-name overrides for fields whose on-disk name is misleading
+# in human display. Keyed by kind ("events" / "events_batch") so the
+# rename only kicks in where it makes semantic sense.
+#
+# distance_km is the EventRecord's "trigger metric" slot: it carries
+# whatever quantity tripped the predicate (distance in km for IMPACT,
+# eclipse fraction in [0, 1] for ECLIPSE, etc.). The on-disk name is
+# kept for backward compat but the table header surfaces the generic
+# meaning.
+_FIELD_DISPLAY_RENAME: dict[str, dict[str, str]] = {
+    "events":       {"distance_km": "trigger_value"},
+    "events_batch": {"distance_km": "trigger_value"},
+}
+
+
+def _expand_columns(arr: np.ndarray,
+                    rename: dict[str, str] | None = None
+                    ) -> list[tuple[str, str, int | None]]:
+    """Flatten a structured numpy dtype into a list of display columns.
+    Each tuple is `(display_name, field_name, sub_index)`:
+    - field_name is the dtype field; sub_index is None for scalar
+      fields or 0..N-1 for the components of a nested array field.
+    - Fields whose name starts with an underscore (e.g. the `_pad`
+      padding byte in BATCH_EVENT_DTYPE) are skipped so they don't
+      clutter the view.
+    - `rename` swaps the display name for fields whose on-disk name is
+      misleading (see _FIELD_DISPLAY_RENAME)."""
+    rename = rename or {}
+    cols: list[tuple[str, str, int | None]] = []
+    if arr.dtype.names is None:
+        # Plain ndarray: one column per component.
+        n = 1 if arr.ndim == 1 else arr.shape[1]
+        for i in range(n):
+            cols.append((f"col{i}", "", i))
+        return cols
+    for name in arr.dtype.names:
+        if name.startswith("_"):
+            continue
+        display = rename.get(name, name)
+        sub_dtype, _ = arr.dtype.fields[name]
+        if sub_dtype.subdtype is not None:
+            # Nested array, e.g. y[6] in EventRecord -> y0..y5
+            length = sub_dtype.subdtype[1][0]
+            for i in range(length):
+                cols.append((f"{display}{i}", name, i))
+        else:
+            cols.append((display, name, None))
+    return cols
+
+
+def _format_cell(value, field_name: str) -> str:
+    """Stringify one cell value for QTableView display. Floats get 12
+    significant digits (round-trips a typical km-scale state vector
+    without surprises); integers stay raw; the `kind` field gets the
+    IMPACT/ECLIPSE label instead of its enum int."""
+    if field_name == "kind":
+        try:
+            iv = int(value)
+        except (TypeError, ValueError):
+            return str(value)
+        return _EVENT_KIND_LABEL.get(iv, str(iv))
+    if isinstance(value, (float, np.floating)):
+        return f"{float(value):.12g}"
+    return str(value)
+
+
+class NumpyTableModel(QAbstractTableModel):
+    """QAbstractTableModel over a 1-D numpy structured array (events,
+    accel, trajectory). Nested array fields (e.g. EventRecord.y[6])
+    are flattened into N columns; private fields (starting with '_')
+    are hidden so dtype padding never leaks into the view."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._arr: np.ndarray | None = None
+        self._cols: list[tuple[str, str, int | None]] = []
+
+    def set_array(self, arr: np.ndarray | None,
+                  rename: dict[str, str] | None = None) -> None:
+        """Swap the backing array. `rename` is a map of dtype-field
+        name -> display name, used to relabel columns whose on-disk
+        name doesn't match how the value is interpreted (e.g.
+        EventRecord.distance_km is really a 'trigger_value' jolly)."""
+        self.beginResetModel()
+        self._arr = arr
+        self._cols = (_expand_columns(arr, rename)
+                      if arr is not None else [])
+        self.endResetModel()
+
+    def rowCount(self, _parent=QModelIndex()) -> int:  # noqa: B008
+        return 0 if self._arr is None else int(len(self._arr))
+
+    def columnCount(self, _parent=QModelIndex()) -> int:  # noqa: B008
+        return len(self._cols)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if self._arr is None or not index.isValid():
+            return None
+        if role not in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
+            return None
+        display_name, field_name, sub_idx = self._cols[index.column()]
+        row = self._arr[index.row()]
+        if field_name == "":
+            # Plain (non-structured) ndarray fallback.
+            value = row if sub_idx is None else row[sub_idx]
+        else:
+            cell = row[field_name]
+            value = cell if sub_idx is None else cell[sub_idx]
+        return _format_cell(value, field_name)
+
+    def headerData(self, section, orientation,
+                   role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal:
+            return self._cols[section][0]
+        # Row header: 1-based index, easier to read off than 0-based.
+        return str(section + 1)
 
 
 class AnalysisPanel(QWidget):
@@ -929,11 +1076,69 @@ class AnalysisPanel(QWidget):
         self._info_label.setStyleSheet("color: gray;")
         self._info_label.setWordWrap(True)
 
+        # Plot tab content: sun bar + 2D/3D stack. Stays unchanged.
+        plot_tab = QWidget()
+        plot_lay = QVBoxLayout(plot_tab)
+        plot_lay.setContentsMargins(0, 0, 0, 0)
+        plot_lay.addWidget(self._sun_widget)
+        plot_lay.addWidget(self._stack, 1)
+
+        # Table tab content: raw record view of the loaded file. The
+        # selection model is spreadsheet-style:
+        #   - click on a cell            -> select that cell
+        #   - click on a column header   -> select the whole column
+        #   - click on a row index       -> select the whole row
+        #   - Shift/Ctrl click extend the selection (rectangular or
+        #     additive); Ctrl+C copies the selection as TSV into the
+        #     system clipboard (paste straight into Excel / Sheets).
+        self._table_model = NumpyTableModel()
+        self._table_view  = QTableView()
+        self._table_view.setModel(self._table_model)
+        self._table_view.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table_view.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectItems)
+        self._table_view.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._table_view.setAlternatingRowColors(True)
+        h_header = self._table_view.horizontalHeader()
+        h_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        h_header.setSectionsClickable(True)
+        # Clicking a column header selects the whole column. Same for
+        # the vertical (row-index) header below. Qt fires sectionClicked
+        # with the section's int index; selectColumn/selectRow take
+        # exactly that, so the wiring is one connect each.
+        h_header.sectionClicked.connect(self._table_view.selectColumn)
+        v_header = self._table_view.verticalHeader()
+        v_header.setSectionsClickable(True)
+        v_header.sectionClicked.connect(self._table_view.selectRow)
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        self._table_view.setFont(mono)
+        # Ctrl+C handler. Qt's default for QTableView only copies the
+        # current item (one cell); our shortcut serialises the whole
+        # selection rectangle as TSV (Tab-separated, one row per line),
+        # which is what spreadsheets and notebooks expect on paste.
+        copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy,
+                                  self._table_view)
+        copy_shortcut.activated.connect(self._copy_table_selection)
+        table_tab = QWidget()
+        table_lay = QVBoxLayout(table_tab)
+        table_lay.setContentsMargins(0, 0, 0, 0)
+        table_lay.addWidget(self._table_view, 1)
+
+        # Top-level tabs: clicking a file populates whichever tab is
+        # active right now; switching tab on an already-loaded file
+        # repopulates the new view from the cached array (no re-read).
+        self._right_tabs = QTabWidget()
+        self._right_tabs.addTab(plot_tab,  "Plot")
+        self._right_tabs.addTab(table_tab, "Table")
+        self._right_tabs.currentChanged.connect(self._on_right_tab_changed)
+
         right = QWidget()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.addWidget(self._sun_widget)
-        right_lay.addWidget(self._stack, 1)
+        right_lay.addWidget(self._right_tabs, 1)
         right_lay.addWidget(self._info_label)
 
         # Body splitter: left files | right plot ----------------------
@@ -1085,6 +1290,49 @@ class AnalysisPanel(QWidget):
         if path:
             self.set_working_dir(Path(path))
 
+    def _on_right_tab_changed(self, idx: int) -> None:
+        """Switching to the Plot tab on an already-loaded file that has
+        no current plot triggers the default render -- otherwise the
+        canvas would stay blank until the user clicked something in the
+        plot tree. No-op on the Table side: the model is always in
+        sync with `self._data`."""
+        if idx == 0 and self._data is not None and self._kind is not None:
+            current = self._plot_tree.currentItem()
+            if current is None or current.data(0, _SPEC_ROLE) is None:
+                first = self._first_plot_leaf()
+                if first is not None:
+                    self._plot_tree.setCurrentItem(first)
+                    self._on_plot_tree_clicked(first, 0)
+
+    def _copy_table_selection(self) -> None:
+        """Dump the current table selection to the clipboard as TSV.
+
+        Layout: rows in ascending row order, columns in ascending
+        column order; cells outside the selection (when the user has
+        picked a non-rectangular set) are emitted as empty fields so
+        the row alignment is preserved. Numbers reuse the same
+        12-significant-digit format the cells show on screen, so the
+        text round-trips back into the same value after parsing."""
+        sel = self._table_view.selectionModel().selectedIndexes()
+        if not sel:
+            return
+        rows = sorted({idx.row()    for idx in sel})
+        cols = sorted({idx.column() for idx in sel})
+        selected = {(idx.row(), idx.column()): idx for idx in sel}
+        model = self._table_model
+        lines: list[str] = []
+        for r in rows:
+            cells: list[str] = []
+            for c in cols:
+                if (r, c) in selected:
+                    val = model.data(model.index(r, c),
+                                     Qt.ItemDataRole.DisplayRole)
+                    cells.append("" if val is None else str(val))
+                else:
+                    cells.append("")
+            lines.append("\t".join(cells))
+        QApplication.clipboard().setText("\n".join(lines))
+
     def _on_add_external(self) -> None:
         start = str(self._path.parent) if self._path else ""
         path, _ = QFileDialog.getOpenFileName(
@@ -1235,14 +1483,21 @@ class AnalysisPanel(QWidget):
         )
         self._info_label.setStyleSheet("")
 
-        # Rebuild the plot tree for the new kind; auto-plot the first
-        # leaf so the user immediately sees *something* without having
-        # to click around.
+        # Always refresh the Table model so a tab switch later in the
+        # session shows the right rows without re-reading the file.
+        self._table_model.set_array(data, _FIELD_DISPLAY_RENAME.get(kind))
+
+        # Rebuild the plot tree for the new kind. Auto-render the first
+        # plot only when the Plot tab is currently active; if the user
+        # is looking at the Table tab we leave the Plot view empty
+        # until they switch back -- avoids spending I/O / VTK time on
+        # an off-screen view.
         self._populate_plot_tree(kind)
-        first = self._first_plot_leaf()
-        if first is not None:
-            self._plot_tree.setCurrentItem(first)
-            self._on_plot_tree_clicked(first, 0)
+        if self._right_tabs.currentIndex() == 0:
+            first = self._first_plot_leaf()
+            if first is not None:
+                self._plot_tree.setCurrentItem(first)
+                self._on_plot_tree_clicked(first, 0)
 
     # ------------------------------------------------------------------
     # Plot tree management
