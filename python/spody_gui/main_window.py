@@ -348,6 +348,11 @@ class MainWindow(QMainWindow):
         # a chance to pick up newly-arrived files. The Run tab doesn't
         # need a refresh -- the run-guard re-checks on each launch.
         if dlg.was_changed():
+            # Asset combos in the Run form (ephemeris / harmonics
+            # dropdowns) read directly from the data dir on construction
+            # -- nudge them so a freshly-downloaded file shows up
+            # without restarting the GUI.
+            self._form.refresh_asset_combos()
             current = self._form.current_path()
             if current is not None:
                 self._analysis.set_working_dir(current.parent)

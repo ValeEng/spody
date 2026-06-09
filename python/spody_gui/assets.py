@@ -60,13 +60,30 @@ DE440_CHUNKS_FULL:   tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class Asset:
-    """One file the wizard knows how to download/derive."""
+    """One file the wizard knows how to download/derive.
+
+    `category` and `body` let the GUI form filter assets when populating
+    the harmonics / ephemeris combo boxes -- e.g. show only files of
+    category 'harmonics' for the currently-selected `central_body`.
+    Default values keep the rest of the wizard backward-compat: when an
+    asset is not categorised, it just never shows up in the form
+    dropdowns (the wizard panel itself still lists everything for
+    download)."""
     name: str          # Human label shown in the wizard table.
     url: str           # Best-known direct URL (editable in the UI).
     relpath: str       # Path inside the data root, with forward slashes.
     min_bytes: int     # Sanity floor; below this the file is "missing".
     kind: str          # "raw" (download) or "derived" (produced locally).
     required: bool     # Hard requirement to run spody at all.
+    category: str = ""
+    """Semantic role: 'harmonics' | 'ephemeris' | 'ephemeris_source' |
+    'harmonics_meta' | 'texture' | '' (uncategorised). The form's
+    combo widgets filter on this so a row that isn't a harmonics or
+    ephemeris file never pollutes the dropdowns."""
+    body: str | None = None
+    """Central body the asset describes ('Moon', 'Earth', ...) or None
+    for body-agnostic assets (multi-body ephemerides like DE440 cover
+    every planet at once)."""
 
 
 # --------------------------------------------------------------------------
@@ -80,6 +97,7 @@ DE440_HEADER = Asset(
     min_bytes=10_000,
     kind="raw",
     required=True,
+    category="ephemeris_source",
 )
 
 DE440_SPODY = Asset(
@@ -90,6 +108,8 @@ DE440_SPODY = Asset(
     min_bytes=1_000_000,
     kind="derived",
     required=True,
+    category="ephemeris",
+    body=None,   # DE440 covers all planets; body-agnostic
 )
 
 # GRGM1200B is mirrored on the PDS Geosciences node (Washington U.).
@@ -103,6 +123,8 @@ GRGM1200B_TAB = Asset(
     min_bytes=10_000_000,
     kind="raw",
     required=True,
+    category="harmonics",
+    body="Moon",
 )
 
 GRGM1200B_LBL = Asset(
@@ -113,6 +135,8 @@ GRGM1200B_LBL = Asset(
     min_bytes=1_000,
     kind="raw",
     required=True,
+    category="harmonics_meta",
+    body="Moon",
 )
 
 # NASA SVS "CGI Moon Kit" -- LROC color mosaic, equirectangular
@@ -135,6 +159,8 @@ MOON_TEXTURE = Asset(
     min_bytes=2_000_000,
     kind="raw",
     required=False,
+    category="texture",
+    body="Moon",
 )
 
 
@@ -236,6 +262,37 @@ def moon_texture_path(root: Path) -> Path | None:
     plot dispatch."""
     p = root / MOON_TEXTURE.relpath
     return p if p.is_file() else None
+
+
+def assets_by_category(category: str, body: str | None = None
+                       ) -> tuple[Asset, ...]:
+    """All registered assets matching the requested category, optionally
+    filtered by central body. Pass `body=None` to skip the body filter
+    (useful for body-agnostic categories like 'ephemeris')."""
+    out: list[Asset] = []
+    for a in required_assets():
+        if a.category != category:
+            continue
+        if body is not None and a.body is not None and a.body != body:
+            continue
+        out.append(a)
+    return tuple(out)
+
+
+def present_files_for(category: str, root: Path, body: str | None = None
+                      ) -> list[tuple[str, Path]]:
+    """Return `(display_name, absolute_path)` pairs for every asset of
+    the given category+body that's actually on disk under `root`.
+
+    Used by the TOML form to populate ephemeris / harmonics combo
+    boxes: each entry's text is the asset's `Asset.name`, its data is
+    the resolved Path the TOML will reference. Returns an empty list
+    when no matching asset has been downloaded yet."""
+    out: list[tuple[str, Path]] = []
+    for a in assets_by_category(category, body):
+        if is_present(a, root):
+            out.append((a.name, root / a.relpath))
+    return out
 
 
 def with_url(asset: Asset, new_url: str) -> Asset:

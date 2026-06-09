@@ -75,6 +75,56 @@ from PySide6.QtWidgets import (
 # get individual checkboxes, not a combo list. Adding a new central
 # body / integrator is a one-line edit to these tuples.
 # ----------------------------------------------------------------------
+class _AssetCombo(QComboBox):
+    """QComboBox subclass used by `_add_asset_combo`. Each item's
+    userData carries the absolute on-disk path of the file the entry
+    refers to; the displayed text is the human-friendly Asset.name
+    (or '<basename>  (custom)' for paths added via Browse...).
+
+    Keeping `category` + `body_key` on the instance means the form's
+    refresh routine can rebuild every combo's options uniformly
+    without an external lookup table."""
+    def __init__(self, category: str, body_key: str | None) -> None:
+        super().__init__()
+        self.category = category
+        self.body_key = body_key
+
+    def repopulate(self, entries, preserve_path: str | None = None) -> None:
+        """Wipe + refill from `entries` ((display_name, Path) pairs).
+        If `preserve_path` matches one of the new entries, select it;
+        otherwise, if it doesn't match anything, add it as a one-off
+        '(custom)' entry so the round-trip from a loaded TOML stays
+        intact even after a refresh."""
+        block = self.blockSignals(True)
+        try:
+            self.clear()
+            for name, path in entries:
+                self.addItem(name, str(path))
+            if preserve_path:
+                idx = self.findData(preserve_path)
+                if idx >= 0:
+                    self.setCurrentIndex(idx)
+                else:
+                    self.add_custom_path(preserve_path)
+        finally:
+            self.blockSignals(block)
+
+    def add_custom_path(self, path: str) -> None:
+        """Append an out-of-data-dir entry tagged '(custom)' and select
+        it. Used both by the Browse... button and by `repopulate` to
+        keep a TOML's pre-existing path visible when it doesn't match
+        any wizard asset."""
+        from pathlib import Path as _Path
+        label = f"{_Path(path).name}  (custom)"
+        # If an identical path is already there, just select it.
+        existing = self.findData(path)
+        if existing >= 0:
+            self.setCurrentIndex(existing)
+            return
+        self.addItem(label, path)
+        self.setCurrentIndex(self.count() - 1)
+
+
 CENTRAL_BODIES   = ("Moon",)
 FRAMES           = ("central_inertial",)
 INTEGRATORS      = ("rkdp45",)
@@ -284,6 +334,12 @@ class TomlForm(QWidget):
         # for unit / smoke tests without a full MainWindow.
         self._store = store
         self._widgets: dict[str, QWidget] = {}   # dotted path -> widget
+        # Asset combos registered separately so the dropdown can be
+        # refreshed when the data dir or central_body change. Each entry
+        # is { category: 'harmonics'|'ephemeris', body_key: str|None },
+        # body_key being the dotted-path key of the widget whose value
+        # filters the combo (None -> body-agnostic).
+        self._asset_combos: dict[str, dict[str, Any]] = {}
         self._current_path: Path | None = None
         self._modified = False
         self._loading = False                    # suppress modified flag
@@ -395,9 +451,93 @@ class TomlForm(QWidget):
         g = QGroupBox("[simulation]")
         f = QFormLayout(g)
         self._add_string(f, "simulation.name",       "name")
-        self._add_float (f, "simulation.et_start_s", "et_start_s")
+        # ET stays the only thing the TOML carries; the UTC cell next
+        # to it is a typing aid driven by `→` / `←` convert buttons.
+        self._add_et_with_utc(f, "simulation.et_start_s", "et_start_s")
         self._add_float (f, "simulation.duration_s", "duration_s")
         return g
+
+    def _add_et_with_utc(self, layout: QFormLayout, key: str,
+                          label: str) -> None:
+        """Composite row: ET (the TOML-bound float) on the left, UTC
+        ISO 8601 (a display/typing aid, NOT serialised) on the right,
+        with a vertical stack of two convert buttons between them:
+
+            ┌──────────┐   ┌─→┐   ┌──────────────────────┐
+            │ ET sec   │   └──┘   │ UTC ISO 8601         │
+            │          │   ┌─←┐   │                      │
+            └──────────┘   └──┘   └──────────────────────┘
+
+        `→` fills the UTC cell from the current ET value; `←` does
+        the inverse. Conversion goes through `time_conv` which matches
+        SPICE `str2et` to ~1 ns (see module docstring)."""
+        et_edit = QLineEdit()
+        et_edit.textChanged.connect(self._touch)
+        self._widgets[key] = et_edit
+        self._float_keys.add(key)
+
+        utc_edit = QLineEdit()
+        utc_edit.setPlaceholderText("YYYY-MM-DDThh:mm:ss[.fff]Z")
+        # UTC is NOT registered in self._widgets -- the TOML carries
+        # only `et_start_s`; the UTC text is a transient display.
+
+        from . import time_conv
+
+        def _et_to_utc() -> None:
+            text = et_edit.text().strip()
+            if not text:
+                QMessageBox.information(
+                    self, "ET → UTC", "Fill in et_start_s first.")
+                return
+            try:
+                et = float(text)
+            except ValueError:
+                QMessageBox.warning(
+                    self, "ET → UTC",
+                    f"et_start_s is not a number: {text!r}")
+                return
+            utc_edit.setText(time_conv.format_utc_iso(time_conv.et_to_utc(et)))
+
+        def _utc_to_et() -> None:
+            text = utc_edit.text().strip()
+            if not text:
+                QMessageBox.information(
+                    self, "UTC → ET", "Type a UTC ISO 8601 instant first "
+                    "(e.g. 2009-09-18T12:00:00Z).")
+                return
+            try:
+                dt = time_conv.parse_utc_iso(text)
+                et = time_conv.utc_to_et(dt)
+            except ValueError as exc:
+                QMessageBox.warning(self, "UTC → ET", str(exc))
+                return
+            # repr() keeps every double-precision bit so a round-trip
+            # UTC -> ET -> UTC stays exact at the cost of a long tail.
+            et_edit.setText(repr(et))
+
+        btn_to_utc = QPushButton("→")
+        btn_to_utc.setToolTip("Compute UTC from this ET value (et_start_s → utc)")
+        btn_to_utc.setMaximumWidth(28)
+        btn_to_et  = QPushButton("←")
+        btn_to_et.setToolTip("Compute ET from this UTC value (utc → et_start_s)")
+        btn_to_et.setMaximumWidth(28)
+        btn_to_utc.clicked.connect(_et_to_utc)
+        btn_to_et.clicked.connect(_utc_to_et)
+
+        btn_col = QVBoxLayout()
+        btn_col.setContentsMargins(0, 0, 0, 0)
+        btn_col.setSpacing(2)
+        btn_col.addWidget(btn_to_utc)
+        btn_col.addWidget(btn_to_et)
+        btn_wrap = QWidget()
+        btn_wrap.setLayout(btn_col)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(et_edit, 1)
+        row.addWidget(btn_wrap)
+        row.addWidget(utc_edit, 1)
+        layout.addRow(label + _unit_suffix("et_start_s"), _hwrap(row))
 
     def _build_object(self) -> QGroupBox:
         """Spacecraft XOR debris. A pair of radios at the top swaps
@@ -474,8 +614,14 @@ class TomlForm(QWidget):
         g = QGroupBox("[force_model]")
         f = QFormLayout(g)
         self._add_enum (f, "force_model.central_body",     "central_body", CENTRAL_BODIES)
-        self._add_path (f, "force_model.harmonics_file",   "harmonics_file",
-                        "Harmonics (*.tab *.cof *.txt);;All files (*)")
+        # Harmonics combo: filtered by central_body so once Earth /
+        # Mars / etc. land as supported central bodies, the dropdown
+        # only ever shows the gravity models that apply to the
+        # currently-selected body.
+        self._add_asset_combo(
+            f, "force_model.harmonics_file", "harmonics_file",
+            category="harmonics", body_key="force_model.central_body",
+        )
         self._add_int  (f, "force_model.harmonics_degree", "harmonics_degree",
                         minimum=2, maximum=1200)
         self._add_strlist_checks(f, "force_model.third_bodies", "third_bodies",
@@ -486,8 +632,13 @@ class TomlForm(QWidget):
     def _build_ephemeris(self) -> QGroupBox:
         g = QGroupBox("[ephemeris]")
         f = QFormLayout(g)
-        self._add_path(f, "ephemeris.file", "file",
-                       "Ephemeris (*.spody *.bsp);;All files (*)")
+        # Ephemeris combo: body-agnostic. DE-series ephemerides cover
+        # every planet at once, so the dropdown does not depend on
+        # the central body.
+        self._add_asset_combo(
+            f, "ephemeris.file", "file",
+            category="ephemeris", body_key=None,
+        )
         return g
 
     def _build_integrator(self) -> QGroupBox:
@@ -858,6 +1009,89 @@ class TomlForm(QWidget):
         w.currentIndexChanged.connect(self._touch)
         self._widgets[key] = w
         layout.addRow(label, w)
+
+    def _add_asset_combo(self, layout: QFormLayout, key: str, label: str,
+                         category: str, body_key: str | None = None) -> None:
+        """Dropdown of downloaded assets of a given category, with an
+        escape hatch for legacy / external paths.
+
+        - `category`: 'harmonics' or 'ephemeris' (matches Asset.category)
+        - `body_key`: dotted-path widget key whose value filters by
+                      body ('force_model.central_body'); None for
+                      body-agnostic dropdowns like the ephemeris one.
+
+        Each combo item carries the absolute path as its userData;
+        `_widget_value` reads that out at Generate time. A 'Browse...'
+        button next to the combo lets the user add an out-of-data-dir
+        file as a one-off entry tagged '(custom)' so existing TOMLs
+        with bespoke paths (e.g. the demos that point at
+        external/spody-core) keep round-tripping.
+
+        The combo is also re-populated when the user changes the
+        central body (via the matching body_key's currentTextChanged
+        signal -- wired here so the form stays self-contained)."""
+        combo = _AssetCombo(category=category, body_key=body_key)
+        combo.currentIndexChanged.connect(self._touch)
+
+        btn = QPushButton("Browse...")
+        def _browse() -> None:
+            # Start in the data dir if available so a regular user lands
+            # next to the things the wizard downloaded.
+            start = ""
+            if self._store is not None:
+                start = str(self._store.data_dir())
+            path, _ = QFileDialog.getOpenFileName(
+                self, f"Locate {key}", start, "All files (*)")
+            if not path:
+                return
+            combo.add_custom_path(path)
+        btn.clicked.connect(_browse)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(combo, 1)
+        row.addWidget(btn)
+        self._widgets[key] = combo
+        self._asset_combos[key] = {"category": category, "body_key": body_key}
+        layout.addRow(label, _hwrap(row))
+        self._refresh_asset_combo(key)
+        # Re-populate when the central body changes (if applicable).
+        if body_key is not None and body_key in self._widgets:
+            body_widget = self._widgets[body_key]
+            if isinstance(body_widget, QComboBox):
+                body_widget.currentTextChanged.connect(
+                    lambda _t, k=key: self._refresh_asset_combo(k))
+
+    def _refresh_asset_combo(self, key: str) -> None:
+        """Re-scan the data dir and rebuild this combo's options. The
+        currently-selected path is preserved when possible (re-selected
+        by data-equality) so the user doesn't lose their pick on a
+        re-population."""
+        info = self._asset_combos.get(key)
+        combo = self._widgets.get(key)
+        if info is None or not isinstance(combo, _AssetCombo):
+            return
+        from . import assets
+        if self._store is None:
+            return
+        root = self._store.data_dir()
+        body = None
+        if info["body_key"] is not None:
+            body_widget = self._widgets.get(info["body_key"])
+            if isinstance(body_widget, QComboBox):
+                body = body_widget.currentText().strip() or None
+        prior_data = combo.currentData()
+        combo.repopulate(
+            assets.present_files_for(info["category"], root, body),
+            preserve_path=str(prior_data) if prior_data else None,
+        )
+
+    def refresh_asset_combos(self) -> None:
+        """Public entry point: re-scan every registered asset combo.
+        Called by MainWindow after the Setup wizard closes so newly-
+        downloaded files appear immediately."""
+        for key in list(self._asset_combos):
+            self._refresh_asset_combo(key)
 
     def _add_path(self, layout: QFormLayout, key: str, label: str,
                   filter_str: str, save: bool = False,
@@ -1963,6 +2197,12 @@ class TomlForm(QWidget):
                 w.clear()
             elif isinstance(w, QCheckBox):
                 w.setChecked(False)
+            elif isinstance(w, _AssetCombo):
+                # Wipe any leftover '(custom)' entries from the prior
+                # load, then re-scan the data dir so the dropdown is
+                # current for the next file.
+                self._refresh_asset_combo(key)
+                w.setCurrentIndex(-1)
             elif isinstance(w, QComboBox):
                 w.setCurrentIndex(0)
             elif isinstance(w, tuple):   # vec3
@@ -1992,6 +2232,12 @@ class TomlForm(QWidget):
             return text
         if isinstance(w, QCheckBox):
             return bool(w.isChecked())
+        if isinstance(w, _AssetCombo):
+            # Asset combos store the absolute path in item userData;
+            # currentData() returns None when the combo is empty
+            # (e.g. no assets downloaded yet for the current body).
+            data = w.currentData()
+            return str(data) if data else None
         if isinstance(w, QComboBox):
             return w.currentText()
         if isinstance(w, tuple):   # vec3
@@ -2021,6 +2267,34 @@ class TomlForm(QWidget):
             return
         if isinstance(w, QCheckBox):
             w.setChecked(bool(value))
+            return
+        if isinstance(w, _AssetCombo):
+            # Loading a path: try to match by userData (absolute path);
+            # if no entry matches, surface it as a '(custom)' entry so
+            # the user sees their original path is still intact.
+            target = "" if value is None else str(value)
+            if not target:
+                w.setCurrentIndex(-1)
+                return
+            # Resolve to an absolute path so it matches whatever the
+            # asset combo would have stored. Relative paths from the
+            # TOML are resolved against the TOML's own directory --
+            # `self._current_path` was set by `load_from`.
+            from pathlib import Path as _Path
+            abs_target = target
+            tp = _Path(target)
+            if not tp.is_absolute() and self._current_path is not None:
+                try:
+                    abs_target = str((self._current_path.parent / tp).resolve())
+                except OSError:
+                    abs_target = target
+            idx = w.findData(abs_target)
+            if idx >= 0:
+                w.setCurrentIndex(idx)
+                return
+            # Fall back to the original (unresolved) string so the user
+            # sees exactly what was in the TOML.
+            w.add_custom_path(target)
             return
         if isinstance(w, QComboBox):
             idx = w.findText(str(value))
