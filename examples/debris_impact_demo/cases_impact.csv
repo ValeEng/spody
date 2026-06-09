@@ -1,0 +1,24 @@
+# Debris cloud designed to exercise the Analysis-tab event views.
+# All offsets are in ICRF (delta over the apolunio state in input.toml).
+# The base orbit (zero deltas) already crashes near the south pole;
+# the per-case deltas spread fragments out in longitude (dv_x cross-
+# track) and in time (dv_z in-track / energy), with a handful of cases
+# given enough extra energy that their perilunio sits above 1737.4 km
+# and they survive the 3 h window.
+#
+# Columns:
+#   id        : case name; per-case output files use it as a suffix
+#   Cr, am_srp: passed through to debris.Cr / debris.am_srp
+#   dr_*      : initial-state position offset, km (ICRF)
+#   dv_*      : initial-state velocity offset, km/s (ICRF)
+id,    Cr,  am_srp, dr_x_km, dr_y_km, dr_z_km, dv_x_kms, dv_y_kms, dv_z_kms
+c00,   1.3, 0.020,  0.0,     0.0,     0.0,      0.000,    0.0,     0.000
+c01,   1.3, 0.020,  0.0,     0.0,     0.0,      0.050,    0.0,     0.000
+c02,   1.3, 0.020,  0.0,     0.0,     0.0,     -0.050,    0.0,     0.000
+c03,   1.3, 0.020,  0.0,     0.0,     0.0,      0.100,    0.0,     0.000
+c04,   1.3, 0.020,  0.0,     0.0,     0.0,     -0.100,    0.0,     0.000
+c05,   1.3, 0.020,  0.0,     0.0,     0.0,      0.000,    0.0,    -0.050
+c06,   1.3, 0.020,  0.0,     0.0,     0.0,      0.000,    0.0,     0.080
+c07,   1.3, 0.020,  0.0,     0.0,     0.0,      0.000,    0.0,     0.120
+c08,   1.3, 0.020,  0.0,     0.0,     0.0,      0.080,    0.0,     0.080
+c09,   1.3, 0.020,  0.0,     0.0,     0.0,     -0.080,    0.0,     0.080

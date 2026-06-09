@@ -154,6 +154,14 @@ class PlotSpec:
     that need et_start_s / ephemeris path / duration). Diff and
     context specs ignore `overlay_fn` -- they aren't single-file
     plots."""
+    projection: str | None = None
+    """matplotlib `add_subplot` projection kwarg for 2D plots. None
+    (default) builds a regular Cartesian axis; 'mollweide' / 'aitoff'
+    / 'hammer' produce the geographic ellipse projections used by
+    the impact lat/lon views. Ignored for 3D plots (their canvas is
+    VTK, not matplotlib) and by tile mode (mixing projections in one
+    figure would force per-subplot axis creation, not worth the
+    complexity yet)."""
 
 
 def _plot_traj_r(ax: Axes, d: np.ndarray) -> None:
@@ -580,11 +588,20 @@ def _plot_acc_eclipse(ax: Axes, d: np.ndarray) -> None:
 @dataclass(frozen=True)
 class PlotContext:
     """Side-channel context passed to context-aware plot functions
-    (PlotSpec.mode == 'context'). Carries the path of the currently
-    loaded file so the plot fn can locate the per-run input.toml
-    snapshot for et_start_s / ephemeris path / duration / cases_file.
+    (PlotSpec.mode == 'context').
+
+    `path`           : currently loaded file -- the plot fn walks
+                       ancestors from here to locate the per-run
+                       input.toml snapshot (for et_start_s, ephemeris
+                       path, duration, cases_file).
+    `moon_texture`   : resolved Moon equirectangular texture, or None.
+                       2D plots use it as a lat/lon background; 3D
+                       plots forward it to VtkCanvas. Resolved by the
+                       panel (settings override or wizard fallback)
+                       so plot fns never reach back into QSettings.
     """
     path: Path
+    moon_texture: Path | None = None
 
 
 def _find_run_input_toml(events_path: Path) -> Path | None:
@@ -660,12 +677,22 @@ def _resolve_run_context(events_path: Path) -> dict | None:
     cases_raw = batch.get("cases_file", "")
     cases_path: Path | None = None
     if cases_raw:
-        # cases_file is one of the few relative paths spody.exe reads
-        # *from the TOML's own directory*, so the snapshot copy makes
-        # it resolve relative to the run folder -- and the GUI copies
-        # the cases CSV into the run folder, so this just works.
-        cand = (toml_path.parent / cases_raw)
-        cases_path = cand if cand.is_file() else None
+        # The cases CSV is read from the TOML's directory; spody.exe
+        # copies only input.toml into the run folder, not the CSV, so
+        # we try the snapshot dir first (in case the user copied it
+        # by hand) and then walk up to where the original TOML lived
+        # (same candidate ladder as ephemeris resolution).
+        for cand_base in (toml_path.parent,
+                          toml_path.parent.parent,
+                          toml_path.parent.parent.parent,
+                          Path.cwd()):
+            cand = cand_base / cases_raw
+            try:
+                if cand.is_file():
+                    cases_path = cand.resolve()
+                    break
+            except OSError:
+                continue
     return {
         "et_start_s":     float(sim.get("et_start_s", 0.0)),
         "duration_s":     float(sim.get("duration_s", 0.0)),
@@ -683,7 +710,166 @@ def _ctx_missing_message(ax: Axes, title: str, reason: str) -> None:
     ax.text(0.5, 0.5, reason, ha="center", va="center",
             transform=ax.transAxes, color="tab:red", wrap=True)
     ax.set_title(title)
-    ax.set_xticks([]); ax.set_yticks([])
+    try:
+        ax.set_xticks([]); ax.set_yticks([])
+    except (NotImplementedError, ValueError):
+        # Mollweide-projected axes refuse arbitrary tick lists; the
+        # message body is enough on those.
+        pass
+
+
+# Seconds to days for everywhere the events views surface time -- the
+# events file stores t in seconds (consistent with the integrator and
+# the events.h C struct), but at user-visible scales (days-long batch
+# runs, multi-day debris-cloud decay) day-level axes read better.
+_SEC_PER_DAY = 86400.0
+
+# Cache for the grayscale-and-downsampled Mollweide Moon background,
+# keyed by (texture_path, mtime). Avoids re-loading + resampling the
+# 2K texture every time the user clicks an impact map -- the resample
+# is the slow step (~80 ms on PIL/LANCZOS at 720x360) and the result
+# never changes across clicks. Set lazily by
+# `_load_moon_grayscale_for_mollweide`; the panel doesn't bother
+# evicting because the dict holds at most two entries (one per
+# texture path the user has ever set).
+_MOON_BG_CACHE: dict[tuple[str, float], np.ndarray] = {}
+
+
+def _load_moon_grayscale_for_mollweide(texture_path: Path | None
+                                        ) -> np.ndarray | None:
+    """Return a (lat, lon) float array suitable for `pcolormesh` on a
+    Mollweide axis. Downsamples to 720x360 (~0.25 MP), converts to
+    grayscale, normalises to [0, 1]. Returns None when the texture
+    is missing / unreadable / Pillow isn't installed.
+
+    The grid orientation matches `_plot_events_impact_map_mollweide`:
+    row 0 is lat=+90 (top), col 0 is lon=-180 (left). Cached per
+    texture-mtime so the resample is paid once per session."""
+    if texture_path is None or not texture_path.is_file():
+        return None
+    try:
+        mtime = texture_path.stat().st_mtime
+    except OSError:
+        return None
+    key = (str(texture_path), mtime)
+    cached = _MOON_BG_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(texture_path) as src:
+            gray = src.convert("L").resize((720, 360), Image.LANCZOS)
+        arr = np.asarray(gray, dtype=float) / 255.0
+    except (OSError, ValueError):
+        return None
+    _MOON_BG_CACHE[key] = arr
+    return arr
+
+
+def _draw_mollweide_moon_background(ax: Axes, ctx: "PlotContext",
+                                     alpha: float = 0.8) -> bool:
+    """Paint the Moon grayscale texture as a Mollweide background on
+    `ax`. Returns True on success so the caller can adapt its
+    foreground styling (e.g. white edges on top of the texture vs
+    black on a plain background)."""
+    bg = _load_moon_grayscale_for_mollweide(ctx.moon_texture)
+    if bg is None:
+        return False
+    # pcolormesh with shading='flat' wants (nrow, ncol) values and
+    # (nrow+1, ncol+1) edges. `bg` is (360, 720); build matching
+    # edge arrays in radians along lon (x) and lat (y). The Mollweide
+    # projection accepts the lat/lon mesh directly and warps cells
+    # to its ellipse for us.
+    lon_edges = np.radians(np.linspace(-180.0, 180.0, bg.shape[1] + 1))
+    lat_edges = np.radians(np.linspace( +90.0, -90.0, bg.shape[0] + 1))
+    Lon, Lat = np.meshgrid(lon_edges, lat_edges)
+    ax.pcolormesh(Lon, Lat, bg, cmap="gray", shading="flat",
+                  vmin=0.0, vmax=1.0, alpha=alpha,
+                  rasterized=True, zorder=1)
+    return True
+
+
+def _validate_impact_context(ax: Axes, d: np.ndarray, ctx: "PlotContext",
+                              title: str
+                              ) -> tuple[dict, np.ndarray, int] | None:
+    """Shared gating for every impact-flavoured plot: aggregated-batch
+    file, run-folder snapshot, Moon as central body, ephemeris
+    reachable, at least one IMPACT row. On any miss draws the empty-
+    state message on `ax` and returns None; on success returns
+    `(info, impact_mask, n_impacts)`."""
+    if "case_idx" not in d.dtype.names:
+        _ctx_missing_message(
+            ax, title,
+            "This view needs a batch-aggregated events file (SPDYEVTB).")
+        return None
+    info = _resolve_run_context(ctx.path)
+    if info is None:
+        _ctx_missing_message(
+            ax, title,
+            "No input.toml found next to this events file -- the run-folder "
+            "snapshot is needed for et_start_s and the ephemeris path.")
+        return None
+    if info["central_body"].lower() != "moon":
+        _ctx_missing_message(
+            ax, title,
+            f"Central body is '{info['central_body']}' -- the lat/lon "
+            "projection is currently Moon-only (Principal Axes via DE440 "
+            "lunar libration).")
+        return None
+    if info["ephemeris_path"] is None:
+        _ctx_missing_message(
+            ax, title,
+            "Could not locate the .spody ephemeris file referenced by the "
+            "snapshot. Check that the path inside input.toml is still valid.")
+        return None
+    mask = d["kind"] == EVENT_KIND_IMPACT
+    n_imp = int(mask.sum())
+    if n_imp == 0:
+        _ctx_missing_message(ax, title, "No IMPACT events in this batch.")
+        return None
+    return info, mask, n_imp
+
+
+def _compute_impact_latlon(d: np.ndarray, mask: np.ndarray, info: dict
+                            ) -> tuple[np.ndarray, np.ndarray,
+                                        np.ndarray, np.ndarray] | None:
+    """Project ICRF IMPACT rows of `d[mask]` onto the lunar Principal
+    Axes frame, returning `(lat_deg, lon_deg, t_days, case_idx)`.
+
+    For every row:
+        et    = sim.et_start_s + row.t
+        ang   = eph.lunar_libration_angles(et)
+        R     = icrf_to_moon_pa(*ang)
+        r_pa  = R @ row.y[0:3]              (ICRF -> Moon PA)
+        lat   = asin(z/|r|), lon = atan2(y, x)
+    `t_days` is `row.t / 86400`. None on ephemeris failure (the
+    caller falls back to the empty-state message)."""
+    from spopy import Ephemeris, icrf_to_moon_pa
+    try:
+        eph = Ephemeris(str(info["ephemeris_path"]))
+    except (OSError, ValueError):
+        return None
+    n        = int(mask.sum())
+    et_start = info["et_start_s"]
+    t_sim    = d["t"][mask]
+    y_state  = d["y"][mask]
+    case_id  = d["case_idx"][mask].astype(int, copy=True)
+    r_icrf   = y_state[:, 0:3]
+    lat_deg  = np.empty(n)
+    lon_deg  = np.empty(n)
+    for i in range(n):
+        et = et_start + float(t_sim[i])
+        phi, theta, psi = eph.lunar_libration_angles(et)
+        R = icrf_to_moon_pa(phi, theta, psi)
+        r_pa = R @ r_icrf[i]
+        norm = np.linalg.norm(r_pa)
+        lat_deg[i] = np.degrees(np.arcsin(r_pa[2] / norm))
+        lon_deg[i] = np.degrees(np.arctan2(r_pa[1], r_pa[0]))
+    t_days = t_sim.astype(float) / _SEC_PER_DAY
+    return lat_deg, lon_deg, t_days, case_id
 
 
 def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
@@ -709,21 +895,23 @@ def _plot_events_time_to_impact_hist(ax: Axes, d: np.ndarray) -> None:
     """Histogram of trigger time `t` across cases that impacted.
     Operates on the batch-aggregated events file (SPDYEVTB) where each
     row is one trigger. ECLIPSE / other kinds are filtered out -- only
-    IMPACT rows feed the histogram. No context dependency; the binary
-    alone has everything we need."""
+    IMPACT rows feed the histogram. X axis is in days for readability
+    on multi-orbit / debris-cloud-decay scenarios."""
     mask = d["kind"] == EVENT_KIND_IMPACT
     n_imp = int(mask.sum())
     if n_imp == 0:
         _ctx_missing_message(ax, "Time-to-impact histogram",
                              "No IMPACT events in this batch.")
         return
-    t_imp = d["t"][mask]
+    t_imp_days = d["t"][mask] / _SEC_PER_DAY
     # Sturges' rule capped at 40 -- good for a few cases (4-8 bins)
     # without producing a forest of single-count spikes on large
     # debris clouds.
     n_bins = max(5, min(40, int(np.log2(n_imp) + 1) * 2))
-    ax.hist(t_imp, bins=n_bins, color="tab:red", edgecolor="black", alpha=0.85)
-    ax.set_xlabel("t_trigger [s]"); ax.set_ylabel("# impacts")
+    ax.hist(t_imp_days, bins=n_bins, color="tab:red",
+            edgecolor="black", alpha=0.85)
+    ax.set_xlabel("time of flight [days]")
+    ax.set_ylabel("# impacts")
     ax.set_title(f"Time-to-impact distribution  ({n_imp} impacts, {n_bins} bins)")
     ax.grid(True, axis="y", alpha=0.3)
 
@@ -732,16 +920,21 @@ def _count_total_cases(ctx_info: dict, fallback_max: int) -> int:
     """Total number of cases in the batch -- the universe over which
     we compute survivors. Tries cases_file first (the canonical count)
     and falls back to `max(case_idx)+1` from the events data if the
-    CSV isn't reachable. Empty file or unreadable CSV returns the
-    fallback too."""
+    CSV isn't reachable.
+
+    Counts non-blank, non-comment lines and subtracts 1 for the
+    header. spody.exe accepts `#`-prefixed lines as comments in the
+    cases file (see spody_csv reader), and the GUI's auto-generator
+    + the hand-curated examples both use that convention liberally,
+    so they must be skipped here too -- otherwise a CSV with a
+    multi-paragraph header overcounts wildly."""
     cases_path: Path | None = ctx_info.get("cases_file")
     if cases_path is not None:
         try:
             with cases_path.open("r", encoding="utf-8") as fp:
-                # Assume one header line + N data lines; this matches
-                # what the GUI's batch generator writes and what
-                # spody.exe expects. A blank tail line is tolerated.
-                n = sum(1 for line in fp if line.strip()) - 1
+                n = sum(1 for line in fp
+                        if line.strip() and not line.lstrip().startswith("#"))
+            n -= 1   # header row
             if n > 0:
                 return n
         except OSError:
@@ -803,112 +996,269 @@ def _plot_events_survival_timeline(ax: Axes, d: np.ndarray,
     order = [ci for ci, _ in impacted] + survivors
 
     y_pos = np.arange(len(order))
-    widths = np.array([impact_t.get(ci, duration) for ci in order])
+    # x axis in days for parity with the time-to-impact histogram and
+    # impact-map colorbar; matches what the user asked for ("non
+    # secondi ma giorni").
+    duration_days = duration / _SEC_PER_DAY
+    widths_days   = np.array([impact_t.get(ci, duration) for ci in order]
+                              ) / _SEC_PER_DAY
     colors = ["tab:red" if ci in impact_t else "tab:green" for ci in order]
-    ax.barh(y_pos, widths, color=colors, edgecolor="black", linewidth=0.3)
+    ax.barh(y_pos, widths_days, color=colors,
+            edgecolor="black", linewidth=0.3)
     ax.set_yticks(y_pos)
     ax.set_yticklabels([f"case {ci}" for ci in order], fontsize="x-small")
     ax.invert_yaxis()
-    ax.set_xlabel("t [s]")
+    ax.set_xlabel("time [days]")
     if info is not None:
         # Solid divider at the sim end so survivors visually 'reach' it.
-        ax.axvline(duration, color="black", linewidth=0.8, linestyle="--",
-                   alpha=0.5)
+        ax.axvline(duration_days, color="black", linewidth=0.8,
+                   linestyle="--", alpha=0.5)
     ax.set_title(title)
     ax.grid(True, axis="x", alpha=0.3)
 
 
 def _plot_events_impact_map(ax: Axes, d: np.ndarray,
                             ctx: PlotContext) -> None:
-    """Scatter of impact points projected to lat/lon on the Moon's
-    body-fixed Principal Axes frame.
-
-    Pipeline per impact row:
-        et    = sim.et_start_s + row.t
-        ang   = eph.lunar_libration_angles(et)
-        R     = icrf_to_moon_pa(*ang)
-        r_pa  = R @ row.y[0:3]                (ICRF -> Moon PA)
-        lat   = asin(z/|r|), lon = atan2(y, x)
-
-    Needs the per-run TOML for et_start_s + ephemeris path. Refuses
-    bodies other than the Moon (today spopy's libration model is lunar
-    only -- adding e.g. Earth IAU would mean a new Ephemeris helper)."""
-    if "case_idx" not in d.dtype.names:
-        _ctx_missing_message(
-            ax, "Impact lat/lon map",
-            "This view needs a batch-aggregated events file (SPDYEVTB).")
+    """Equirectangular scatter of impact points projected to lat/lon
+    on the Moon's body-fixed Principal Axes frame. Points are coloured
+    by time-of-flight (days from sim start) so a cloud's temporal
+    decay shows up at a glance: dark blue = earliest impacts, red =
+    latest. See `_compute_impact_latlon` for the projection pipeline."""
+    title = "Impact lat/lon on Moon"
+    chk = _validate_impact_context(ax, d, ctx, title)
+    if chk is None:
         return
-    info = _resolve_run_context(ctx.path)
-    if info is None:
-        _ctx_missing_message(
-            ax, "Impact lat/lon map",
-            "No input.toml found next to this events file -- the run-folder "
-            "snapshot is needed for et_start_s and the ephemeris path.")
+    info, mask, n_imp = chk
+    geom = _compute_impact_latlon(d, mask, info)
+    if geom is None:
+        _ctx_missing_message(ax, title, "Could not open ephemeris file.")
         return
-    if info["central_body"].lower() != "moon":
-        _ctx_missing_message(
-            ax, "Impact lat/lon map",
-            f"Central body is '{info['central_body']}' -- the lat/lon "
-            "projection is currently Moon-only (Principal Axes via DE440 "
-            "lunar libration).")
-        return
-    if info["ephemeris_path"] is None:
-        _ctx_missing_message(
-            ax, "Impact lat/lon map",
-            "Could not locate the .spody ephemeris file referenced by the "
-            "snapshot. Check that the path inside input.toml is still valid.")
-        return
+    lat_deg, lon_deg, t_days, _ = geom
 
-    mask = d["kind"] == EVENT_KIND_IMPACT
-    n_imp = int(mask.sum())
-    if n_imp == 0:
-        _ctx_missing_message(ax, "Impact lat/lon map",
-                             "No IMPACT events in this batch.")
-        return
+    # Photographic background when the Moon texture is available.
+    # NASA SVS files (and the GUI fallback path that points at them)
+    # are equirectangular with the prime meridian at the centre
+    # column, longitude going from -180 at the left edge to +180 at
+    # the right. That matches `extent=[-180, 180, -90, 90]` with
+    # `origin="upper"` directly -- no spatial transform needed.
+    bg_ok = False
+    if ctx.moon_texture is not None and ctx.moon_texture.is_file():
+        try:
+            import matplotlib.image as mpimg
+            img = mpimg.imread(str(ctx.moon_texture))
+            ax.imshow(img, extent=[-180.0, 180.0, -90.0, 90.0],
+                      origin="upper", aspect="equal",
+                      interpolation="bilinear", alpha=0.85)
+            bg_ok = True
+        except Exception:  # noqa: BLE001 -- bad texture must not kill the plot
+            pass
 
-    # Lazy import: keeps the analysis_panel module import cheap when
-    # the user only ever looks at trajectory plots.
-    from spopy import Ephemeris, icrf_to_moon_pa
-    try:
-        eph = Ephemeris(str(info["ephemeris_path"]))
-    except (OSError, ValueError) as exc:
-        _ctx_missing_message(
-            ax, "Impact lat/lon map",
-            f"Could not open ephemeris file:\n{exc}")
-        return
-
-    et_start = info["et_start_s"]
-    t_sim   = d["t"][mask]
-    y_state = d["y"][mask]                       # (N, 6) -- icrf km, km/s
-    case_id = d["case_idx"][mask]
-    r_icrf  = y_state[:, 0:3]
-
-    lat_deg = np.empty(n_imp); lon_deg = np.empty(n_imp)
-    for i in range(n_imp):
-        et = et_start + float(t_sim[i])
-        phi, theta, psi = eph.lunar_libration_angles(et)
-        R = icrf_to_moon_pa(phi, theta, psi)
-        r_pa = R @ r_icrf[i]
-        norm = np.linalg.norm(r_pa)
-        lat_deg[i] = np.degrees(np.arcsin(r_pa[2] / norm))
-        lon_deg[i] = np.degrees(np.arctan2(r_pa[1], r_pa[0]))
-
-    # Colour by case_idx so the user can spot which fragments hit
-    # where; turbo's high contrast survives well at small scatter sizes.
-    sc = ax.scatter(lon_deg, lat_deg, c=case_id, cmap="turbo",
-                    s=42, edgecolor="black", linewidth=0.4,
-                    vmin=case_id.min(), vmax=case_id.max())
+    sc = ax.scatter(lon_deg, lat_deg, c=t_days, cmap="turbo",
+                    s=46, edgecolor="white" if bg_ok else "black",
+                    linewidth=0.6, zorder=3)
     ax.set_xlim(-180, 180); ax.set_ylim(-90, 90)
     ax.set_xticks(np.arange(-180, 181, 30))
     ax.set_yticks(np.arange(-90,  91,  30))
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("Longitude [deg, PA frame]")
     ax.set_ylabel("Latitude [deg, PA frame]")
-    ax.set_title(f"Impact locations on Moon (PA frame)  --  {n_imp} impacts")
-    ax.grid(True, alpha=0.3)
-    cb = ax.figure.colorbar(sc, ax=ax, label="case_idx",
+    title = f"Impact locations on Moon (PA frame)  --  {n_imp} impacts"
+    if not bg_ok:
+        title += "  (no texture)"
+    ax.set_title(title)
+    ax.grid(True, alpha=0.35 if bg_ok else 0.3,
+            color="white" if bg_ok else None,
+            linewidth=0.5 if bg_ok else 0.8)
+    cb = ax.figure.colorbar(sc, ax=ax, label="time of flight [days]",
                             fraction=0.04, pad=0.02)
     cb.ax.tick_params(labelsize="x-small")
+
+
+def _plot_events_impact_map_mollweide(ax: Axes, d: np.ndarray,
+                                       ctx: PlotContext) -> None:
+    """Mollweide-projected lat/lon scatter -- same data as the
+    equirectangular view but on the equal-area ellipse so the surface
+    areas near the poles aren't distorted. The Moon background is
+    drawn in grayscale so the time-of-flight colormap on top reads
+    without competing with the photo's brown/grey palette."""
+    title = "Impact lat/lon (Mollweide)"
+    chk = _validate_impact_context(ax, d, ctx, title)
+    if chk is None:
+        return
+    info, mask, n_imp = chk
+    geom = _compute_impact_latlon(d, mask, info)
+    if geom is None:
+        _ctx_missing_message(ax, title, "Could not open ephemeris file.")
+        return
+    lat_deg, lon_deg, t_days, _ = geom
+
+    bg_ok = _draw_mollweide_moon_background(ax, ctx, alpha=0.85)
+    sc = ax.scatter(np.radians(lon_deg), np.radians(lat_deg),
+                    c=t_days, cmap="turbo",
+                    s=60, edgecolor="white" if bg_ok else "black",
+                    linewidth=0.7, zorder=3)
+    ax.grid(True, alpha=0.4, color="white" if bg_ok else "gray",
+            linewidth=0.4)
+    # Mollweide axes show their own canonical lat/lon labels; turn
+    # off the matplotlib auto-set ones for clarity.
+    ax.set_xlabel(""); ax.set_ylabel("")
+    title_text = (f"Impact locations on Moon (PA frame, Mollweide)  "
+                  f"--  {n_imp} impacts")
+    if not bg_ok:
+        title_text += "  (no texture)"
+    ax.set_title(title_text)
+    cb = ax.figure.colorbar(sc, ax=ax, label="time of flight [days]",
+                            orientation="horizontal", pad=0.06,
+                            fraction=0.04)
+    cb.ax.tick_params(labelsize="x-small")
+
+
+def _plot_events_impact_density(ax: Axes, d: np.ndarray,
+                                 ctx: PlotContext) -> None:
+    """Mollweide-projected 2D histogram of impact lat/lon: how the
+    fragments distribute across the lunar surface, integrated over
+    the whole batch. Each cell is `n_impacts_in_that_bin`; empty cells
+    are transparent so the grayscale Moon shows through. Default
+    binning is 10 degrees (36x18 cells); fine enough for a debris
+    cloud of a few hundred fragments, coarse enough that single
+    impacts still produce a visible coloured cell."""
+    title = "Impact density heatmap"
+    chk = _validate_impact_context(ax, d, ctx, title)
+    if chk is None:
+        return
+    info, mask, n_imp = chk
+    geom = _compute_impact_latlon(d, mask, info)
+    if geom is None:
+        _ctx_missing_message(ax, title, "Could not open ephemeris file.")
+        return
+    lat_deg, lon_deg, _, _ = geom
+
+    _draw_mollweide_moon_background(ax, ctx, alpha=0.6)
+
+    # 2.5-degree cells -- 4x denser than the original 10-deg default,
+    # per user request. With a few thousand fragments the heatmap
+    # starts looking continuous; for a 10-impact demo it stays sparse
+    # but each filled cell is small enough not to mask the texture.
+    n_lon, n_lat = 144, 72
+    hist, lon_edges, lat_edges = np.histogram2d(
+        lon_deg, lat_deg, bins=[n_lon, n_lat],
+        range=[[-180.0, 180.0], [-90.0, 90.0]])
+    # Hide empty cells so the photo backdrop stays readable; the
+    # turbo gradient then runs from 1 (rarest filled cell) to the
+    # max count, which keeps low/high-density spots distinguishable
+    # even at small batch sizes.
+    hist_masked = np.ma.masked_where(hist == 0, hist)
+    Lon, Lat = np.meshgrid(np.radians(lon_edges), np.radians(lat_edges))
+    pm = ax.pcolormesh(Lon, Lat, hist_masked.T, cmap="turbo",
+                       shading="flat", alpha=0.85, zorder=2,
+                       vmin=1, vmax=max(1.0, float(hist.max())))
+    ax.grid(True, alpha=0.4, color="white", linewidth=0.4)
+    ax.set_xlabel(""); ax.set_ylabel("")
+    # Compute the per-cell angular size so the title carries the
+    # physically meaningful number, not the raw bin counts.
+    bin_lon_deg = 360.0 / n_lon
+    bin_lat_deg = 180.0 / n_lat
+    ax.set_title(f"Cumulative impact density (PA frame, Mollweide)  "
+                 f"--  {n_imp} impacts, "
+                 f"{bin_lon_deg:g}° x {bin_lat_deg:g}° bins")
+    cb = ax.figure.colorbar(pm, ax=ax, label="# impacts per cell",
+                            orientation="horizontal", pad=0.06,
+                            fraction=0.04)
+    cb.ax.tick_params(labelsize="x-small")
+
+
+def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
+                           ctx: PlotContext) -> None:
+    """3D view of the lunar surface with one small sphere per impact
+    placed in the Moon Principal Axes frame. Shares the lat/lon
+    projection pipeline with `_plot_events_impact_map`: same et-shift,
+    libration angles, ICRF -> PA rotation; the points are then
+    rendered as physical 30-km spheres on the textured Moon instead
+    of a 2D scatter.
+
+    Marker colours mirror the 2D map's `time of flight [days]`
+    turbo lookup so the same colour means the same impact time
+    across the two views (no in-scene colorbar -- VTK does not have
+    a comfortable equivalent; the 2D Mollweide / equirect maps
+    surface the legend)."""
+    if "case_idx" not in d.dtype.names:
+        # Renderless wrong-format guard: draw just the Moon so the
+        # 3D canvas doesn't look broken.
+        canvas.add_central_body(texture_path=ctx.moon_texture)
+        return
+    info = _resolve_run_context(ctx.path)
+    if info is None or info["central_body"].lower() != "moon" \
+            or info["ephemeris_path"] is None:
+        canvas.add_central_body(texture_path=ctx.moon_texture)
+        return
+
+    mask = d["kind"] == EVENT_KIND_IMPACT
+    n_imp = int(mask.sum())
+    if n_imp == 0:
+        canvas.add_central_body(texture_path=ctx.moon_texture)
+        return
+
+    from spopy import Ephemeris, icrf_to_moon_pa
+    try:
+        eph = Ephemeris(str(info["ephemeris_path"]))
+    except (OSError, ValueError):
+        canvas.add_central_body(texture_path=ctx.moon_texture)
+        return
+
+    canvas.add_central_body(texture_path=ctx.moon_texture)
+
+    et_start = info["et_start_s"]
+    t_sim    = d["t"][mask]
+    y_state  = d["y"][mask]
+    r_icrf   = y_state[:, 0:3]
+
+    # Frame triads -- drawn before the impact markers so the small
+    # markers paint on top (z-fighting bias). The scene IS the PA
+    # body-fixed frame (impact_3d converts every point with the
+    # per-impact `R_icrf_to_pa`), so:
+    #   * PA triad   = identity in scene coords; bright RGB.
+    #   * ICRF triad = ICRF basis vectors transported into the scene
+    #                  via R_icrf_to_pa(et_start). Drawn slightly
+    #                  shorter and in muted shades so the bright PA
+    #                  triad stays visually dominant.
+    phi0, theta0, psi0 = eph.lunar_libration_angles(et_start)
+    R_at_start = icrf_to_moon_pa(phi0, theta0, psi0)
+    # MOON_RADIUS_KM lives in vtk_canvas; use literal here to avoid a
+    # cross-module import just for one constant (the value is also
+    # baked into the C engine and isn't going to drift).
+    R_moon = 1737.4
+    canvas.add_frame_triad(
+        basis_in_scene=np.eye(3),
+        length_km=2.10 * R_moon,
+        colors_xyz=((1.00, 0.30, 0.30),
+                    (0.30, 0.95, 0.40),
+                    (0.40, 0.55, 1.00)),
+        labels_xyz=("X_pa", "Y_pa", "Z_pa"),
+    )
+    canvas.add_frame_triad(
+        basis_in_scene=R_at_start,
+        length_km=1.80 * R_moon,
+        colors_xyz=((0.85, 0.55, 0.55),
+                    (0.55, 0.80, 0.60),
+                    (0.55, 0.65, 0.90)),
+        labels_xyz=("X_icrf", "Y_icrf", "Z_icrf"),
+    )
+
+    # Build the time-of-flight color lookup once. min/max bracket
+    # the actual range so a single-impact batch still gets a defined
+    # mid-turbo colour rather than NaN.
+    t_days = t_sim.astype(float) / _SEC_PER_DAY
+    t_lo, t_hi = float(t_days.min()), float(t_days.max())
+    span = max(t_hi - t_lo, 1e-9)
+    cmap = mpl_colormaps["turbo"]
+    for i in range(n_imp):
+        et = et_start + float(t_sim[i])
+        phi, theta, psi = eph.lunar_libration_angles(et)
+        R = icrf_to_moon_pa(phi, theta, psi)
+        r_pa = R @ r_icrf[i]
+        frac = (t_days[i] - t_lo) / span
+        r, g, b, _a = cmap(frac)
+        canvas.add_point(r_pa, radius_km=30.0, color=(r, g, b))
 
 
 # ----------------------------------------------------------------------
@@ -1078,15 +1428,23 @@ PLOTS: dict[str, list[PlotSpec]] = {
     "events_batch": [
         # Timeline goes first so a fresh load always shows something
         # sensible even when the run-folder snapshot is missing
-        # (timeline + histogram are context-free; the other two need
-        # input.toml).
+        # (timeline + histogram are context-free; the four impact
+        # views below need input.toml).
         PlotSpec("Events timeline",             "2d", _plot_events_timeline),
         PlotSpec("Time-to-impact histogram",    "2d",
                  _plot_events_time_to_impact_hist),
         PlotSpec("Survival timeline per case",  "2d",
                  _plot_events_survival_timeline, mode="context"),
-        PlotSpec("Impact lat/lon on Moon",      "2d",
+        PlotSpec("Impact lat/lon (equirect)",   "2d",
                  _plot_events_impact_map,        mode="context"),
+        PlotSpec("Impact lat/lon (Mollweide)",  "2d",
+                 _plot_events_impact_map_mollweide,
+                 mode="context", projection="mollweide"),
+        PlotSpec("Impact density heatmap",      "2d",
+                 _plot_events_impact_density,
+                 mode="context", projection="mollweide"),
+        PlotSpec("Impact 3D on Moon",           "3d",
+                 _plot_events_impact_3d,         mode="context"),
     ],
 }
 
@@ -2025,7 +2383,8 @@ class AnalysisPanel(QWidget):
 
         # Built once: context specs all consume the same PlotContext
         # (one file = one path) -- no need to re-build per subplot.
-        ctx = (PlotContext(path=self._path)
+        ctx = (PlotContext(path=self._path,
+                           moon_texture=self._configured_moon_texture())
                if mode == "single" and self._path is not None
                else None)
 
@@ -2161,10 +2520,18 @@ class AnalysisPanel(QWidget):
     def _configured_moon_texture(self) -> Path | None:
         """Look up the Moon texture path from Settings on demand so
         edits via the Settings dialog take effect on the next 3D plot
-        without restarting. Returns None when unset, so VtkCanvas
-        falls back to the flat-grey sphere."""
+        without restarting. When the user hasn't set an explicit
+        override, fall back to the wizard-managed file under the data
+        dir (see assets.moon_texture_path); that lets a fresh install
+        get the photo texture for free after a single click in the
+        Setup wizard. Returns None when neither is present -- VtkCanvas
+        / the 2D map then fall back to the flat-grey sphere / no
+        background."""
         raw = self._store.moon_texture()
-        return Path(raw) if raw else None
+        if raw and Path(raw).is_file():
+            return Path(raw)
+        from . import assets
+        return assets.moon_texture_path(self._store.data_dir())
 
     def _plot_diff(self, spec: PlotSpec) -> None:
         """Render a mode='diff' plot: two trajectories selected in the
@@ -2234,17 +2601,20 @@ class AnalysisPanel(QWidget):
         spec = self._active_spec
         # Context-mode plots receive a PlotContext alongside the data
         # array so they can resolve sibling files (input.toml, cases CSV,
-        # ephemeris .spody). Built once here so each plot fn stays a
+        # ephemeris .spody) and pick up the Moon texture without
+        # touching QSettings. Built once here so each plot fn stays a
         # pure (ax, data, ctx) call. self._path is guaranteed non-None
         # whenever self._data is (set together in load_file).
-        ctx = (PlotContext(path=self._path)
+        ctx = (PlotContext(path=self._path,
+                           moon_texture=self._configured_moon_texture())
                if spec.mode == "context" and self._path is not None
                else None)
         try:
             if spec.dim == "2d":
                 self._stack.setCurrentIndex(0)
                 self._figure.clear()
-                ax = self._figure.add_subplot(111)
+                ax_kwargs = {"projection": spec.projection} if spec.projection else {}
+                ax = self._figure.add_subplot(111, **ax_kwargs)
                 if ctx is not None:
                     spec.fn(ax, self._data, ctx)
                 else:

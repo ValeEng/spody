@@ -115,6 +115,28 @@ GRGM1200B_LBL = Asset(
     required=True,
 )
 
+# NASA SVS "CGI Moon Kit" -- LROC color mosaic, equirectangular
+# projection (longitude 0..360 left-to-right, latitude -90..+90
+# bottom-to-top). Optional: spody runs without it, the 3D Analysis
+# scene just falls back to the flat-grey sphere and the impact lat/lon
+# map drops the photographic background. 2K is the default tradeoff
+# (~10 MB, sub-degree detail); URL is editable in the wizard for users
+# who want to swap to 4K (~37 MB) or 8K (~135 MB) -- adjust min_bytes
+# if you go higher.
+MOON_TEXTURE = Asset(
+    name="Moon texture (NASA SVS LROC color, 2K)",
+    # SVS only publishes the 1K JPEG variant; 2K/4K/8K are TIFFs in
+    # the same directory. VTK reads TIFF via vtkTIFFReader and
+    # matplotlib via PIL, so this is fine to use directly without a
+    # decode step.
+    url=("https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/"
+         "lroc_color_poles_2k.tif"),
+    relpath="Moon/lroc_color_poles_2k.tif",
+    min_bytes=2_000_000,
+    kind="raw",
+    required=False,
+)
+
 
 # --------------------------------------------------------------------------
 # Coverage profile (read/write QSettings)
@@ -150,6 +172,9 @@ def required_assets(coverage_value: str | None = None) -> tuple[Asset, ...]:
     out.append(DE440_SPODY)
     out.append(GRGM1200B_TAB)
     out.append(GRGM1200B_LBL)
+    # Optional assets sit at the bottom of the wizard card list so the
+    # required ones stay grouped at top.
+    out.append(MOON_TEXTURE)
     return tuple(out)
 
 
@@ -200,6 +225,17 @@ def effective_paths(root: Path) -> dict[str, str]:
         "ephemeris_file": str(eph) if eph.is_file() else "",
         "harmonics_file": str(har) if har.is_file() else "",
     }
+
+
+def moon_texture_path(root: Path) -> Path | None:
+    """Return the wizard-downloaded Moon texture path if present, else
+    None. The Analysis panel uses this as a fallback when the user
+    hasn't pointed an explicit override at Settings > Paths -- so a
+    fresh install that just clicked the wizard's Download button on
+    the texture row gets the photo background 'for free' on the next
+    plot dispatch."""
+    p = root / MOON_TEXTURE.relpath
+    return p if p.is_file() else None
 
 
 def with_url(asset: Asset, new_url: str) -> Asset:

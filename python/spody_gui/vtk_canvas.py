@@ -59,6 +59,7 @@ from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
+    vtkBillboardTextActor3D,
     vtkPolyDataMapper,
     vtkPropPicker,
     vtkRenderer,
@@ -197,7 +198,14 @@ class VtkCanvas(QWidget):
     def _make_image_reader(path: Path):
         """Pick a vtk image reader based on the file extension. Returns
         None if the file is missing or the extension is unsupported --
-        the caller then falls back to the flat-colour sphere."""
+        the caller then falls back to the flat-colour sphere.
+
+        TIFFs (e.g. the NASA SVS CGI Moon Kit 2K/4K/8K) are routed
+        through a Pillow-based PNG transcoder: vtkTIFFReader's bundled
+        libtiff chokes on LZW-with-predictor and other variants the
+        SVS files use ('Problem reading the row: 0' on the wire). The
+        transcoded PNG is cached next to the TIFF, so the cost is paid
+        once per texture file and subsequent loads hit the cache."""
         path = Path(path)
         if not path.is_file():
             return None
@@ -206,10 +214,59 @@ class VtkCanvas(QWidget):
             reader = vtkJPEGReader()
         elif ext == ".png":
             reader = vtkPNGReader()
+        elif ext in {".tif", ".tiff"}:
+            png_cache = VtkCanvas._ensure_png_cache(path)
+            if png_cache is None:
+                return None
+            reader = vtkPNGReader()
+            reader.SetFileName(str(png_cache))
+            return reader
         else:
             return None
         reader.SetFileName(str(path))
         return reader
+
+    @staticmethod
+    def _ensure_png_cache(tiff_path: Path) -> Path | None:
+        """Return the path of a VTK-ready PNG transcode of `tiff_path`,
+        creating it via Pillow if missing or stale. Returns None if
+        Pillow is unavailable or the conversion fails -- the caller
+        then drops back to the flat-grey sphere with no further noise.
+
+        The cache is NOT just a format change. NASA SVS (and most
+        published lunar / planetary equirectangular maps) place the
+        prime meridian at the *centre* of the image, i.e. column W/2
+        is lon=0 and column 0 is lon=-180. vtkTexturedSphereSource on
+        the other hand maps the texture's u=0 column onto theta=0 in
+        scene coordinates -- the body's +X axis, which is where the
+        prime meridian *should* land in the PA frame. Painting the
+        SVS file unmodified rotates the surface by 180°.
+
+        The fix is one np.roll by W/2 along the longitude axis at
+        transcode time so the cached PNG has lon=0 at u=0, matching
+        the VTK convention. The cache filename keeps a `_pa` suffix
+        so the rotation it baked in is explicit (and so any earlier
+        cache produced by the v1 code, sitting at `<stem>.png`, is
+        bypassed)."""
+        cache = tiff_path.with_name(tiff_path.stem + "_pa.png")
+        if cache.is_file() and cache.stat().st_mtime >= tiff_path.stat().st_mtime:
+            return cache
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+        try:
+            with Image.open(tiff_path) as img:
+                arr = np.asarray(img.convert("RGB"))
+            arr = np.roll(arr, arr.shape[1] // 2, axis=1)
+            Image.fromarray(arr).save(cache, format="PNG", optimize=False)
+        except (OSError, ValueError):
+            try:
+                cache.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        return cache
 
     def add_trajectory(self, points_km: np.ndarray,
                         color: tuple[float, float, float] = (1.0, 0.85, 0.20),
@@ -271,17 +328,98 @@ class VtkCanvas(QWidget):
         """Add an arrow originating at the scene origin and pointing
         toward `direction` (unit vector). The arrow length is fixed in
         km (default ~5 Moon radii) so it stays visible regardless of
-        the trajectory scale.
+        the trajectory scale. Shaft/tip dimensions match the frame-
+        triad defaults so the Sun arrow reads as one more axis in the
+        scene without dominating it."""
+        self._renderer.AddActor(self._make_arrow_actor(
+            origin_km=(0.0, 0.0, 0.0),
+            direction=direction,
+            length_km=length_km,
+            color=color,
+            shaft_radius=0.006,
+            tip_radius=0.022,
+            tip_length=0.10,
+        ))
 
-        `vtkArrowSource` produces a unit arrow along +X; we rotate it
-        with `RotateWXYZ(angle, axis)` where the axis is (1,0,0) × dir.
-        """
+    def add_frame_triad(self, origin_km: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                        basis_in_scene=None,
+                        length_km: float = 1.4 * MOON_RADIUS_KM,
+                        colors_xyz: tuple[tuple[float, float, float], ...] = (
+                            (1.0, 0.25, 0.25),
+                            (0.30, 0.95, 0.35),
+                            (0.35, 0.55, 1.00)),
+                        labels_xyz: tuple[str, str, str] | None = None,
+                        label_size: int = 16,
+                        shaft_radius: float = 0.006,
+                        tip_radius: float = 0.022,
+                        tip_length: float = 0.10) -> None:
+        """Draw a coloured X/Y/Z arrow triad rooted at `origin_km`.
+
+        `basis_in_scene` is a 3x3 matrix whose columns are the three
+        unit vectors of the local frame expressed in scene
+        coordinates: column 0 is the local X axis direction, etc.
+        Pass numpy.eye(3) (or None) for an axis-aligned triad. For
+        e.g. ICRF axes in a PA-aligned scene, pass the
+        ICRF-to-scene rotation matrix straight in -- it transports
+        ICRF basis vectors into the scene frame.
+
+        Labels (3-tuple) are rendered as billboard text at each
+        arrow tip and always face the camera. When `labels_xyz` is
+        None no labels are drawn (handy for the bare-axes case)."""
+        if basis_in_scene is None:
+            basis = np.eye(3)
+        else:
+            basis = np.asarray(basis_in_scene, dtype=float)
+        if basis.shape != (3, 3):
+            raise ValueError(
+                f"basis_in_scene must be 3x3, got {basis.shape}")
+        origin = np.asarray(origin_km, dtype=float)
+        for axis_idx in range(3):
+            direction = basis[:, axis_idx]
+            norm = float(np.linalg.norm(direction))
+            if norm < 1.0e-12:
+                continue
+            direction = direction / norm
+            color = colors_xyz[axis_idx]
+            self._renderer.AddActor(self._make_arrow_actor(
+                origin_km=tuple(origin),
+                direction=tuple(direction),
+                length_km=length_km,
+                color=color,
+                shaft_radius=shaft_radius,
+                tip_radius=tip_radius,
+                tip_length=tip_length,
+            ))
+            if labels_xyz is not None:
+                tip = origin + direction * length_km * 1.05
+                self._renderer.AddActor(self._make_text_label(
+                    tip, labels_xyz[axis_idx], color, label_size,
+                ))
+
+    @staticmethod
+    def _make_arrow_actor(origin_km: tuple[float, float, float],
+                           direction: tuple[float, float, float],
+                           length_km: float,
+                           color: tuple[float, float, float],
+                           shaft_radius: float = 0.015,
+                           tip_radius: float = 0.045,
+                           tip_length: float = 0.18) -> vtkActor:
+        """Build a vtkArrowSource actor pointing from `origin_km` toward
+        `direction` (need not be unit-length; normalised inside),
+        scaled to `length_km`. Shared by add_sun_arrow and the frame
+        triad so both render with identical stylings.
+
+        `vtkArrowSource` produces a unit arrow along +X; we rotate
+        with `RotateWXYZ(angle, axis)` where axis = (1,0,0) × dir,
+        then translate to the origin. The transform order matters --
+        scale and rotation must be set before SetPosition so VTK
+        composes them right-to-left as (T R S)."""
         arrow = vtkArrowSource()
         arrow.SetTipResolution(24)
         arrow.SetShaftResolution(24)
-        arrow.SetShaftRadius(0.015)
-        arrow.SetTipRadius(0.045)
-        arrow.SetTipLength(0.18)
+        arrow.SetShaftRadius(shaft_radius)
+        arrow.SetTipRadius(tip_radius)
+        arrow.SetTipLength(tip_length)
 
         mapper = vtkPolyDataMapper()
         mapper.SetInputConnection(arrow.GetOutputPort())
@@ -291,9 +429,17 @@ class VtkCanvas(QWidget):
         actor.GetProperty().SetColor(*color)
         actor.GetProperty().SetAmbient(0.5)
 
-        # Rotation from +X to `direction`. Axis = (1,0,0) × d = (0, -d_z, d_y).
-        # Angle = acos(d_x). Edge cases: d ∥ +X (axis is zero), d ∥ -X.
+        # Normalise the direction so the axis = (1,0,0) × d formula
+        # below produces a unit rotation axis -- VTK's RotateWXYZ
+        # internally normalises but doing it here avoids ambiguity on
+        # tiny inputs.
         dx, dy, dz = direction
+        dn = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if dn < 1.0e-12:
+            return actor
+        dx, dy, dz = dx / dn, dy / dn, dz / dn
+
+        # Rotation from +X to `direction`. Axis = (1,0,0) × d = (0, -d_z, d_y).
         axis_y, axis_z = -dz, dy
         axis_len = math.hypot(axis_y, axis_z)
         if axis_len < 1.0e-12:
@@ -304,7 +450,46 @@ class VtkCanvas(QWidget):
             actor.RotateWXYZ(angle, 0.0, axis_y, axis_z)
 
         actor.SetScale(length_km, length_km, length_km)
-        self._renderer.AddActor(actor)
+        actor.SetPosition(float(origin_km[0]),
+                          float(origin_km[1]),
+                          float(origin_km[2]))
+        return actor
+
+    @staticmethod
+    def _make_text_label(position_km, text: str,
+                          color: tuple[float, float, float],
+                          font_size: int) -> vtkBillboardTextActor3D:
+        """Camera-facing 3D text anchored at `position_km`. Used by
+        add_frame_triad to label each axis tip with e.g. 'X_pa' /
+        'Y_icrf'. vtkBillboardTextActor3D auto-orients to the camera
+        on every render so the label stays readable through the
+        trackball rotation."""
+        actor = vtkBillboardTextActor3D()
+        actor.SetPosition(float(position_km[0]),
+                          float(position_km[1]),
+                          float(position_km[2]))
+        actor.SetInput(text)
+        prop = actor.GetTextProperty()
+        prop.SetColor(*color)
+        prop.SetFontSize(font_size)
+        prop.SetBold(True)
+        prop.SetFontFamilyToCourier()
+        prop.SetJustificationToCentered()
+        prop.SetVerticalJustificationToCentered()
+        return actor
+
+    def add_point(self, position_km,
+                   radius_km: float = 30.0,
+                   color: tuple[float, float, float] = (1.0, 0.25, 0.25)) -> None:
+        """Drop a small solid sphere at `position_km` (3-vector in the
+        central-body inertial frame). Used by the impact-3D view to
+        place one marker per impact location on the Moon. Default
+        radius (30 km, ~1.7% of MOON_RADIUS_KM) is visible without
+        crowding the surface at typical 1-Moon-radius zoom levels;
+        callers that need a different scale (debris cloud sweep,
+        node-crossing waypoints) pass `radius_km` explicitly."""
+        pos = np.asarray(position_km, dtype=float)
+        self._add_marker_sphere(pos, radius_km, color)
 
     def add_legend(self, items: list[tuple[str, tuple[float, float, float]]],
                     max_label_chars: int = 36) -> None:
