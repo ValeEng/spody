@@ -47,10 +47,10 @@ it needs to put on disk. Each card shows:
 - a **Download** button on the right that toggles to **Cancel** while
   a transfer is in flight.
 
-The assets fall into two categories:
+The assets fall into three categories:
 
-**Raw assets** are files SpOdy fetches verbatim from public
-servers:
+**Raw required assets** are files SpOdy fetches verbatim from public
+servers and absolutely needs to run a propagation:
 
 - the JPL `DE440` planetary ephemeris (header + one or more ASCII
   chunks); the wizard offers two coverage profiles, see section
@@ -67,6 +67,26 @@ machine:
   `spody.exe convert ephemeris` subcommand under the hood. The
   conversion runs **automatically** as soon as the raw inputs are
   complete; you never click a button for it.
+
+**Optional raw assets** are files SpOdy can use to enrich the
+experience but does not require to run:
+
+- the NASA SVS LROC color Moon texture (2K equirectangular TIFF,
+  ~3 MB). When present, the Analysis tab renders the 3D Moon and
+  the impact lat/lon backgrounds with the actual lunar surface;
+  when absent, the views fall back to a flat-grey sphere. Asked
+  for on demand by clicking **Download** on its card &mdash; the
+  *Download all missing* button intentionally leaves it alone so
+  a fresh install does not pay the download cost unless the user
+  wants the texture.
+
+Every asset carries internal metadata identifying its **central
+body** (Moon today; Earth / Mars / &hellip; in future releases) and
+its **category** (`harmonics`, `ephemeris`, `texture`, &hellip;).
+The TOML form's dropdowns in `[force_model].harmonics_file` and
+`[ephemeris].file` use that metadata to show only the assets that
+apply to the currently-selected `central_body` &mdash; the user
+never has to type a path by hand.
 
 ## Choosing an ephemeris coverage profile
 

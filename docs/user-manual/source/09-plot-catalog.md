@@ -324,8 +324,8 @@ umbra, intermediate values = penumbra.
 
 ## Events plots (`SPDYEVT_`)
 
-The events binary records every detected event (IMPACT, ECLIPSE
-entry/exit) along the propagation.
+The single-run events binary records every detected event
+(IMPACT, ECLIPSE entry/exit) along **one** propagation.
 
 #### Events timeline
 
@@ -339,3 +339,151 @@ first IMPACT marker gives the predicted collision time at a
 glance.
 
 **Overlay-safe.** No (multi-kind plot).
+
+## Batch-events plots (`SPDYEVTB`)
+
+When a batch run with `events_log` enabled finishes, the engine
+writes a **single aggregated events file** (`SPDYEVTB` magic,
+chapter 7) covering every trigger across every case. Each row
+carries an extra `case_idx` (int32) so each event can be joined
+back to a row of the cases CSV. The Analysis tab exposes five
+views over that file in addition to the generic *Events
+timeline* (which still works because it only consumes `t` and
+`kind`):
+
+- Time-to-impact histogram
+- Survival timeline per case
+- Impact lat/lon (equirect)
+- Impact lat/lon (Mollweide)
+- Impact density heatmap
+- Impact 3D on Moon
+
+The four "Impact &hellip;" views project IMPACT rows onto the
+lunar surface in the **Moon Principal Axes (PA)** body-fixed
+frame (chapter 10): for each event the dispatcher reads
+`et = simulation.et_start_s + row.t`, queries the DE440
+ephemeris for the lunar libration angles via the bundled
+`spopy` package, builds the ICRF&rarr;PA rotation matrix, and
+applies it to the `y[0:3]` ICRF state. The Moon's central body
+is required (today `spopy`'s libration model is lunar-only;
+running with a different `central_body` makes these views show
+a friendly "not applicable" message rather than crash).
+
+The four impact views all rely on three pieces of context the
+binary itself does not carry: `simulation.et_start_s` (sim time
+to ET), `[ephemeris].file` (to query libration), and
+`simulation.duration_s` (for survivor counts). They read these
+from the **`input.toml` snapshot** the engine drops into the
+run folder at every invocation. Opening an events file from
+outside any run folder triggers a "snapshot not found" message
+in place of the plot.
+
+#### Time-to-impact histogram
+
+Distribution of `t_trigger` across IMPACT rows on a 1D
+histogram. Bin count is Sturges' rule capped at 40; the x
+axis is in **days**.
+
+**Overlay-safe.** No (single-file aggregate).
+
+#### Survival timeline per case
+
+One horizontal bar per `case_idx`. Bars for cases that impacted
+are **red**, ending at the first `t_impact`; bars for survivors
+are **green**, extending to `simulation.duration_s`. Cases are
+sorted by `t_impact` ascending; survivors follow in `case_idx`
+order. The title states the total number of cases, impacted
+count, and survivor count.
+
+Reads `duration_s` from the run-folder TOML snapshot; the total
+case count comes from the `cases_file` CSV (`#`-prefixed
+comment lines and the header row are skipped). When either is
+unreachable, only impacted cases are drawn and the title
+flags it.
+
+**Overlay-safe.** No.
+
+#### Impact lat/lon (equirect)
+
+Scatter plot of impact positions on the lunar Principal Axes
+frame in an equirectangular projection (extent
+`[-180, 180]` &times; `[-90, 90]` degrees). Background is the
+Moon texture when present (NASA SVS LROC color, chapter 3);
+points fall back to a flat-grey background when the texture
+is missing.
+
+Marker colour is `time of flight [days]` via the `turbo`
+colormap, with a colorbar on the right. The same colour
+encoding is reused on the 3D impact view so a fragment can be
+recognised across views.
+
+**Overlay-safe.** No.
+
+#### Impact lat/lon (Mollweide)
+
+Same data as the equirect view but on matplotlib's `mollweide`
+(equal-area) projection &mdash; the elliptic map that does not
+exaggerate the polar areas. Backgrounded by a downsampled
+(720 &times; 360) **grayscale** copy of the Moon texture; the
+colour scatter on top reads cleanly against the muted
+background.
+
+**When to use.** Whenever the impact field is spread over a
+wide longitude range &mdash; the equirect projection visually
+stretches the high-latitude bands, whereas Mollweide preserves
+area.
+
+**Overlay-safe.** No.
+
+#### Impact density heatmap
+
+A 2D histogram of impact (lat, lon) in 2.5&deg; cells (144
+&times; 72 bins), rendered as a `pcolormesh` on the Mollweide
+projection over the same grayscale Moon background. Empty cells
+are transparent (mask) so the surface texture stays visible
+where no impacts happened.
+
+The colour scale is the per-cell impact count; the cap is set
+to `max(hist)` so a debris cloud with a strong hot spot still
+shows graded intensity across the rest. The title declares the
+per-cell angular size (e.g. `2.5° x 2.5° bins`).
+
+**When to use.** Bulk debris cloud impact analysis. With a
+batch of a few thousand fragments the heatmap reveals clusters
+and concentration zones at a glance; with a small batch (a few
+dozen impacts) the individual cells stay visible and the view
+degrades gracefully.
+
+**Overlay-safe.** No.
+
+#### Impact 3D on Moon
+
+3D scene with the textured Moon at the origin and one **30 km
+solid sphere per impact** placed in PA coordinates. Marker
+colours follow the same `turbo`-on-time-of-flight encoding as
+the 2D maps; no in-scene colorbar (VTK does not offer a
+comfortable equivalent), so the 2D views are the colour
+legend.
+
+Two **reference-frame triads** are drawn from the centre of
+the Moon:
+
+- **PA triad** (bright RGB, ~2.1 Moon radii long) with
+  billboard labels `X_pa`, `Y_pa`, `Z_pa`. Since the scene IS
+  the body-fixed PA frame, these axes are identity in scene
+  coordinates: `X_pa` exits the prime meridian (sub-Earth
+  point), `Z_pa` exits the north pole.
+- **ICRF triad** (muted RGB, ~1.8 Moon radii long) with labels
+  `X_icrf`, `Y_icrf`, `Z_icrf`. These point where the ICRF
+  basis vectors land in the scene at `et_start_s`, computed by
+  applying `R_icrf_to_pa(et_start)` to `(1,0,0) / (0,1,0) /
+  (0,0,1)`. Useful as a sanity check: rotate the scene until
+  `X_pa` points at the camera and you have the same view as
+  the equirect map centred on the prime meridian.
+
+**Interactions** are the same as **3D orbit + Moon**: left-
+drag rotates, scroll zooms, middle-drag pans, <kbd>r</kbd>
+resets the camera.
+
+**Overlay-safe.** No (the view is already an N-marker overlay
+from a single file).

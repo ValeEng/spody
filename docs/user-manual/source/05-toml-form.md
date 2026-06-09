@@ -52,10 +52,26 @@ widget on the right.
   edits side by side.
 - **Lists of strings** (`third_bodies`): one checkbox per known
   value (`Sun`, `Mercury`, `Venus`, `Earth`, &hellip;).
-- **Paths** (`harmonics_file`, `ephemeris.file`, `output.csv_file`,
-  &hellip;): a line edit alongside a **Browse...** button that
-  pops a file dialog and writes the chosen path back into the
-  edit.
+- **Paths to user-chosen files** (`output.output_dir`,
+  `batch.cases_source_file`, &hellip;): a line edit alongside a
+  **Browse...** button that pops a file dialog and writes the
+  chosen path back into the edit.
+- **Paths to wizard-managed assets** (`force_model.harmonics_file`,
+  `ephemeris.file`): a **dropdown** of files the Setup wizard
+  has downloaded into the data dir, filtered by category and (for
+  harmonics) by `central_body`. A **Browse...** next to the
+  dropdown adds an out-of-data-dir file as a one-off `(custom)`
+  entry, so a TOML pointing at e.g.
+  `external/spody-core/raw_data/GRGM1200B/...` still round-trips.
+  The dropdown refreshes automatically when the wizard finishes a
+  new download or when `central_body` changes.
+- **Epoch (`simulation.et_start_s`)** &mdash; a dual-cell row: the
+  ET value on the left, a UTC ISO 8601 cell on the right, two
+  arrow buttons between them. **&rarr;** converts ET to UTC,
+  **&larr;** converts UTC to ET. Conversion is bit-identical to
+  SPICE `str2et` / `et2utc` (see chapter 14 for the underlying
+  algorithm). Only `et_start_s` is written to the TOML; the UTC
+  cell is purely a typing aid.
 
 Hovering the cursor over a label or its widget shows a **tooltip**
 with the field's one-line description; range-validated fields also

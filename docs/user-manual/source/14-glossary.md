@@ -145,6 +145,13 @@ the Moon: `4902.800066`. [Chapter 9.]
 the CSV cell value *replaces* the TOML's nominal value. The
 default. [Chapter 7.]
 
+**PA (Moon Principal Axes).** &mdash; The Moon's body-fixed
+reference frame in which the GRGM1200B harmonics are expressed,
+and the same frame the impact lat/lon views project IMPACT events
+into. The rotation from ICRF to PA is `Rz(psi) · Rx(theta) ·
+Rz(phi)` where `(phi, theta, psi)` are the lunar mantle Euler
+angles from DE440. [Chapter 10.]
+
 **Overlay-safe.** &mdash; Property of a plot that draws exactly
 one line per file, so an N-file overlay produces N lines (legible)
 rather than 3N or more (illegible). [Chapter 9.]
@@ -176,8 +183,18 @@ of the embedded error estimate. [Chapter 6.]
 
 **Run-guard.** &mdash; See *Hard run-guard*.
 
-**SPDYOUT_ / SPDYACC_ / SPDYEVT_.** &mdash; The 8-byte magics of
-SpOdy's three binary output formats. [Chapter 12.]
+**SPDYOUT_ / SPDYACC_ / SPDYEVT_ / SPDYEVTB.** &mdash; The 8-byte
+magics of SpOdy's four binary output formats: trajectory state
+vectors, per-force accelerations, per-run events log, and the
+batch-aggregated events log respectively. [Chapter 7, chapter 12.]
+
+**spopy.** &mdash; Pure-Python (numpy-only) re-implementation of
+spody-core's read-side helpers (DE440 ephemeris reader, lunar
+libration, ICRF&nbsp;&hArr;&nbsp;PA rotations). Bundled under
+`python/spopy/` and used by the Analysis tab's impact views to
+project IMPACT events onto the lunar surface at interactive speed
+without spawning a subprocess. Bit-identical to the C
+implementation (validated at landing). [Chapter 10.]
 
 **SPICE.** &mdash; NASA NAIF's toolkit and associated kernels.
 SpOdy's planetary ephemeris is derived from SPICE-format DE440

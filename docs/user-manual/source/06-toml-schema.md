@@ -26,11 +26,18 @@ Scenario name and time window. Required.
 | `duration_s`   | float   | &mdash; | `> 0`  | Propagation duration in seconds. Positive only (forward-time propagation). |
 
 The `et_start_s` value is the same scale the planetary ephemeris
-uses internally. Converting a calendar date to ET seconds past
-J2000 is the user's responsibility; the engine does not perform
-any UTC/TAI/TDB conversions. The DE440 wizard data covers
-1950 &ndash; 2050 by default; choose the *Full pack* coverage
-profile in the wizard if you need to start outside that window.
+uses internally. The form provides a UTC&nbsp;&hArr;&nbsp;ET
+converter (an ISO 8601 UTC field next to `et_start_s` with two
+arrow buttons between them): typing a UTC instant and clicking
+**&larr;** fills the ET cell; clicking **&rarr;** does the inverse.
+The conversion is bit-identical to SPICE `str2et` &mdash; same
+`deltet` algorithm (`K`, `EB`, `M0`, `M1` from the NAIF LSK
+kernel) plus the hard-coded IERS Bulletin C leap-seconds table.
+The UTC cell itself is never written to the TOML; only `et_start_s`
+is serialised, so the engine still sees a single canonical
+number. The DE440 wizard data covers 1950 &ndash; 2050 by default;
+choose the *Full pack* coverage profile in the wizard if you need
+to start outside that window.
 
 ## `[spacecraft]` *or* `[debris]`
 
@@ -104,7 +111,7 @@ Forces the propagator integrates against. Required.
 | Key                  | Type            | Default | Range | Description |
 |----------------------|-----------------|---------|-------|-------------|
 | `central_body`       | string          | &mdash; | `Moon` | Central body of the propagation. Only `Moon` is supported in this release. |
-| `harmonics_file`     | string (path)   | &mdash; | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for the recommended GRGM1200B model). Relative paths resolve against the TOML's directory. |
+| `harmonics_file`     | string (path)   | &mdash; | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for the recommended GRGM1200B model). In the form this row is a **dropdown of harmonics files the wizard has downloaded**, filtered by `central_body` (Moon-only today; Earth / Mars models would only appear when their central body is selected). A **Browse...** button next to the combo adds an out-of-data-dir file as a one-off `(custom)` entry, so legacy TOMLs pointing at e.g. `external/spody-core/raw_data/...` keep round-tripping. Relative paths resolve against the TOML's directory. |
 | `harmonics_degree`   | int             | &mdash; | `[2, 1200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. See *Choosing a harmonics degree* below for guidance. |
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
 | `srp`                | bool            | `false` | &ndash; | Enable cannonball SRP. When `true` a `[spacecraft.srp]` block must be present (in Spacecraft mode) or `am_srp` must be set in `[debris]` (in Debris mode). |
@@ -132,7 +139,7 @@ Path to the planetary ephemeris binary. Required.
 
 | Key   | Type          | Default | Range | Description |
 |-------|---------------|---------|-------|-------------|
-| `file` | string (path) | &mdash; | &ndash; | Path to a `.spody` ephemeris file. Use `de440.spody` produced by the setup wizard (chapter 3). Relative paths resolve against the TOML's directory. |
+| `file` | string (path) | &mdash; | &ndash; | Path to a `.spody` ephemeris file. Use `de440.spody` produced by the setup wizard (chapter 3). In the form this row is a body-agnostic **dropdown of ephemerides the wizard has produced** (DE-series files cover every planet at once, so the list does not depend on `central_body`). A **Browse...** button next to the combo adds an out-of-data-dir file as a `(custom)` entry. Relative paths resolve against the TOML's directory. |
 
 A future release may accept `.bsp` SPICE kernels directly; today
 only the internal `.spody` format is supported.
@@ -169,11 +176,24 @@ cadence. Required.
 | `accelerations_file`   | string (path) | none    | &ndash; | Per-force acceleration breakdown (`SPDYACC_` format). Empty = no breakdown produced. |
 | `events_log`           | string (path) | none    | &ndash; | Event records (`SPDYEVT_` format) for impacts and (if `[events]` is enabled) eclipses. |
 
-All output paths are resolved relative to the TOML's directory, so
-a TOML at `examples/foo/input.toml` with `bin_file = "output/foo.bin"`
-writes the binary into `examples/foo/output/foo.bin`. You are
-responsible for creating the destination directory; the engine
-does not create it for you.
+Output paths in the form are not edited directly; the
+`[output]` block exposes five **on/off checkboxes** (csv, bin,
+accelerations, events, log) plus a single `output_dir` picker.
+spody auto-derives every enabled stream's filename as
+`<output_dir>/<sim_name>_<subject>_<frame>.<ext>` (e.g. the
+state-vector binary is `<sim_name>_state_icrf.bin`, the
+accelerations binary is `<sim_name>_acc_icrf.bin`); the
+under-the-hood TOML still carries the five `<stream>_file`
+strings so the engine sees no schema change.
+
+On every invocation the engine creates a **per-run folder** named
+`<output_dir>/<UTC-ISO8601>/` (compact format, e.g.
+`2026-06-09T120000Z`) and rewrites every enabled output path so it
+lives inside that folder. The TOML used to start the run is also
+copied into the run folder as `input.toml`, so a run is fully
+self-contained: zip the folder and you have the inputs + outputs
+together. The Analysis tab (chapter 8) groups files by these
+folders.
 
 ## `[events]` (optional)
 
@@ -197,7 +217,7 @@ checkbox is ticked. Covered in detail in chapter 7.
 | Key            | Type          | Default | Range  | Description |
 |----------------|---------------|---------|--------|-------------|
 | `name`         | string        | &mdash; | &ndash; | Batch run name. Used as the prefix for per-case output names. |
-| `output_dir`   | string (path) | &mdash; | &ndash; | Existing directory under which a `batch/` subfolder is auto-created. |
+| `output_dir`   | string (path) | &mdash; | &ndash; | Existing directory under which the engine auto-creates a per-run folder named with a compact ISO 8601 UTC timestamp (e.g. `2026-06-09T120000Z/`). All per-case binaries, the aggregated events file, and a copy of the input TOML land in that folder, so each batch invocation is self-contained and discoverable. Replaces the older `batch/` subfolder convention. |
 | `thread_number` | int          | `1`    | `[1, N_cpu]` | Worker thread count. `1` = sequential. Capped at the host's logical-CPU count by the form. Parallel execution requires the OpenMP-enabled engine build. |
 | `cases_file`   | string (path) | &mdash; | &ndash; | CSV file describing the parameter sweep. First non-comment line is the header. |
 | `columns`      | inline table  | empty  | &ndash; | Mapping from CSV columns to target paths (see chapter 7). Programmatic; the form's column-mapping table is the friendly editor. |

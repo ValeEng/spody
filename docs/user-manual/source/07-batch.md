@@ -288,6 +288,14 @@ results of any prior run are never overwritten silently &mdash; the
 listing under `<batch.output_dir>/` is the chronological history
 of every batch run executed from that scenario.
 
+> The events file is **aggregated**: a single binary covers every
+> trigger across the whole batch. Each row carries an extra
+> `case_idx` (int32) field at the front so post-processing can join
+> with the cases CSV. The file's 8-byte magic is `SPDYEVTB`
+> (versus `SPDYEVT_` for the per-run propagate output). The Python
+> readers in `python/spody_io/events.py` auto-detect the format
+> from the magic and return the matching numpy dtype.
+
 ## A complete worked example
 
 The `examples/batch_demo/` scenario shipped with SpOdy is a

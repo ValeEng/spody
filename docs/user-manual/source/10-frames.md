@@ -43,23 +43,39 @@ evaluate body-fixed gravity harmonics at each step.
 > metadata (`spody.exe` ignores them). See chapter 7 ("RIC-frame
 > batch input") for the workflow.
 
-## The body-fixed frame
+## The body-fixed frame (Moon Principal Axes)
 
-Internally, the engine evaluates the spherical-harmonic gravity
-expansion in the **Moon's principal-axis body-fixed frame**, which
-is the frame the GRGM1200B coefficient set is expressed in. The
-rotation from inertial to body-fixed is constructed at every step
-from the planetary ephemeris (rotation matrix from DE440's lunar
-attitude data). Users never see this frame: the inputs and
-outputs stay in the inertial frame, and the body-fixed conversion
-happens transparently inside the harmonics evaluation.
+Internally the engine evaluates the spherical-harmonic gravity
+expansion in the **Moon's Principal Axes (PA) body-fixed frame**,
+which is the frame the GRGM1200B coefficient set is expressed in.
+The rotation from inertial to body-fixed is built at every step
+from the planetary ephemeris using the lunar libration angles
+that DE440 carries in its slot 12:
 
-This is the relevant point for users: even though the engine uses
-the body-fixed frame in the harmonics math, you do **not** need to
-worry about libration angles, principal-axis vs mean-Earth axes,
-or sidereal-time alignment in your inputs. The conversion is
-exact for every step using the same source data NASA uses for the
-GRGM1200B model.
+    C_ICRF→PA = Rz(psi) · Rx(theta) · Rz(phi)
+
+with `(phi, theta, psi)` the 3-1-3 Euler angles of the lunar
+mantle at the requested ET. The convention is `r_PA = C · r_ICRF`.
+
+For the **propagation itself** users do not see this frame: the
+inputs and outputs stay in the inertial frame, and the
+body-fixed conversion happens transparently inside the harmonics
+evaluation. You do **not** need to worry about libration angles,
+principal-axis vs mean-Earth axes, or sidereal-time alignment in
+your inputs. The conversion is exact for every step using the
+same source data NASA uses for the GRGM1200B model.
+
+The PA frame **does become visible** in the Analysis tab's
+*impact* views (chapter 9): the impact lat/lon map (both
+projections), the density heatmap, and the 3D impact scene all
+project IMPACT events from ICRF onto PA so the latitude and
+longitude axes refer to the actual lunar surface. The same
+rotation pipeline is reused there, this time exposed in pure
+Python through the bundled `spopy` package
+(`spopy.Ephemeris.lunar_libration_angles` +
+`spopy.icrf_to_moon_pa`), which is a numpy-only re-implementation
+of the spody-core C helpers (bit-identical, validated at the time
+of landing).
 
 ## The RIC frame (RIC = Radial / In-track / Cross-track)
 

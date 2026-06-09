@@ -174,9 +174,9 @@ deeper does not appear; either move the file up or use the
 
 The kind detection reads the first 8 bytes of the file and
 matches them against the four supported magics (`SPDYOUT_`,
-`SPDYACC_`, `SPDYEVT_`). A `.bin` produced by an external tool
-that does not write a SpOdy magic will be flagged; convert the
-file into one of the supported formats first.
+`SPDYACC_`, `SPDYEVT_`, `SPDYEVTB`). A `.bin` produced by an
+external tool that does not write a SpOdy magic will be flagged;
+convert the file into one of the supported formats first.
 
 ### Plot button is missing
 
@@ -187,8 +187,37 @@ it; the dispatch is on the click itself.
 
 The Sun-arrow row appears only when the **active plot is 3D**.
 The currently-selected leaf in the plot tree is 2D (which covers
-every plot except `3D orbit + Moon`); pick the 3D plot and the
-row reappears.
+every plot except `3D orbit + Moon` and `Impact 3D on Moon`);
+pick a 3D plot and the row reappears.
+
+### Impact-view says "No input.toml found" / "Could not locate ephemeris"
+
+The four impact lat/lon views (equirect, Mollweide, density
+heatmap, 3D) read the run-folder `input.toml` snapshot for
+`et_start_s` and `[ephemeris].file` &mdash; both are required to
+project ICRF impacts onto the Moon's body-fixed PA frame. The
+snapshot is normally written by the engine at every invocation
+(chapter 7). It can be missing when:
+
+- the events file you loaded came from a *pre-run-folder* run
+  (an older spody build, before the layout refactor);
+- the events file was hand-copied out of its original run folder
+  to another location.
+
+In both cases, copy the matching `input.toml` next to the
+`<batch>_events.bin` and reload the file. The ephemeris path
+inside that TOML must still resolve from somewhere reachable; the
+resolver tries the snapshot directory, then two ancestor levels
+up (where the original TOML usually lived), then the current
+working directory.
+
+### Moon texture not showing in the impact map / 3D scene
+
+The Moon texture is an **optional** wizard asset and is not
+downloaded by default (chapter 3). Open the Setup wizard and
+press **Download** on the *Moon texture* card. The impact map
+falls back to a plain background and the 3D scene to a flat-grey
+sphere when the texture is absent; no error is raised.
 
 ### "Diff needs exactly 2 files (currently selected: 1)"
 
