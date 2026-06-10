@@ -980,7 +980,13 @@ static int parse_batch(toml_table_t *root, const char *toml_dir,
         const char *col = batch->column_names[j];
 
         /* A column entry is either a plain string (override target) or
-         * an inline table { target = "...", mode = "override"|"delta" }. */
+         * an inline table { target = "...", mode = "override"|"delta" }.
+         * Empty-string target ("" or table with target="") marks the
+         * column as metadata: the value gets parsed (for type-checking)
+         * but never applied to any field. Use this for CSV columns the
+         * user wants to keep in the cases file (e.g. fragment L_char,
+         * batch ids) without spody knowing how to interpret them.
+         * Missing entry remains an error -- that is the typo guard. */
         char target_path[SPODY_MAX_PATH] = {0};
         int  is_delta = 0;
 
@@ -1020,6 +1026,17 @@ static int parse_batch(toml_table_t *root, const char *toml_dir,
                 free(md.u.s);
             }
             /* mode absent -> override (default) */
+        }
+
+        /* Empty target == metadata column. Mark the slot NULL so the
+         * override-apply / validation loops skip it (they already check
+         * for `!fd`). The values column is still read out of the CSV
+         * row-by-row so the data is preserved on disk; spody just does
+         * not apply it anywhere. */
+        if (target_path[0] == '\0') {
+            batch->column_targets[j]  = NULL;
+            batch->column_is_delta[j] = 0;
+            continue;
         }
 
         const SpodyFieldDesc *fd = resolve_field(target_path);

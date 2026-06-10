@@ -34,7 +34,7 @@ to r_hat, normalised.
 
 Pure-rotation contract
 ----------------------
-`rotate_state_csv_ric_to_eci` is exactly that: a per-row change of basis,
+`rotate_state_csv_ric_to_icrf` is exactly that: a per-row change of basis,
 no translation. Given a row whose state columns hold
 `[r_x, r_y, r_z]_ric` and `[v_x, v_y, v_z]_ric` it writes the same row with
 those columns replaced by `R @ r_ric` and `R @ v_ric` (with R built from
@@ -52,6 +52,31 @@ dv components are treated as plain vector projections onto the
 instantaneous RIC axes (what an onboard sensor would report). This is NOT
 the Hill / Clohessy-Wiltshire rotating-frame convention used in rendezvous
 literature.
+
+Convention used here for LVLH
+-----------------------------
+The LVLH (Local Vertical / Local Horizontal) basis follows the
+NASA/Goddard convention used by CCSDS conjunction messages and the
+standard NASA breakup-model tooling:
+
+    z_lvlh = -r_hat                (nadir, toward the central body)
+    y_lvlh = -h_hat                (anti orbit normal,  h = r x v)
+    x_lvlh =  y_lvlh x z_lvlh      (horizontal; aligns with +v_ref
+                                    for a circular orbit)
+
+`lvlh_basis(r, v)` returns the column-stacked `(x_lvlh, y_lvlh, z_lvlh)`
+so multiplying it by a vector expressed in LVLH components produces the
+same vector in ICRF -- matching the SPICE-style C reference the user's
+breakup-model code emits:
+
+    R[i][j] = (x_lvlh[i], y_lvlh[i], z_lvlh[i])[j]
+    v_icrf = R @ v_lvlh
+
+Pure-rotation contract identical to the RIC side: the GUI pre-rotates the
+per-row state offsets, spody.exe adds them on top of `[initial_state]` via
+`mode = "delta"`. No omega-cross-r term either -- LVLH input is taken as a
+sensor-frame snapshot of the fragment ejection velocities (the NASA EVOLVE
+/ ORDEM breakup-model convention).
 """
 from __future__ import annotations
 
@@ -109,7 +134,188 @@ def ric_basis(r_ref: np.ndarray, v_ref: np.ndarray) -> np.ndarray:
     return np.column_stack((r_hat, s_hat, c_hat))
 
 
-def rotate_state_csv_ric_to_eci(
+def lvlh_basis(r_ref: np.ndarray, v_ref: np.ndarray) -> np.ndarray:
+    """Build the rotation matrix R_LVLH2ICRF from a reference state in ICRF.
+
+    NASA/Goddard LVLH convention:
+
+        z_lvlh = -r_hat                (nadir)
+        y_lvlh = -h_hat                (anti orbit normal, h = r x v)
+        x_lvlh =  y_lvlh x z_lvlh      (horizontal)
+
+    Columns are (x_lvlh, y_lvlh, z_lvlh). Multiplying R by a vector
+    expressed in LVLH components returns the same vector expressed in
+    ICRF components -- bit-for-bit equivalent to the C reference
+    (`unorm_c` + `ucrss_c` + sign flips) used by the user's breakup-model
+    pipeline.
+
+    Parameters
+    ----------
+    r_ref : array_like, shape (3,)
+        Reference position in ICRF central-inertial [km].
+    v_ref : array_like, shape (3,)
+        Reference velocity in ICRF central-inertial [km/s].
+
+    Returns
+    -------
+    R : ndarray, shape (3, 3)
+        Rotation matrix that maps LVLH -> ICRF.
+
+    Raises
+    ------
+    ValueError
+        If r_ref is zero or r_ref and v_ref are parallel (h = 0;
+        LVLH undefined).
+    """
+    r = np.asarray(r_ref, dtype=float).reshape(3)
+    v = np.asarray(v_ref, dtype=float).reshape(3)
+
+    r_norm = np.linalg.norm(r)
+    if r_norm < 1.0e-9:
+        raise ValueError(
+            "reference position is at the origin; LVLH undefined")
+
+    h = np.cross(r, v)
+    h_norm = np.linalg.norm(h)
+    if h_norm < 1.0e-12:
+        raise ValueError(
+            "reference r_ref and v_ref are parallel (h = r x v = 0); "
+            "LVLH frame undefined"
+        )
+
+    # Sign flips encode the nadir / anti-orbit-normal choice; cross of
+    # the two gives the horizontal "x" axis (~ +v for circular orbits).
+    z_lvlh = -r / r_norm
+    y_lvlh = -h / h_norm
+    x_lvlh = np.cross(y_lvlh, z_lvlh)
+    # x is already unit length (y, z are unit and orthogonal), but
+    # normalise defensively against accumulated float roundoff.
+    x_lvlh /= np.linalg.norm(x_lvlh)
+
+    return np.column_stack((x_lvlh, y_lvlh, z_lvlh))
+
+
+def rotate_state_csv_lvlh_to_icrf(
+    input_path: str | Path,
+    output_path: str | Path,
+    r_ref_km: np.ndarray,
+    v_ref_kms: np.ndarray,
+    pos_columns: tuple[str, str, str] | None,
+    vel_columns: tuple[str, str, str] | None,
+) -> dict:
+    """LVLH counterpart of `rotate_state_csv_ric_to_icrf`.
+
+    Same pure-rotation contract: reads `input_path`, replaces the
+    declared state-column triplets with `R @ v_lvlh` per row (R from
+    `lvlh_basis`), writes the result to `output_path`. No translation
+    is added -- pair with `mode = "delta"` in `[batch.columns]` so
+    spody.exe combines the rotated offsets with `[initial_state]`.
+
+    The on-disk header is preserved column-by-column; only the rotated
+    cells change. The header banner emitted at the top of the output
+    file documents the reference orbit + which columns were rotated,
+    so the produced CSV is self-describing.
+
+    Parameters, return value and error semantics mirror
+    `rotate_state_csv_ric_to_icrf`; see that docstring for the full
+    contract.
+    """
+    in_path  = Path(input_path)
+    out_path = Path(output_path)
+    if not in_path.is_file():
+        raise FileNotFoundError(f"batch CSV not found: {in_path}")
+    if in_path.resolve() == out_path.resolve():
+        raise ValueError(
+            f"refusing to rewrite '{in_path}' in place; "
+            f"pick a distinct output path")
+    if pos_columns is None and vel_columns is None:
+        raise ValueError(
+            "rotate_state_csv_lvlh_to_icrf called with neither pos_columns "
+            "nor vel_columns -- nothing to rotate")
+
+    R = lvlh_basis(r_ref_km, v_ref_kms)
+    r_ref = np.asarray(r_ref_km,  dtype=float).reshape(3)
+    v_ref = np.asarray(v_ref_kms, dtype=float).reshape(3)
+
+    with in_path.open(encoding="utf-8", newline="") as f:
+        data_lines = [
+            ln for ln in f
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+    if not data_lines:
+        raise ValueError(f"{in_path}: no header/data lines (only comments?)")
+
+    reader = csv.DictReader(data_lines, skipinitialspace=True)
+    raw_header = reader.fieldnames or []
+    header = [h.strip() for h in raw_header]
+    reader.fieldnames = header
+
+    declared = []
+    if pos_columns is not None: declared.extend(pos_columns)
+    if vel_columns is not None: declared.extend(vel_columns)
+    missing = [c for c in declared if c not in header]
+    if missing:
+        raise ValueError(
+            f"{in_path}: missing state columns declared by the GUI mapping: "
+            f"{missing}. CSV header: {header}")
+
+    state_set = set(declared)
+    passthrough = [c for c in header if c not in state_set]
+
+    out_header = list(header)
+
+    n_rows = 0
+    with out_path.open("w", encoding="utf-8", newline="") as f_out:
+        rr = [repr(float(x)) for x in r_ref]
+        vv = [repr(float(x)) for x in v_ref]
+        f_out.write(
+            f"# generated by spody_gui.frames.rotate_state_csv_lvlh_to_icrf\n"
+            f"# source     = {in_path.name}\n"
+            f"# r_ref_km   = [{rr[0]}, {rr[1]}, {rr[2]}]\n"
+            f"# v_ref_kms  = [{vv[0]}, {vv[1]}, {vv[2]}]\n"
+            f"# rotated    = pos:{pos_columns} vel:{vel_columns}\n"
+            f"# convention = pure rotation (LVLH -> ICRF); pair with [batch.columns] mode='delta'\n"
+        )
+        writer = csv.DictWriter(f_out, fieldnames=out_header)
+        writer.writeheader()
+
+        for row_idx, row in enumerate(reader, start=1):
+            out_row = dict(row)
+
+            if pos_columns is not None:
+                try:
+                    r_lvlh = np.array([float(row[c]) for c in pos_columns])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"{in_path}: row {row_idx}: non-numeric value in "
+                        f"position columns {pos_columns} ({exc})") from exc
+                r_icrf = R @ r_lvlh
+                for col, val in zip(pos_columns, r_icrf):
+                    out_row[col] = repr(float(val))
+
+            if vel_columns is not None:
+                try:
+                    v_lvlh = np.array([float(row[c]) for c in vel_columns])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"{in_path}: row {row_idx}: non-numeric value in "
+                        f"velocity columns {vel_columns} ({exc})") from exc
+                v_icrf = R @ v_lvlh
+                for col, val in zip(vel_columns, v_icrf):
+                    out_row[col] = repr(float(val))
+
+            writer.writerow(out_row)
+            n_rows += 1
+
+    return {
+        "n_rows":              n_rows,
+        "rotated_pos_columns": pos_columns,
+        "rotated_vel_columns": vel_columns,
+        "passthrough_columns": passthrough,
+    }
+
+
+def rotate_state_csv_ric_to_icrf(
     input_path: str | Path,
     output_path: str | Path,
     r_ref_km: np.ndarray,
@@ -175,7 +381,7 @@ def rotate_state_csv_ric_to_eci(
             f"pick a distinct output path")
     if pos_columns is None and vel_columns is None:
         raise ValueError(
-            "rotate_state_csv_ric_to_eci called with neither pos_columns "
+            "rotate_state_csv_ric_to_icrf called with neither pos_columns "
             "nor vel_columns -- nothing to rotate")
 
     # Fail before any I/O if the reference orbit is degenerate.
@@ -219,7 +425,7 @@ def rotate_state_csv_ric_to_eci(
         rr = [repr(float(x)) for x in r_ref]
         vv = [repr(float(x)) for x in v_ref]
         f_out.write(
-            f"# generated by spody_gui.frames.rotate_state_csv_ric_to_eci\n"
+            f"# generated by spody_gui.frames.rotate_state_csv_ric_to_icrf\n"
             f"# source     = {in_path.name}\n"
             f"# r_ref_km   = [{rr[0]}, {rr[1]}, {rr[2]}]\n"
             f"# v_ref_kms  = [{vv[0]}, {vv[1]}, {vv[2]}]\n"
@@ -296,6 +502,35 @@ if __name__ == "__main__":
     except ValueError:
         _check("parallel r,v raises", True)
 
+    # 2b. LVLH canonical reference + property checks.
+    r_can = np.array([7000.0, 0.0, 0.0])
+    v_can = np.array([0.0,     7.0, 0.0])
+    L = lvlh_basis(r_can, v_can)
+    # Columns: x_lvlh, y_lvlh, z_lvlh expressed in ICRF.
+    # For r=+X, v=+Y: h = +Z, so z_lvlh = -r_hat = -X; y_lvlh = -h_hat = -Z;
+    # x_lvlh = y_lvlh x z_lvlh = (-Z) x (-X) = (Z x X) = +Y.
+    _check("LVLH canonical: x_lvlh = +Y",
+           np.allclose(L[:, 0], [0.0, 1.0, 0.0], atol=1e-12),
+           f"L[:,0]={L[:,0]}")
+    _check("LVLH canonical: y_lvlh = -Z",
+           np.allclose(L[:, 1], [0.0, 0.0, -1.0], atol=1e-12),
+           f"L[:,1]={L[:,1]}")
+    _check("LVLH canonical: z_lvlh = -X (nadir)",
+           np.allclose(L[:, 2], [-1.0, 0.0, 0.0], atol=1e-12),
+           f"L[:,2]={L[:,2]}")
+    _check("LVLH columns are orthonormal (LL^T = I)",
+           np.allclose(L @ L.T, np.eye(3), atol=1e-12))
+    _check("LVLH right-handed (det == +1)",
+           abs(np.linalg.det(L) - 1.0) < 1e-12,
+           f"det={np.linalg.det(L)}")
+
+    # 2c. LVLH degenerate basis raises.
+    try:
+        lvlh_basis(np.array([1.0, 0.0, 0.0]), np.array([2.0, 0.0, 0.0]))
+        _check("LVLH parallel r,v raises", False, "did not raise")
+    except ValueError:
+        _check("LVLH parallel r,v raises", True)
+
     # 3. CSV rotation round-trip.
     tmpdir = Path(tempfile.mkdtemp(prefix="spody_frames_test_"))
     try:
@@ -313,7 +548,7 @@ if __name__ == "__main__":
             "intr,  0.0,    1.0,     0.0,    0.0,      0.0,      0.0,      300.0\n",
             encoding="utf-8",
         )
-        info = rotate_state_csv_ric_to_eci(
+        info = rotate_state_csv_ric_to_icrf(
             ric_csv, eci_csv, r_ref_lro, v_ref_lro,
             pos_columns=("dr_x_km", "dr_y_km", "dr_z_km"),
             vel_columns=("dv_x_kms", "dv_y_kms", "dv_z_kms"),
@@ -358,7 +593,7 @@ if __name__ == "__main__":
 
         # in-place output rejected
         try:
-            rotate_state_csv_ric_to_eci(
+            rotate_state_csv_ric_to_icrf(
                 ric_csv, ric_csv, r_ref_lro, v_ref_lro,
                 pos_columns=("dr_x_km","dr_y_km","dr_z_km"),
                 vel_columns=None)
@@ -370,7 +605,7 @@ if __name__ == "__main__":
         bad = tmpdir / "bad.csv"
         bad.write_text("id, dr_x_km\nA, 0.0\n", encoding="utf-8")
         try:
-            rotate_state_csv_ric_to_eci(
+            rotate_state_csv_ric_to_icrf(
                 bad, tmpdir / "bad_out.csv",
                 r_ref_lro, v_ref_lro,
                 pos_columns=("dr_x_km","dr_y_km","dr_z_km"),
@@ -385,7 +620,7 @@ if __name__ == "__main__":
         vel_only.write_text(
             "id, dv_x_kms, dv_y_kms, dv_z_kms\nA, 0.0, 1.0, 0.0\n",
             encoding="utf-8")
-        info_v = rotate_state_csv_ric_to_eci(
+        info_v = rotate_state_csv_ric_to_icrf(
             vel_only, vel_out, r_ref_lro, v_ref_lro,
             pos_columns=None,
             vel_columns=("dv_x_kms","dv_y_kms","dv_z_kms"))
@@ -393,7 +628,7 @@ if __name__ == "__main__":
 
         # both None raises
         try:
-            rotate_state_csv_ric_to_eci(
+            rotate_state_csv_ric_to_icrf(
                 vel_only, vel_out, r_ref_lro, v_ref_lro,
                 pos_columns=None, vel_columns=None)
             _check("both-None raises", False, "did not raise")

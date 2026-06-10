@@ -851,7 +851,7 @@ class TomlForm(QWidget):
         # reference orbit). The cases_frame key is only emitted when
         # not the default.
         self._batch_cases_frame_combo = QComboBox()
-        for frame_name in ("icrf", "ric"):
+        for frame_name in ("icrf", "ric", "lvlh"):
             self._batch_cases_frame_combo.addItem(frame_name)
         self._batch_cases_frame_combo.currentTextChanged.connect(
             self._on_cases_frame_changed)
@@ -1207,6 +1207,26 @@ class TomlForm(QWidget):
         self._update_cases_frame_status()
         self._update_ric_preview()
 
+    # Frames that require a GUI-side rotation to ICRF at Generate-TOML
+    # (spody.exe only ingests ICRF state). Used by every dispatch helper
+    # below as the single source of truth; add a new rotating frame here
+    # + its (basis, rotation_fn) pair in `_rotation_helpers()` and the
+    # rest plugs in automatically.
+    _ROTATING_FRAMES = ("ric", "lvlh")
+
+    @staticmethod
+    def _rotation_helpers(frame: str):
+        """Return `(basis_fn, rotate_csv_fn)` for a rotating frame.
+        Both helpers come from `spody_gui.frames` and share the same
+        contract; the dispatch maps the combo value to the right pair.
+        Raises ValueError for an unrecognised frame."""
+        from . import frames as _frames
+        if frame == "ric":
+            return _frames.ric_basis,  _frames.rotate_state_csv_ric_to_icrf
+        if frame == "lvlh":
+            return _frames.lvlh_basis, _frames.rotate_state_csv_lvlh_to_icrf
+        raise ValueError(f"no rotation helpers for frame {frame!r}")
+
     def _resolved_cases_file(self) -> str:
         """Compute the cases_file value that spody.exe will see, from
         the current source path + frame combo. Returns an empty string
@@ -1214,12 +1234,14 @@ class TomlForm(QWidget):
         src = self._batch_cases_edit.text().strip()
         if not src:
             return ""
-        if self._batch_cases_frame_combo.currentText() != "ric":
+        frame = self._batch_cases_frame_combo.currentText()
+        if frame not in self._ROTATING_FRAMES:
             # icrf or unset: the source IS the file spody.exe reads.
             return src
-        # ric: rotated copy alongside the source. Preserve relative-ness
-        # (cases_file in the TOML is interpreted relative to the TOML
-        # file's directory).
+        # ric / lvlh: rotated copy alongside the source. Preserve
+        # relative-ness (cases_file in the TOML is interpreted relative
+        # to the TOML file's directory). Same '_wrt_icrf' suffix for
+        # every rotating frame -- the destination is always ICRF.
         p = Path(src)
         return str(p.with_name(f"{p.stem}_wrt_icrf.csv"))
 
@@ -1233,11 +1255,11 @@ class TomlForm(QWidget):
             self._batch_frame_status.setText(
                 "Pick a cases CSV above.")
             return
-        if frame == "ric":
+        if frame in self._ROTATING_FRAMES:
             self._batch_frame_status.setText(
-                f"RIC source. At Generate the GUI rotates the state "
-                f"columns and writes '{Path(derived).name}'; spody.exe "
-                f"reads THAT file.")
+                f"{frame.upper()} source. At Generate the GUI rotates "
+                f"the state columns and writes '{Path(derived).name}'; "
+                f"spody.exe reads THAT file.")
         else:
             self._batch_frame_status.setText(
                 f"ICRF source. spody.exe reads it directly "
@@ -1253,12 +1275,14 @@ class TomlForm(QWidget):
     def _update_ric_preview(self) -> None:
         """Recompute the first 10 rotated rows of the source CSV and
         push them into the rotated-preview table. No-op (and hidden)
-        when frame != ric or batch is disabled. Silent on errors --
-        only the status line shows the reason."""
-        is_ric = (self._batch_check.isChecked() and
-                  self._batch_cases_frame_combo.currentText() == "ric")
-        self._batch_rotated_preview_container.setVisible(is_ric)
-        if not is_ric:
+        when frame is not a rotating one or batch is disabled. Silent
+        on errors -- only the status line shows the reason. Despite
+        the historical name, this handles both RIC and LVLH sources."""
+        frame = self._batch_cases_frame_combo.currentText()
+        is_rotating = (self._batch_check.isChecked() and
+                       frame in self._ROTATING_FRAMES)
+        self._batch_rotated_preview_container.setVisible(is_rotating)
+        if not is_rotating:
             return
 
         try:
@@ -1280,11 +1304,11 @@ class TomlForm(QWidget):
 
         # Build R once; bail with a clean status if the reference orbit
         # is degenerate.
-        from .frames import ric_basis
+        basis_fn, _ = self._rotation_helpers(frame)
         import csv as csv_mod
         import numpy as np
         try:
-            R = ric_basis(r_ref, v_ref)
+            R = basis_fn(r_ref, v_ref)
         except ValueError as exc:
             self._batch_rotated_preview_status.setText(
                 f"(preview unavailable: {exc})")
@@ -1729,7 +1753,7 @@ class TomlForm(QWidget):
         if source:
             flat["batch.cases_source_file"] = source
             flat["batch.cases_frame"]       = frame
-            if frame == "ric":
+            if frame in self._ROTATING_FRAMES:
                 p = Path(source)
                 flat["batch.cases_file"] = str(
                     p.with_name(f"{p.stem}_wrt_icrf.csv"))
@@ -1775,7 +1799,7 @@ class TomlForm(QWidget):
             batch_in = data.get("batch")
             if isinstance(batch_in, dict):
                 batch_in = dict(batch_in)
-                if batch_in.get("cases_frame") != "ric":
+                if batch_in.get("cases_frame") not in self._ROTATING_FRAMES:
                     if ("cases_file" in batch_in
                             and "cases_source_file" not in batch_in):
                         batch_in["cases_source_file"] = batch_in["cases_file"]
@@ -1926,7 +1950,8 @@ class TomlForm(QWidget):
         # cases_source_file -- see to_dict). If rotation fails the TOML
         # is also not written so the user sees one atomic failure.
         if (self._batch_check.isChecked()
-                and self._batch_cases_frame_combo.currentText() == "ric"):
+                and self._batch_cases_frame_combo.currentText()
+                    in self._ROTATING_FRAMES):
             if not self._rotate_ric_cases(path, data):
                 return False
 
@@ -2020,32 +2045,42 @@ class TomlForm(QWidget):
                 pos_cols, vel_cols)
 
     def _rotate_ric_cases(self, toml_path: Path, data: dict[str, Any]) -> bool:
-        """Generate <stem>_wrt_icrf.csv from the user's RIC source CSV.
-        Returns True on success or False after a message box. Reuses
-        `_resolve_ric_inputs` for input validation."""
-        from .frames import rotate_state_csv_ric_to_eci
+        """Generate <stem>_wrt_icrf.csv from the user's source CSV in
+        whichever rotating frame the combo currently shows (RIC or
+        LVLH). Returns True on success or False after a message box.
+        Reuses `_resolve_ric_inputs` for input validation -- the
+        resolution rules (state-column triplets, reference orbit) are
+        frame-agnostic; only the rotation kernel differs."""
+        frame = self._batch_cases_frame_combo.currentText()
+        try:
+            _basis_fn, rotate_csv_fn = self._rotation_helpers(frame)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Rotation",
+                                f"unsupported cases_frame {frame!r}: {exc}")
+            return False
 
         resolved = self._resolve_ric_inputs(toml_path, data)
         if resolved is None or resolved[0] == "error":
-            QMessageBox.warning(self, "RIC rotation",
+            QMessageBox.warning(self, f"{frame.upper()} rotation",
                                 resolved[1] if resolved else "unknown error")
             return False
         _, src, out, r_ref, v_ref, pos_cols, vel_cols = resolved
 
         try:
-            info = rotate_state_csv_ric_to_eci(
+            info = rotate_csv_fn(
                 src, out,
                 r_ref_km=r_ref, v_ref_kms=v_ref,
                 pos_columns=pos_cols, vel_columns=vel_cols,
             )
         except (FileNotFoundError, ValueError) as exc:
-            QMessageBox.critical(self, "RIC rotation failed", str(exc))
+            QMessageBox.critical(self, f"{frame.upper()} rotation failed",
+                                 str(exc))
             return False
 
         # Brief on-the-fly status so the user gets immediate feedback
         # without an extra dialog.
         self._batch_cases_status.setText(
-            f"(RIC -> ICRF: {info['n_rows']} rows written to "
+            f"({frame.upper()} -> ICRF: {info['n_rows']} rows written to "
             f"{out.name})")
         return True
 

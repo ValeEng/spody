@@ -103,9 +103,9 @@ pre-rotate the CSV yourself; the simplest path is:
 ```python
 from pathlib import Path
 import numpy as np
-from spody_gui.frames import rotate_state_csv_ric_to_eci
+from spody_gui.frames import rotate_state_csv_ric_to_icrf
 demo = Path("examples/debris_ric_demo")
-rotate_state_csv_ric_to_eci(
+rotate_state_csv_ric_to_icrf(
     demo / "cases_ric.csv",
     demo / "cases_ric_wrt_icrf.csv",
     r_ref_km =np.array([1622.030233600,  512.084982400, -529.342614300]),
