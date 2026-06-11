@@ -267,6 +267,21 @@ def _unit_suffix(key: str) -> str:
     return f"  [{u}]" if u else ""
 
 
+# Conversion factors for seconds-valued fields rendered with a unit
+# combo (currently only `duration_s`). The TOML always carries seconds;
+# the combo is purely a display/typing aid driven by user preference.
+_DURATION_FACTORS: dict[str, float] = {
+    "s":    1.0,
+    "min":  60.0,
+    "h":    3600.0,
+    "days": 86400.0,
+}
+# Order tried by the auto-pick on load -- the first unit whose factor
+# does not exceed |value| wins, with "s" as the fallback so sub-second
+# durations stay rendered in seconds.
+_DURATION_UNIT_AUTOPICK = ("days", "h", "min")
+
+
 # Standard file-name suffixes for the auto-named output streams. Keys are
 # the same dotted TOML paths as the form widgets; values are appended to
 # the simulation's `[simulation].name` to form the basename. Pattern is
@@ -352,6 +367,19 @@ class TomlForm(QWidget):
         # _add_float). Used by _widget_value to know when to parse the
         # text as float vs leave as string.
         self._float_keys: set[str] = set()
+
+        # Float keys whose QLineEdit value is rendered in a user-picked
+        # unit (the unit combo lives in _scaled_unit_combos[key]). The
+        # TOML still carries the SI value; _widget_value multiplies by
+        # the current factor on emit and _set_widget_value auto-picks
+        # an appropriate unit on load. Currently only `duration_s` uses
+        # this, but the machinery is keyed so other seconds-valued
+        # fields can opt in with one call to _add_duration_seconds.
+        self._scaled_unit_combos: dict[str, QComboBox] = {}
+        # Remembers each combo's last selection so the combo-change
+        # handler can reconvert the displayed value without storing the
+        # underlying seconds in a separate field.
+        self._scaled_unit_prev: dict[str, str] = {}
 
         outer = QVBoxLayout(self)
 
@@ -454,7 +482,7 @@ class TomlForm(QWidget):
         # ET stays the only thing the TOML carries; the UTC cell next
         # to it is a typing aid driven by `→` / `←` convert buttons.
         self._add_et_with_utc(f, "simulation.et_start_s", "et_start_s")
-        self._add_float (f, "simulation.duration_s", "duration_s")
+        self._add_duration_seconds(f, "simulation.duration_s", "duration_s")
         return g
 
     def _add_et_with_utc(self, layout: QFormLayout, key: str,
@@ -977,6 +1005,77 @@ class TomlForm(QWidget):
         self._widgets[key] = w
         self._float_keys.add(key)
         layout.addRow(label + _unit_suffix(key.split(".")[-1]), w)
+
+    def _add_duration_seconds(self, layout: QFormLayout, key: str,
+                                label: str) -> None:
+        """Float-in-seconds row with a unit combo (s | min | h | days).
+
+        The QLineEdit displays the value in whichever unit the user
+        picks; `_widget_value` multiplies by the current factor on
+        emit so the TOML always carries seconds, regardless of what
+        the user typed. On load, `_set_widget_value` auto-picks the
+        largest unit that yields a magnitude >= 1 (with `s` as the
+        fallback for sub-second values), then divides accordingly.
+        Switching the combo reconverts the visible number so the
+        underlying seconds-value stays invariant -- typing 3600 in
+        seconds and flipping the combo to `h` shows 1.0 without
+        touching the form-modified flag any more than the user's own
+        edit would.
+
+        Range validation runs on the displayed (scaled) value, which
+        is fine for the only current consumer (`duration_s` uses
+        `_pos`, invariant under positive scaling); if a future field
+        wants a bound on the SI value, the validator needs to be
+        applied post-scale instead.
+        """
+        w = QLineEdit()
+        w.textChanged.connect(self._touch)
+        w.textChanged.connect(lambda _t, k=key: self._validate_field(k))
+        self._widgets[key] = w
+        self._float_keys.add(key)
+
+        combo = QComboBox()
+        for u in _DURATION_FACTORS:
+            combo.addItem(u)
+        combo.setMaximumWidth(70)
+        combo.setToolTip("Display unit for this duration. The TOML "
+                         "always carries seconds; switching unit "
+                         "rescales the visible number without changing "
+                         "the underlying value.")
+
+        def _on_unit_changed(idx: int) -> None:
+            new_unit = combo.itemText(idx)
+            old_unit = self._scaled_unit_prev.get(key, "s")
+            if new_unit == old_unit:
+                return
+            text = w.text().strip()
+            if text:
+                try:
+                    v = float(text)
+                except ValueError:
+                    self._scaled_unit_prev[key] = new_unit
+                    return
+                seconds = v * _DURATION_FACTORS[old_unit]
+                w.blockSignals(True)
+                w.setText(_tidy_float(seconds / _DURATION_FACTORS[new_unit]))
+                w.blockSignals(False)
+                # Re-run the validator on the new displayed value; the
+                # blockSignals above suppressed textChanged.
+                self._validate_field(key)
+            self._scaled_unit_prev[key] = new_unit
+            self._touch()
+
+        combo.currentIndexChanged.connect(_on_unit_changed)
+        self._scaled_unit_combos[key] = combo
+        self._scaled_unit_prev[key] = combo.currentText()
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(w, 1)
+        row.addWidget(combo)
+        # No unit-suffix on the label: the combo IS the unit, and the
+        # bracketed "[s]" tag would lie the moment the user picks min/h.
+        layout.addRow(label, _hwrap(row))
 
     def _add_int(self, layout: QFormLayout, key: str, label: str,
                  minimum: int = -2**31, maximum: int = 2**31 - 1,
@@ -2267,6 +2366,13 @@ class TomlForm(QWidget):
     def _reset_widgets(self) -> None:
         """Restore every widget to a sensible blank state so a fresh
         load doesn't leave fields from the previous file behind."""
+        # Reset unit combos first so they don't reconvert the value
+        # we are about to clear from the QLineEdit they shadow.
+        for key, combo in self._scaled_unit_combos.items():
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+            self._scaled_unit_prev[key] = combo.currentText()
         for key, w in self._widgets.items():
             if isinstance(w, QLineEdit):
                 w.clear()
@@ -2301,9 +2407,16 @@ class TomlForm(QWidget):
                 except ValueError:
                     raise ValueError(f"'{key}' is not a valid integer: {text!r}")
             if key in self._float_keys:
-                try:    return float(text)
+                try:    v = float(text)
                 except ValueError:
                     raise ValueError(f"'{key}' is not a valid number: {text!r}")
+                # Unit-scaled fields (e.g. duration_s with a min/h/days
+                # combo) multiply by the current combo factor so the
+                # emitted TOML always carries SI.
+                combo = self._scaled_unit_combos.get(key)
+                if combo is not None:
+                    v *= _DURATION_FACTORS[combo.currentText()]
+                return v
             return text
         if isinstance(w, QCheckBox):
             return bool(w.isChecked())
@@ -2333,6 +2446,25 @@ class TomlForm(QWidget):
 
     def _set_widget_value(self, key: str, w: Any, value: Any) -> None:
         if isinstance(w, QLineEdit):
+            # Unit-scaled fields auto-pick a display unit so a user who
+            # types 86400 in seconds gets it back as 1.0 days on the
+            # next load instead of a long second-count.
+            combo = self._scaled_unit_combos.get(key)
+            if combo is not None and isinstance(value, (int, float)):
+                seconds = float(value)
+                unit = "s"
+                for u in _DURATION_UNIT_AUTOPICK:
+                    if abs(seconds) >= _DURATION_FACTORS[u]:
+                        unit = u
+                        break
+                combo.blockSignals(True)
+                idx = combo.findText(unit)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+                self._scaled_unit_prev[key] = unit
+                w.setText(_tidy_float(seconds / _DURATION_FACTORS[unit]))
+                return
             if isinstance(value, float):
                 w.setText(_tidy_float(value))
             elif isinstance(value, int):
