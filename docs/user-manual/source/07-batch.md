@@ -137,7 +137,7 @@ Mixing both modes across columns is supported. Mixing across
 *cases* (i.e. the same column behaving as delta in one row and
 override in the next) is not.
 
-## RIC-frame batch input
+## Rotating-frame batch input (RIC / LVLH)
 
 The propagation engine (`spody.exe`) **only accepts ICRF central-
 inertial state**: every cell that ends up overriding
@@ -145,17 +145,33 @@ inertial state**: every cell that ends up overriding
 frame. There is no `frame =` knob at the cases-CSV level on the C
 side.
 
-The GUI bridges this gap so a user with state measurements in the
-**RIC frame of a reference satellite** (the typical "debris cloud
-seen from the chaser" use case) does not have to rotate them by
-hand. The form has a single cases-CSV path field (always showing
-the user-picked source) plus a `cases_frame` combo (`icrf` |
-`ric`), and emits three coordinated keys inside `[batch]`:
+The GUI bridges this gap so a user with state measurements in a
+**rotating frame attached to a reference satellite** does not have
+to rotate them by hand. Two rotating frames are accepted today
+(both anchored to the reference orbit declared in
+`[initial_state]`):
+
+- **RIC** &mdash; the typical *debris cloud seen from the chaser*
+  use case: `x = r_hat` (radial), `y = (h x r)_hat` (in-plane,
+  forward of the orbit normal), `z = h_hat` (cross-track). Pairs
+  naturally with sensor-frame snapshots from a chaser tracking a
+  target.
+- **LVLH** &mdash; the NASA / Goddard convention used by, e.g.,
+  the NASA breakup model: `z = -r_hat` (nadir), `y = -h_hat`
+  (anti orbit normal), `x = y x z` (horizontal, &asymp; `+v` for
+  a circular orbit). Picking this is the right move when your
+  source CSV is the binary dump from a debris-evolution tool
+  using the LVLH convention.
+
+The form has a single cases-CSV path field (always showing the
+user-picked source) plus a `cases_frame` combo
+(`icrf` | `ric` | `lvlh`), and emits three coordinated keys
+inside `[batch]`:
 
 | TOML key            | Meaning                                                              |
 |---------------------|----------------------------------------------------------------------|
 | `cases_source_file` | The path the user picked &mdash; the file the form shows.            |
-| `cases_frame`       | `"icrf"` (default) or `"ric"`: the frame the source CSV is in.       |
+| `cases_frame`       | `"icrf"` (default), `"ric"`, or `"lvlh"`: the frame of the source.   |
 | `cases_file`        | The file `spody.exe` actually reads. See the rule below.             |
 
 The contract between the three keys is:
@@ -163,37 +179,43 @@ The contract between the three keys is:
 - **`cases_frame = "icrf"`**: `cases_file` equals
   `cases_source_file` byte for byte. The picked CSV goes straight
   to `spody.exe`.
-- **`cases_frame = "ric"`**: at **Generate-TOML** the GUI
+- **`cases_frame = "ric"` or `"lvlh"`**: at **Generate-TOML** the
+  GUI
   1. reads the column-mapping table to find which CSV columns
      target `initial_state.position_km[i]` /
      `initial_state.velocity_kms[i]`;
-  2. computes the rotation
-     `R = ric_basis([initial_state].position_km, .velocity_kms)` &mdash;
-     the reference orbit comes straight from `[initial_state]`, so
-     no extra input is required;
+  2. computes the rotation `R = ric_basis(r_ref, v_ref)` or
+     `R = lvlh_basis(r_ref, v_ref)` according to the combo &mdash;
+     the reference orbit `(r_ref, v_ref)` comes straight from
+     `[initial_state]`, so no extra input is required;
   3. rotates each row's position triplet and velocity triplet by
      `R @ vec` (**pure change of basis** &mdash; the reference
      vector is *not* added to the result);
   4. writes the rotated copy to `<stem>_wrt_icrf.csv` next to the
      source;
-  5. emits `cases_file = "<stem>_wrt_icrf.csv"` so `spody.exe` reads
-     the rotated copy. `cases_source_file` and `cases_frame` round
-     out the triple so the form restores its RIC state on the next
-     Load without the user re-picking the source.
+  5. emits `cases_file = "<stem>_wrt_icrf.csv"` so `spody.exe`
+     reads the rotated copy. `cases_source_file` and
+     `cases_frame` round out the triple so the form restores its
+     rotating-frame state on the next Load without the user
+     re-picking the source.
 
 `spody.exe` ignores `cases_frame` and `cases_source_file` today &mdash;
 its TOML parser only reads the keys it knows about. The two extras
-are also a placeholder for a future engine-side RIC handler that
-would take the source CSV directly.
+are also a placeholder for a future engine-side rotating-frame
+handler that would take the source CSV directly.
 
 ### Live rotated preview
 
-When the combo is set to `ric`, a second preview table appears
-under the standard cases-CSV preview, showing the first 10 rows
-*after* rotation. It refreshes automatically when you change the
-source path, the frame combo, or re-read the columns. A **Refresh
-preview** button on top of it forces a recompute after edits to
-`[initial_state]` or to the column-mapping table.
+When the combo is set to a rotating frame, a second preview table
+appears under the standard cases-CSV preview, showing the first 10
+rows *after* rotation. Its header reads
+**Rotated preview (post RIC -> ICRF)** or
+**(post LVLH -> ICRF)** depending on the active frame, so the
+displayed convention is never ambiguous. It refreshes
+automatically when you change the source path, the frame combo,
+or re-read the columns. A **Refresh preview** button on top of it
+forces a recompute after edits to `[initial_state]` or to the
+column-mapping table.
 
 ### Pairing with delta mode
 
@@ -217,15 +239,49 @@ frame measurements).
 
 The GUI uses a **sensor-frame snapshot** convention for the velocity:
 no `omega x r` term is added. The `dv` components are treated as
-plain vector projections onto the instantaneous RIC axes &mdash;
-exactly what an onboard sensor (radar / lidar / optical relnav)
-would report when tracking a relative target. This is **not** the
-Hill / Clohessy-Wiltshire rotating-frame convention used in
-rendezvous literature; if you have CW residuals from another tool
-and want SpOdy to interpret them, transform them before passing
-the CSV in.
+plain vector projections onto the instantaneous rotating-frame
+axes (RIC or LVLH) &mdash; exactly what an onboard sensor
+(radar / lidar / optical relnav) or a debris-evolution tool would
+report when expressing fragments in a chaser-fixed frame. This is
+**not** the Hill / Clohessy-Wiltshire rotating-frame convention
+used in rendezvous literature; if you have CW residuals from
+another tool and want SpOdy to interpret them, transform them
+before passing the CSV in.
 
-See `examples/debris_ric_demo/` for a runnable end-to-end example.
+See `examples/debris_ric_demo/` for a runnable end-to-end RIC
+example. The LVLH path follows the same column-mapping rules; the
+only difference is the basis matrix `R` the GUI applies.
+
+### Metadata columns: `target = ""`
+
+Real-world cases CSVs often carry bookkeeping columns that the
+propagator does not consume &mdash; e.g. the characteristic length
+of each fragment from a NASA breakup-model run, a debris ID for
+post-processing, or a classification tag. These columns must still
+appear in `[batch.columns]` (the validator errors if a CSV header
+has no matching entry, which is the typo guard you want) but they
+should not override any propagator field.
+
+The schema reserves the **empty target string** as the metadata
+sentinel:
+
+```toml
+[batch.columns]
+dv_x_kms  = { target = "initial_state.velocity_kms[0]", mode = "delta" }
+dv_y_kms  = { target = "initial_state.velocity_kms[1]", mode = "delta" }
+dv_z_kms  = { target = "initial_state.velocity_kms[2]", mode = "delta" }
+L_char_m  = ""                                                # metadata
+```
+
+A column declared with `target = ""` is type-checked by the parser
+(it must still be a valid float in every data row) but its values
+are never applied to any field. In the form's column-mapping table
+the same semantics surface as the **"(unassigned)"** target choice
+&mdash; pick it for any column you want to keep in the CSV without
+threading it into a propagator override. The inverse is also
+supported: loading a TOML with `col = ""` restores the
+**(unassigned)** selection in the form instead of silently
+reassigning by the name-based heuristic.
 
 ## The data preview
 

@@ -39,6 +39,13 @@ number. The DE440 wizard data covers 1950 &ndash; 2050 by default;
 choose the *Full pack* coverage profile in the wizard if you need
 to start outside that window.
 
+`duration_s` is likewise always SI seconds on disk, but the form
+ships a unit combo (`s | min | h | days`) next to the field so a
+multi-day debris run does not need to be typed as `86400.0` or
+`604800.0`. The combo affects only the displayed number; emit and
+load round-trip the same float value. Auto-pick on load chooses
+the largest unit whose factor is &le; the loaded magnitude.
+
 ## `[spacecraft]` *or* `[debris]`
 
 Mutually exclusive object descriptions. Exactly one of the two

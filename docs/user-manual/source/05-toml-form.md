@@ -72,6 +72,16 @@ widget on the right.
   SPICE `str2et` / `et2utc` (see chapter 14 for the underlying
   algorithm). Only `et_start_s` is written to the TOML; the UTC
   cell is purely a typing aid.
+- **Duration (`simulation.duration_s`)** &mdash; a line edit plus a
+  unit combo (`s | min | h | days`). The combo selects only the
+  *display* unit; the TOML always carries
+  `simulation.duration_s` in seconds. Typing `3600` with the
+  combo on `s` is equivalent to typing `1.0` with the combo on
+  `h` &mdash; switching the combo reconverts the visible number
+  so the underlying seconds-value stays invariant. On load the
+  form auto-picks the largest unit whose factor does not exceed
+  the loaded magnitude (a `86400.0` TOML value comes back as
+  `1.0 days`, a `0.5` value stays as `0.5 s`).
 
 Hovering the cursor over a label or its widget shows a **tooltip**
 with the field's one-line description; range-validated fields also

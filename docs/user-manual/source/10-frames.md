@@ -33,15 +33,19 @@ evaluate body-fixed gravity harmonics at each step.
 > way to do this; the SpOdy bundle does not include a SPICE
 > wrapper.
 >
-> One exception is **batch input in RIC**: if your cases CSV is a
-> sensor-frame snapshot of a debris cloud (or any collection of
-> objects whose deltas are measured in the radial / in-track /
-> cross-track basis of a reference satellite), the GUI rotates the
-> state columns to ICRF automatically at Generate-TOML and emits
-> `cases_file` pointing at the rotated copy. The TOML also carries
-> `cases_frame` and `cases_source_file` as GUI-only round-trip
-> metadata (`spody.exe` ignores them). See chapter 7 ("RIC-frame
-> batch input") for the workflow.
+> One exception is **batch input in a rotating frame**: if your
+> cases CSV is a snapshot of a debris cloud (or any collection of
+> objects whose deltas are measured against a reference
+> satellite's local axes), the GUI rotates the state columns to
+> ICRF automatically at Generate-TOML and emits `cases_file`
+> pointing at the rotated copy. Two rotating frames are supported
+> via the `cases_frame` combo: **RIC** (radial / in-track /
+> cross-track, the typical chaser sensor frame) and **LVLH**
+> (NASA / Goddard nadir-pointing convention, common in breakup
+> models). The TOML carries `cases_frame` and `cases_source_file`
+> as GUI-only round-trip metadata; `spody.exe` ignores them. See
+> chapter 7 ("Rotating-frame batch input (RIC / LVLH)") for the
+> workflow.
 
 ## The body-fixed frame (Moon Principal Axes)
 
@@ -120,12 +124,21 @@ the RIC frame. The signs differ:
 | X / I | `c_hat × r_hat` (≈ `+v_hat` for circular orbits) | ≈ `+v_hat` |
 | Y / C | `+h_hat` (orbit normal) | `-h_hat` |
 
-If you need an LVLH decomposition you can compute it from the
-SpOdy diff RIC output by flipping the radial and cross-track
-signs. SpOdy does not provide an LVLH plot directly because RIC
-is the conventional choice in conjunction-assessment and orbit-
-regression work, and a sign-flipped duplicate plot would be just
-visual noise.
+If you need an LVLH decomposition of a **diff plot** you can
+compute it from the SpOdy diff RIC output by flipping the radial
+and cross-track signs. SpOdy does not provide an LVLH plot
+directly because RIC is the conventional choice in conjunction-
+assessment and orbit-regression work, and a sign-flipped duplicate
+plot would be just visual noise.
+
+LVLH is **fully supported on the batch-input side**, however: the
+GUI's `cases_frame` combo accepts `lvlh` and applies the same
+rotate-to-ICRF-at-Generate pipeline as `ric`, with the
+NASA / Goddard sign convention (`z = -r_hat`, `y = -h_hat`,
+`x = y x z`). This is the convention used by the NASA breakup
+model, by CCSDS conjunction messages, and by the rest of the
+debris-evolution-tool ecosystem &mdash; so a binary export from
+those tools can be fed into SpOdy without a manual sign flip.
 
 ## Classical orbital elements
 
