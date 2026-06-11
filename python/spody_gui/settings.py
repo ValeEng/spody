@@ -66,10 +66,52 @@ class SettingsStore:
 
     def __init__(self) -> None:
         self._qs = QSettings()  # uses QApplication organisationName/applicationName
+        self.ensure_bundled_defaults()
 
     # Paths ------------------------------------------------------------
     def spody_binary(self) -> str:    return self._qs.value(KEY_SPODY_BIN,     "", type=str)
     def moon_texture(self) -> str:    return self._qs.value(KEY_MOON_TEXTURE,  "", type=str)
+
+    def ensure_bundled_defaults(self) -> None:
+        """Self-heal path settings: when a value is empty or points at
+        a file that no longer exists, replace it with the in-bundle
+        default. Idempotent -- a second call after the values are
+        valid is a no-op.
+
+        Two scenarios this catches:
+
+        - **Fresh install** of a release bundle on a machine that has
+          never run SpOdy. QSettings has no values yet; this seeds
+          the spody binary to `<bundle>/spody.exe` and the Moon
+          texture to whatever the wizard has downloaded under
+          `data/`, so the user does not have to open Settings before
+          the first run.
+        - **Stale dev path** -- a user who previously ran the source
+          checkout has e.g. `C:\\dev\\...\\build\\Release\\spody.exe`
+          stored from a dev session. QSettings is shared across the
+          dev GUI and the bundled GUI (same org / app name), so the
+          stale path leaks into the bundle on the same machine. We
+          detect the now-missing file and overwrite with the
+          bundled fallback.
+
+        Settings explicitly pointed at a still-existing custom path
+        are preserved; we only touch entries whose target is gone.
+        """
+        cur = self._qs.value(KEY_SPODY_BIN, "", type=str)
+        if not cur or not Path(cur).is_file():
+            fallback = paths.bundled_spody_exe()
+            if fallback is not None:
+                self._qs.setValue(KEY_SPODY_BIN, str(fallback))
+
+        cur = self._qs.value(KEY_MOON_TEXTURE, "", type=str)
+        if not cur or not Path(cur).is_file():
+            # Late import: assets.py pulls Qt-free state but is bigger
+            # than paths.py; keep settings.py importable without it
+            # for the (rare) case it is consumed standalone.
+            from . import assets
+            tex = assets.moon_texture_path(self.data_dir())
+            if tex is not None:
+                self._qs.setValue(KEY_MOON_TEXTURE, str(tex))
 
     # Legacy accessors -- still read by older code but no longer the
     # primary source. The wizard's data dir is the canonical store.

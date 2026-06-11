@@ -76,3 +76,25 @@ def _default_data_dir() -> Path:
         return Path(sys.executable).parent.resolve() / "data"
     # Dev mode: spody_gui/paths.py -> spody_gui/ -> python/ -> <repo>/
     return Path(__file__).resolve().parents[2] / "data"
+
+
+def bundled_spody_exe() -> Path | None:
+    """Path to the `spody` C runner shipped *inside* the GUI bundle,
+    or None when not running under PyInstaller or when the file is
+    missing.
+
+    Used by SettingsStore as the auto-fallback for `paths/spody_binary`
+    so a fresh install from a release archive 'just works' without the
+    user having to know about Settings > Paths. The build_bundle.py
+    driver copies `spody.exe` next to `spody-gui.exe`, so resolving
+    against `<frozen-exe>` reaches the right file regardless of where
+    the user extracted the archive.
+
+    Importantly, this is computed at *runtime* relative to the user's
+    own install location -- there is nothing baked in at PyInstaller
+    time that could leak the developer's local build path."""
+    if not getattr(sys, "frozen", False):
+        return None
+    suffix = ".exe" if sys.platform == "win32" else ""
+    candidate = Path(sys.executable).parent.resolve() / f"spody{suffix}"
+    return candidate if candidate.is_file() else None
