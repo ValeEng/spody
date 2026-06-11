@@ -20,4 +20,4 @@ propagator entirely through the file-based interface (TOML in, binary
 or CSV out).
 """
 
-__version__ = "0.1.0-alpha"
+__version__ = "0.1.1-beta"

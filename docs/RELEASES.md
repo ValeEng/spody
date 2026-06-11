@@ -21,8 +21,8 @@ pipeline. Tags whose suffix is `-alpha` / `-beta` / `-rc` are
 automatically marked as **pre-release** in GitHub's UI so they do
 not promote past the "Latest" badge.
 
-The version label lives in **four files** that must be touched in
-lockstep before tagging:
+The runtime version label lives in **four code files** that must be
+touched in lockstep before tagging:
 
 | File                                           | Constant            |
 |------------------------------------------------|---------------------|
@@ -31,24 +31,35 @@ lockstep before tagging:
 | `python/pyproject.toml`                        | `version`           |
 | `docs/user-manual/build_pdf.py`                | `APP_VERSION`       |
 
-`pyproject.toml` follows PEP 440 syntax (`0.1.0a0`, `0.1.0rc1`),
-the others follow plain semver (`0.1.0-alpha`, `0.1.0-rc1`).
+`pyproject.toml` follows PEP 440 syntax (`0.1.1b0`, `0.1.1rc1`),
+the others follow plain semver (`0.1.1-beta`, `0.1.1-rc1`).
+
+Two further docs carry the version as cosmetic text and should be
+refreshed in the same commit so the published artifacts agree:
+
+| File                                            | Where                |
+|-------------------------------------------------|----------------------|
+| `README.md`                                     | `spody info` example |
+| `python/spody_gui/about_dialog.py`              | layout-sketch docstring |
+
+The actual About dialog reads `__version__` at runtime; the
+docstring is for code-reading humans only.
 
 ## Cutting a release
 
 1. **Update the version constants** in the four files above; commit:
 
    ```sh
-   git commit -am "release: bump to v0.1.0-alpha"
+   git commit -am "release: bump to v0.1.1-beta"
    ```
 
 2. **Tag the commit** with an annotated tag matching the same
    version:
 
    ```sh
-   git tag -a v0.1.0-alpha -m "v0.1.0-alpha: first public alpha"
+   git tag -a v0.1.1-beta -m "v0.1.1-beta: first public alpha"
    git push origin main
-   git push origin v0.1.0-alpha
+   git push origin v0.1.1-beta
    ```
 
 3. **Wait for CI** &mdash; the `release` workflow fires on the tag
@@ -61,9 +72,9 @@ the others follow plain semver (`0.1.0-alpha`, `0.1.0-rc1`).
    six assets attached:
 
    ```
-   spody-gui-v0.1.0-alpha-win64.zip          + .sha256
-   spody-gui-v0.1.0-alpha-linux-x86_64.tar.gz + .sha256
-   spody-gui-v0.1.0-alpha-macos-arm64.zip    + .sha256
+   spody-gui-v0.1.1-beta-win64.zip          + .sha256
+   spody-gui-v0.1.1-beta-linux-x86_64.tar.gz + .sha256
+   spody-gui-v0.1.1-beta-macos-arm64.zip    + .sha256
    ```
 
 5. **Polish the release notes**. The draft has GitHub's
@@ -74,7 +85,7 @@ the others follow plain semver (`0.1.0-alpha`, `0.1.0-rc1`).
 6. **Click Publish release**. The badge flips to **pre-release** for
    `-alpha` / `-beta` / `-rc` tags or **Latest** for a stable tag.
    The release page becomes the canonical download URL:
-   `github.com/<owner>/<repo>/releases/tag/v0.1.0-alpha`.
+   `github.com/<owner>/<repo>/releases/tag/v0.1.1-beta`.
 
 ## What the workflow builds
 
@@ -98,8 +109,12 @@ Each OS runner runs the same steps:
    give the engine the most aggressive optimisation profile its
    source tree supports today.
 5. Build `spody` via `cmake --build`.
-6. Set up a Python 3.11 venv and install the GUI package
-   (`pip install -e ./python[dev]`).
+6. Set up a Python 3.9 venv and install the GUI package
+   (`pip install -e ./python[dev]`). 3.9 is pinned because the
+   PyInstaller bootloader's apiset-resolution interaction with
+   `python311.dll` triggers a `LoadLibrary: access to invalid
+   memory location` on some end-user Windows 10 builds. Bump to
+   3.10+ once the runtime hook workaround lands.
 7. Run `python python/build_bundle.py`. This auto-rebuilds the
    manual PDF (via the freshly-installed browser) and invokes
    PyInstaller to produce `python/dist/spody-gui/`.
@@ -120,10 +135,10 @@ If a release fails partway through (e.g. the macOS runner had a
 transient brew error), delete the tag and recreate it:
 
 ```sh
-git push --delete origin v0.1.0-alpha
-git tag -d v0.1.0-alpha
-git tag -a v0.1.0-alpha -m "..."
-git push origin v0.1.0-alpha
+git push --delete origin v0.1.1-beta
+git tag -d v0.1.1-beta
+git tag -a v0.1.1-beta -m "..."
+git push origin v0.1.1-beta
 ```
 
 The workflow's `concurrency` group cancels any in-flight run for

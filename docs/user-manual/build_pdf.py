@@ -52,7 +52,7 @@ PDF_OUT  = HERE / "spody-user-manual.pdf"
 # Hardcoded version label shown on the cover. Kept in sync with
 # spody_gui/__init__.py:__version__ by convention; touched once per
 # release.
-APP_VERSION = "0.1.0-alpha"
+APP_VERSION = "0.1.1-beta"
 
 # Candidates for a Chromium-class browser, queried in order. The
 # print-to-PDF flag (`--print-to-pdf`) is identical across Edge,
