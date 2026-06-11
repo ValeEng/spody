@@ -920,7 +920,11 @@ class TomlForm(QWidget):
 
         rp_header = QHBoxLayout()
         rp_header.setContentsMargins(0, 0, 0, 0)
-        rp_header.addWidget(QLabel("Rotated preview (post RIC -> ICRF):"), 1)
+        # Label is a member so _update_ric_preview can patch it to the
+        # actual frame ("post LVLH -> ICRF", "post RIC -> ICRF", ...).
+        self._batch_rotated_preview_header = QLabel(
+            "Rotated preview (post RIC -> ICRF):")
+        rp_header.addWidget(self._batch_rotated_preview_header, 1)
         rp_refresh = QPushButton("Refresh preview")
         rp_refresh.clicked.connect(self._update_ric_preview)
         rp_header.addWidget(rp_refresh)
@@ -1285,6 +1289,11 @@ class TomlForm(QWidget):
         if not is_rotating:
             return
 
+        # Keep the header label in sync with the actually-selected
+        # rotating frame so messages don't lie about the convention.
+        self._batch_rotated_preview_header.setText(
+            f"Rotated preview (post {frame.upper()} -> ICRF):")
+
         try:
             data = self.to_dict()
         except ValueError as exc:
@@ -1535,8 +1544,12 @@ class TomlForm(QWidget):
 
     def _batch_columns_to_dict(self) -> dict[str, Any]:
         """Serialise the column-mapping table to a TOML-ready dict for
-        emission inside `[batch.columns]`. Unassigned rows are
-        silently dropped -- spody will error at validate time."""
+        emission inside `[batch.columns]`. Rows left at "(unassigned)"
+        are emitted as `<col> = ""` -- the metadata-column sentinel the
+        C parser recognises (target == empty string -> read out of the
+        CSV but not applied to any field). This lets the user keep
+        bookkeeping columns like L_char_m or fragment_id in the CSV
+        without spody validate complaining about a missing entry."""
         out: dict[str, Any] = {}
         for row in range(self._batch_columns_table.rowCount()):
             item = self._batch_columns_table.item(row, 0)
@@ -1545,6 +1558,7 @@ class TomlForm(QWidget):
             target = self._batch_columns_table.cellWidget(row, 1).currentText()
             mode   = self._batch_columns_table.cellWidget(row, 2).currentText()
             if target == _UNASSIGNED:
+                out[item.text()] = ""
                 continue
             if mode == "delta":
                 out[item.text()] = {"target": target, "mode": "delta"}
@@ -1573,9 +1587,16 @@ class TomlForm(QWidget):
                 mode   = "override"
             target_combo = self._batch_columns_table.cellWidget(row, 1)
             mode_combo   = self._batch_columns_table.cellWidget(row, 2)
-            idx = target_combo.findText(target)
-            if idx >= 0:
-                target_combo.setCurrentIndex(idx)
+            # Empty target == metadata-column sentinel (col = ""). Pin
+            # the combo to (unassigned) so the round-trip preserves the
+            # user's choice instead of letting the name-based heuristic
+            # silently reassign it on load.
+            if target == "":
+                target_combo.setCurrentText(_UNASSIGNED)
+            else:
+                idx = target_combo.findText(target)
+                if idx >= 0:
+                    target_combo.setCurrentIndex(idx)
             mode_combo.setCurrentText(mode)
 
     def _on_srp_toggled(self, checked: bool) -> None:
@@ -1966,8 +1987,8 @@ class TomlForm(QWidget):
 
     def _resolve_ric_inputs(self, toml_path: Path | None,
                             data: dict[str, Any]) -> tuple | None:
-        """Shared resolver for the RIC pipeline (used by both the
-        Generate-time rotation and the live preview).
+        """Shared resolver for the rotating-frame pipeline (used by
+        both the Generate-time rotation and the live preview).
 
         Returns a tuple `(src_abs, out_abs, r_ref, v_ref, pos_cols,
         vel_cols)` on success, or `None` after a logged warning when
@@ -1979,13 +2000,20 @@ class TomlForm(QWidget):
         `toml_path` may be None when the form has never been saved;
         in that case the cases path must already be absolute, otherwise
         we can't resolve it.
+
+        Despite the historical name, this handles every entry in
+        `_ROTATING_FRAMES` (RIC, LVLH, ...) -- error strings cite the
+        actually-selected frame so the user isn't told "RIC" when the
+        combo says LVLH.
         """
         import numpy as np
 
+        frame_label = self._batch_cases_frame_combo.currentText().upper()
+
         src_raw = self._batch_cases_edit.text().strip()
         if not src_raw:
-            return ("error", "Pick a RIC-frame source CSV in the "
-                             "cases_file field first.")
+            return ("error", f"Pick a {frame_label}-frame source CSV in "
+                             f"the cases_file field first.")
         src = Path(src_raw)
         if not src.is_absolute():
             if toml_path is None:
@@ -2034,10 +2062,22 @@ class TomlForm(QWidget):
                     "[batch.columns]: rotation needs all 3 components "
                     "of a vector or none.")
         if pos_cols is None and vel_cols is None:
+            # Help the user see WHICH columns landed where: when a row
+            # they thought was wired is actually emitted as the metadata
+            # sentinel (target = ""), the listing makes the discrepancy
+            # obvious without needing to inspect the generated TOML.
+            mapped = []
+            for csv_col, spec in cols_map.items():
+                t = spec["target"] if isinstance(spec, dict) else spec
+                mapped.append(f"{csv_col} -> {t!r}")
+            mapped_str = ("\n  " + "\n  ".join(mapped)
+                          if mapped else " (none)")
             return ("error",
-                    "No state columns wired in [batch.columns]. RIC "
-                    "rotation has nothing to do -- either map "
-                    "position/velocity columns or switch frame to icrf.")
+                    f"No state columns wired in [batch.columns]. "
+                    f"{frame_label} rotation has nothing to do -- "
+                    f"either map position/velocity columns or switch "
+                    f"frame to icrf.\nCurrent [batch.columns]:"
+                    f"{mapped_str}")
 
         return ("ok", src, out,
                 np.asarray(r_ref, dtype=float),
