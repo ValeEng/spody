@@ -710,6 +710,23 @@ static void usage(const char *prog) {
 }
 
 int main(int argc, char **argv) {
+    /* When stdout/stderr are connected to a pipe (the typical case
+     * when the GUI launches us via QProcess), the C runtime defaults
+     * to full block-buffering on stdout (~4 KB), so progress lines
+     * arrive at the GUI terminal pane in chunks instead of streaming
+     * live. Unbuffer both so every printf flushes immediately.
+     *
+     * _IONBF is picked over _IOLBF because the Microsoft UCRT
+     * silently treats _IOLBF as _IOFBF (documented behaviour) so the
+     * line-buffered mode would not actually solve the problem on
+     * Windows; also _IOLBF/_IOFBF with `size = 0` and NULL buffer is
+     * undefined and crashes MSVC builds with STATUS_STACK_BUFFER_
+     * OVERRUN at first stdio touch. The per-printf flush cost is
+     * negligible at the log cadence we emit (tens of lines per
+     * second at most). */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     if (argc < 2) {
         usage(argv[0]);
         return 1;
