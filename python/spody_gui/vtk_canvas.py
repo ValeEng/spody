@@ -46,7 +46,7 @@ os.environ.setdefault("QT_API", "pyside6")
 import numpy as np
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-from vtkmodules.vtkCommonCore import vtkPoints
+from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData, vtkPolyLine
 from vtkmodules.vtkFiltersSources import (
     vtkArrowSource,
@@ -60,6 +60,7 @@ from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
     vtkBillboardTextActor3D,
+    vtkGlyph3DMapper,
     vtkPolyDataMapper,
     vtkPropPicker,
     vtkRenderer,
@@ -352,7 +353,8 @@ class VtkCanvas(QWidget):
                         label_size: int = 16,
                         shaft_radius: float = 0.006,
                         tip_radius: float = 0.022,
-                        tip_length: float = 0.10) -> None:
+                        tip_length: float = 0.10,
+                        opacity: float = 1.0) -> None:
         """Draw a coloured X/Y/Z arrow triad rooted at `origin_km`.
 
         `basis_in_scene` is a 3x3 matrix whose columns are the three
@@ -365,7 +367,12 @@ class VtkCanvas(QWidget):
 
         Labels (3-tuple) are rendered as billboard text at each
         arrow tip and always face the camera. When `labels_xyz` is
-        None no labels are drawn (handy for the bare-axes case)."""
+        None no labels are drawn (handy for the bare-axes case).
+
+        `opacity` (0..1) applies to both the arrow actors and the
+        labels. Useful for the 'secondary' triad in a scene where a
+        primary frame already carries the bright RGB triplet -- the
+        secondary stays readable but stops competing for attention."""
         if basis_in_scene is None:
             basis = np.eye(3)
         else:
@@ -381,7 +388,7 @@ class VtkCanvas(QWidget):
                 continue
             direction = direction / norm
             color = colors_xyz[axis_idx]
-            self._renderer.AddActor(self._make_arrow_actor(
+            arrow_actor = self._make_arrow_actor(
                 origin_km=tuple(origin),
                 direction=tuple(direction),
                 length_km=length_km,
@@ -389,12 +396,20 @@ class VtkCanvas(QWidget):
                 shaft_radius=shaft_radius,
                 tip_radius=tip_radius,
                 tip_length=tip_length,
-            ))
+            )
+            if opacity < 1.0:
+                arrow_actor.GetProperty().SetOpacity(opacity)
+            self._renderer.AddActor(arrow_actor)
             if labels_xyz is not None:
                 tip = origin + direction * length_km * 1.05
-                self._renderer.AddActor(self._make_text_label(
+                label_actor = self._make_text_label(
                     tip, labels_xyz[axis_idx], color, label_size,
-                ))
+                )
+                # vtkBillboardTextActor3D draws via its text property's
+                # frame opacity, not the actor's GetProperty().Opacity.
+                if opacity < 1.0:
+                    label_actor.GetTextProperty().SetOpacity(opacity)
+                self._renderer.AddActor(label_actor)
 
     @staticmethod
     def _make_arrow_actor(origin_km: tuple[float, float, float],
@@ -487,9 +502,85 @@ class VtkCanvas(QWidget):
         radius (30 km, ~1.7% of MOON_RADIUS_KM) is visible without
         crowding the surface at typical 1-Moon-radius zoom levels;
         callers that need a different scale (debris cloud sweep,
-        node-crossing waypoints) pass `radius_km` explicitly."""
+        node-crossing waypoints) pass `radius_km` explicitly.
+
+        For more than a handful of markers prefer `add_points` -- a
+        single GPU-instanced actor scales to tens of thousands of
+        spheres, while one-call-per-marker via `add_point` is
+        CPU-bound on per-actor state changes."""
         pos = np.asarray(position_km, dtype=float)
         self._add_marker_sphere(pos, radius_km, color)
+
+    def add_points(self, positions_km, colors_rgb,
+                    radius_km: float = 30.0) -> None:
+        """Batch-render N marker spheres as a single GPU-instanced
+        actor (vtkGlyph3DMapper). One draw call regardless of N --
+        scales to tens of thousands of impact points without the
+        per-actor overhead that brings the per-marker `add_point`
+        path to its knees around 1k+ markers.
+
+        `positions_km` is an (N, 3) float array in scene coordinates.
+        `colors_rgb` is an (N, 3) array of floats in [0..1] (typical
+        matplotlib colormap output) -- internally converted to a
+        per-point uchar RGB scalar array so the mapper colours each
+        instance from its own value rather than the actor's flat
+        colour. `radius_km` applies uniformly to every instance.
+
+        Empty inputs are a no-op (no actor added) so the caller does
+        not need a separate length guard."""
+        pts_arr = np.asarray(positions_km, dtype=float)
+        cols_arr = np.asarray(colors_rgb, dtype=float)
+        if pts_arr.ndim != 2 or pts_arr.shape[1] != 3:
+            raise ValueError(
+                f"positions_km must be (N, 3), got shape {pts_arr.shape}")
+        if cols_arr.shape != pts_arr.shape:
+            raise ValueError(
+                f"colors_rgb must match positions_km shape; got "
+                f"{cols_arr.shape} vs {pts_arr.shape}")
+        n = pts_arr.shape[0]
+        if n == 0:
+            return
+
+        vpts = vtkPoints()
+        vpts.SetNumberOfPoints(n)
+        for i in range(n):
+            vpts.SetPoint(i,
+                          float(pts_arr[i, 0]),
+                          float(pts_arr[i, 1]),
+                          float(pts_arr[i, 2]))
+
+        # Per-point RGB as a 3-component uchar scalar array. The mapper
+        # reads this through SelectColorArray; without ScalarVisibility
+        # on, every instance would inherit the actor's flat colour.
+        rgb = (np.clip(cols_arr, 0.0, 1.0) * 255.0).astype(np.uint8)
+        c_arr = vtkUnsignedCharArray()
+        c_arr.SetName("colors")
+        c_arr.SetNumberOfComponents(3)
+        c_arr.SetNumberOfTuples(n)
+        for i in range(n):
+            c_arr.SetTuple3(i, int(rgb[i, 0]), int(rgb[i, 1]), int(rgb[i, 2]))
+
+        pd = vtkPolyData()
+        pd.SetPoints(vpts)
+        pd.GetPointData().SetScalars(c_arr)
+
+        # Modest geometric fidelity per glyph: 16x8 keeps the surface
+        # round at the typical zoom-out and stays cheap to instance.
+        sphere = vtkSphereSource()
+        sphere.SetRadius(radius_km)
+        sphere.SetThetaResolution(16)
+        sphere.SetPhiResolution(8)
+
+        mapper = vtkGlyph3DMapper()
+        mapper.SetInputData(pd)
+        mapper.SetSourceConnection(sphere.GetOutputPort())
+        mapper.SetScalarVisibility(True)
+        mapper.SetScalarModeToUsePointFieldData()
+        mapper.SelectColorArray("colors")
+
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        self._renderer.AddActor(actor)
 
     def add_legend(self, items: list[tuple[str, tuple[float, float, float]]],
                     max_label_chars: int = 36) -> None:

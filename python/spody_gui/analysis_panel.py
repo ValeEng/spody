@@ -67,6 +67,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from matplotlib import colormaps as mpl_colormaps
+from matplotlib.collections import LineCollection
 
 from spody_io import (
     EVENT_KIND_ECLIPSE,
@@ -85,7 +86,7 @@ from spody_io.headers import SPODY_EVTB_MAGIC
 from .astronomy import sun_direction_j2000
 from .settings import SettingsStore
 from .toml_io import read_toml
-from .vtk_canvas import VtkCanvas
+from .vtk_canvas import MOON_RADIUS_KM, VtkCanvas
 # spopy is the pure-Python re-implementation of the spody-core read
 # helpers. Used by the impact lat/lon map to project ICRF impact points
 # onto the Moon Principal Axes (body-fixed) frame for any ET. Imported
@@ -504,6 +505,102 @@ def _plot_diff_xyz(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
     ax.set_xlabel("t [s]"); ax.set_ylabel("Δposition [km]")
     ax.set_title("Position error per component  (A - B)")
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
+
+
+def _add_stats_box(ax: Axes,
+                    rows: list[tuple[str, float]],
+                    unit: str = "") -> None:
+    """Drop a tidy descriptive-stats box in the bottom-right corner
+    of the axes. Each `(label, value)` row is rendered in a monospace
+    font and column-aligned so labels and numbers line up across
+    rows. Used by the diff distribution + CDF plots so the numerical
+    summary (median, p95, p99, ...) lives **inside** the figure
+    instead of cramming the title.
+
+    The bottom-right corner is empty for both the right-skewed
+    histogram and the saturating-toward-1 CDF, so the box does not
+    overlap the data."""
+    if not rows:
+        return
+    label_w = max(len(label) for label, _ in rows)
+    unit_suffix = f" {unit}" if unit else ""
+    lines = [f"{label:<{label_w}} = {v:>8.3g}{unit_suffix}"
+             for label, v in rows]
+    ax.text(0.98, 0.04, "\n".join(lines),
+            transform=ax.transAxes, ha="right", va="bottom",
+            family="monospace", fontsize="small",
+            bbox=dict(boxstyle="round,pad=0.4",
+                      facecolor="white", alpha=0.85,
+                      edgecolor="lightgray"))
+
+
+def _plot_diff_r_distribution(ax: Axes, a: np.ndarray,
+                                b: np.ndarray) -> None:
+    """Histogram of the per-sample position-error magnitude `|Δr|`.
+
+    Bin count is min(60, sqrt(N)) so a 6-day LRO regression
+    (~9k samples at 1-minute cadence) gets ~60 bins and a short
+    smoke test still produces a readable histogram. Descriptive
+    stats (median / p95 / max) are pinned in the title."""
+    dx = a["x"] - b["x"]; dy = a["y"] - b["y"]; dz = a["z"] - b["z"]
+    dr = np.sqrt(dx * dx + dy * dy + dz * dz)
+    if dr.size == 0:
+        ax.text(0.5, 0.5, "No samples", transform=ax.transAxes,
+                ha="center", va="center")
+        return
+    n_bins = min(60, max(10, int(np.sqrt(dr.size))))
+    ax.hist(dr, bins=n_bins, color="tab:blue", alpha=0.7,
+            edgecolor="black", linewidth=0.4)
+    ax.set_xlabel("|Δr| [km]")
+    ax.set_ylabel("# samples per bin")
+    med = float(np.median(dr))
+    p95 = float(np.percentile(dr, 95.0))
+    mx  = float(dr.max())
+    ax.set_title("|Δr| distribution")
+    _add_stats_box(ax, [("median", med),
+                        ("p95",    p95),
+                        ("max",    mx)], unit="km")
+    ax.grid(True, alpha=0.3)
+
+
+def _plot_diff_r_cdf(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
+    """Empirical CDF of the per-sample position-error magnitude
+    `|Δr|`. Reading the CDF at a horizontal value tells the user
+    'what fraction of samples is below this error?' -- the natural
+    question for regression budgets.
+
+    The canonical percentiles (median / p95 / p99 / p99.9 / max)
+    are pinned in the title so the dominant numbers are visible
+    without cluttering the curve with dashed cross-hairs. They are
+    read directly from the empirical CDF and are
+    **distribution-free** -- the underlying `|Δr|` does not need to
+    be normal for the percentiles to be the right answer."""
+    dx = a["x"] - b["x"]; dy = a["y"] - b["y"]; dz = a["z"] - b["z"]
+    dr = np.sqrt(dx * dx + dy * dy + dz * dz)
+    n = int(dr.size)
+    if n == 0:
+        ax.text(0.5, 0.5, "No samples", transform=ax.transAxes,
+                ha="center", va="center")
+        return
+    sorted_dr = np.sort(dr)
+    cdf = np.arange(1, n + 1) / n
+    ax.plot(sorted_dr, cdf, color="tab:red", linewidth=1.6,
+            drawstyle="steps-post")
+    ax.set_xlabel("|Δr| [km]")
+    ax.set_ylabel("CDF")
+    ax.set_ylim(0.0, 1.0)
+    med  = float(np.median(dr))
+    p95  = float(np.percentile(dr, 95.0))
+    p99  = float(np.percentile(dr, 99.0))
+    p999 = float(np.percentile(dr, 99.9))
+    mx   = float(dr.max())
+    ax.set_title("|Δr| empirical CDF")
+    _add_stats_box(ax, [("median", med),
+                        ("p95",    p95),
+                        ("p99",    p99),
+                        ("p99.9",  p999),
+                        ("max",    mx)], unit="km")
+    ax.grid(True, alpha=0.3)
 
 
 def _plot_diff_ric(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
@@ -1002,11 +1099,53 @@ def _plot_events_survival_timeline(ax: Axes, d: np.ndarray,
     duration_days = duration / _SEC_PER_DAY
     widths_days   = np.array([impact_t.get(ci, duration) for ci in order]
                               ) / _SEC_PER_DAY
-    colors = ["tab:red" if ci in impact_t else "tab:green" for ci in order]
-    ax.barh(y_pos, widths_days, color=colors,
-            edgecolor="black", linewidth=0.3)
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels([f"case {ci}" for ci in order], fontsize="x-small")
+    is_impact_mask = np.array([ci in impact_t for ci in order], dtype=bool)
+
+    # Up to ~200 cases we use matplotlib's `barh` because it gives
+    # nice per-row Rectangle outlines and Excel-style readability;
+    # above that the per-Rectangle artist overhead dominates the draw
+    # path and a 9k-case batch freezes the GUI for ~20 s. Switch to a
+    # single LineCollection (one Artist for the whole timeline) when
+    # we cross the threshold -- 9577 cases then renders in well under
+    # a second and the dropped Rectangle edges are invisible at that
+    # density anyway. Per-row tick labels are also dropped because
+    # 9k text objects are themselves slow to layout; we fall back to
+    # numeric y-ticks every ~N/10 with a single 'case index' label.
+    BAR_THRESHOLD = 200
+    n_cases = len(order)
+    if n_cases <= BAR_THRESHOLD:
+        colors_bar = np.where(is_impact_mask, "tab:red", "tab:green")
+        ax.barh(y_pos, widths_days, color=colors_bar,
+                edgecolor="black", linewidth=0.3)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels([f"case {ci}" for ci in order], fontsize="x-small")
+    else:
+        red  = (0.84, 0.15, 0.16, 1.0)
+        green = (0.17, 0.63, 0.17, 1.0)
+        # One segment per case: (x0, y) -> (x1, y). LineCollection
+        # accepts a list of (2, 2) arrays; we build the (N, 2, 2)
+        # array directly with numpy for the no-Python-loop fast path.
+        segs = np.empty((n_cases, 2, 2))
+        segs[:, 0, 0] = 0.0
+        segs[:, 1, 0] = widths_days
+        segs[:, 0, 1] = y_pos
+        segs[:, 1, 1] = y_pos
+        seg_colors = np.where(is_impact_mask[:, None],
+                              np.asarray(red),
+                              np.asarray(green))
+        lc = LineCollection(segs, colors=seg_colors, linewidths=1.0)
+        ax.add_collection(lc)
+        ax.set_xlim(0.0, max(duration_days, float(widths_days.max())) * 1.02)
+        ax.set_ylim(-0.5, n_cases - 0.5)
+        # Drop the y ticks entirely: a numeric value at row k would
+        # show k (the rank in the impacted-first sort), NOT
+        # order[k] (the real case_idx), which would mislead anyone
+        # reading the value as a case label. The whole-N-cases
+        # picture is what this view is good at; per-row lookup
+        # belongs in the Table tab.
+        ax.set_yticks([])
+        ax.set_ylabel(f"{n_cases} cases  --  earliest impact at top, "
+                      "survivors at bottom")
     ax.invert_yaxis()
     ax.set_xlabel("time [days]")
     if info is not None:
@@ -1167,6 +1306,87 @@ def _plot_events_impact_density(ax: Axes, d: np.ndarray,
     cb.ax.tick_params(labelsize="x-small")
 
 
+def _add_reference_triads(canvas: VtkCanvas,
+                           scene_frame: str,
+                           R_icrf_to_pa: np.ndarray | None) -> None:
+    """Drop the PA + ICRF reference triads with the project-wide
+    convention: PA bright (primary frame), ICRF muted with sub-1
+    opacity (secondary). The convention is identical across every 3D
+    plot so the reader always finds body-fixed in the full-saturation
+    triad and inertial in the faded one, regardless of which frame
+    the scene's coordinates are expressed in.
+
+    `scene_frame` is 'pa' for the impact 3D view (markers placed in
+    the body-fixed frame) and 'icrf' for the trajectory 3D plots
+    (trajectory points in the inertial frame). When `R_icrf_to_pa`
+    is None (no per-run ephemeris, or non-Moon central body) we draw
+    only the scene-frame triad -- the secondary frame has no defined
+    direction without the libration angles.
+    """
+    pa_len   = 2.10 * MOON_RADIUS_KM
+    icrf_len = 1.80 * MOON_RADIUS_KM
+    pa_colors = ((1.00, 0.30, 0.30),
+                 (0.30, 0.95, 0.40),
+                 (0.40, 0.55, 1.00))
+    icrf_colors = ((0.85, 0.55, 0.55),
+                   (0.55, 0.80, 0.60),
+                   (0.55, 0.65, 0.90))
+
+    if scene_frame == "pa":
+        pa_basis   = np.eye(3)
+        icrf_basis = R_icrf_to_pa            # ICRF basis transported into PA
+    elif scene_frame == "icrf":
+        icrf_basis = np.eye(3)
+        # PA basis vectors expressed in ICRF = columns of R_pa_to_icrf
+        # = columns of R_icrf_to_pa.T. None when no libration is available.
+        pa_basis = R_icrf_to_pa.T if R_icrf_to_pa is not None else None
+    else:
+        raise ValueError(
+            f"scene_frame must be 'pa' or 'icrf', got {scene_frame!r}")
+
+    if pa_basis is not None:
+        canvas.add_frame_triad(
+            basis_in_scene=pa_basis,
+            length_km=pa_len,
+            colors_xyz=pa_colors,
+            labels_xyz=("X_pa", "Y_pa", "Z_pa"),
+        )
+    if icrf_basis is not None:
+        canvas.add_frame_triad(
+            basis_in_scene=icrf_basis,
+            length_km=icrf_len,
+            colors_xyz=icrf_colors,
+            labels_xyz=("X_icrf", "Y_icrf", "Z_icrf"),
+            opacity=0.25,
+        )
+
+
+def _resolve_R_icrf_to_pa(ctx: "PlotContext", t_sim_s: float
+                          ) -> np.ndarray | None:
+    """Best-effort: resolve the per-run input.toml, load the
+    ephemeris, and return `R_icrf_to_pa` at `et_start_s + t_sim_s`.
+
+    Returns None on any failure (missing snapshot, non-Moon central
+    body, unreadable ephemeris). Used by the 3D plot functions to
+    decorate the scene with reference triads when the lunar libration
+    is available, and gracefully degrade to a scene-frame-only triad
+    when it is not."""
+    if ctx is None:
+        return None
+    info = _resolve_run_context(ctx.path)
+    if info is None or info["central_body"].lower() != "moon" \
+            or info["ephemeris_path"] is None:
+        return None
+    from spopy import Ephemeris, icrf_to_moon_pa
+    try:
+        eph = Ephemeris(str(info["ephemeris_path"]))
+    except (OSError, ValueError):
+        return None
+    et = info["et_start_s"] + float(t_sim_s)
+    phi, theta, psi = eph.lunar_libration_angles(et)
+    return icrf_to_moon_pa(phi, theta, psi)
+
+
 def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
                            ctx: PlotContext) -> None:
     """3D view of the lunar surface with one small sphere per impact
@@ -1213,65 +1433,69 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
     r_icrf   = y_state[:, 0:3]
 
     # Frame triads -- drawn before the impact markers so the small
-    # markers paint on top (z-fighting bias). The scene IS the PA
-    # body-fixed frame (impact_3d converts every point with the
-    # per-impact `R_icrf_to_pa`), so:
-    #   * PA triad   = identity in scene coords; bright RGB.
-    #   * ICRF triad = ICRF basis vectors transported into the scene
-    #                  via R_icrf_to_pa(et_start). Drawn slightly
-    #                  shorter and in muted shades so the bright PA
-    #                  triad stays visually dominant.
+    # markers paint on top (z-fighting bias). Same convention as
+    # every other 3D plot: PA bright, ICRF muted (see
+    # `_add_reference_triads`). The scene IS the PA body-fixed
+    # frame, so R_at_start is the ICRF -> PA rotation at the start
+    # epoch which positions the ICRF triad inside the PA scene.
     phi0, theta0, psi0 = eph.lunar_libration_angles(et_start)
     R_at_start = icrf_to_moon_pa(phi0, theta0, psi0)
-    # MOON_RADIUS_KM lives in vtk_canvas; use literal here to avoid a
-    # cross-module import just for one constant (the value is also
-    # baked into the C engine and isn't going to drift).
-    R_moon = 1737.4
-    canvas.add_frame_triad(
-        basis_in_scene=np.eye(3),
-        length_km=2.10 * R_moon,
-        colors_xyz=((1.00, 0.30, 0.30),
-                    (0.30, 0.95, 0.40),
-                    (0.40, 0.55, 1.00)),
-        labels_xyz=("X_pa", "Y_pa", "Z_pa"),
-    )
-    canvas.add_frame_triad(
-        basis_in_scene=R_at_start,
-        length_km=1.80 * R_moon,
-        colors_xyz=((0.85, 0.55, 0.55),
-                    (0.55, 0.80, 0.60),
-                    (0.55, 0.65, 0.90)),
-        labels_xyz=("X_icrf", "Y_icrf", "Z_icrf"),
-    )
+    _add_reference_triads(canvas, scene_frame="pa",
+                           R_icrf_to_pa=R_at_start)
 
-    # Build the time-of-flight color lookup once. min/max bracket
-    # the actual range so a single-impact batch still gets a defined
-    # mid-turbo colour rather than NaN.
+    # Build the time-of-flight colour lookup once and vectorise the
+    # per-impact PA rotation. Each impact uses its own
+    # R_icrf_to_pa(et_start + t_sim[i]) -- libration evolves on a
+    # ~1-day scale so we can NOT precompute a single R, but the
+    # per-impact rotation itself is a cheap 3x3 matmul and stays
+    # well below the cost of the old 9000-actor draw call. The
+    # markers themselves now ship through `add_points` as a single
+    # GPU-instanced actor instead of a vtkSphereSource + actor per
+    # point, which on the 9577-case LRO debris run drops the
+    # render-time freeze (~10s) to a single-frame redraw.
     t_days = t_sim.astype(float) / _SEC_PER_DAY
     t_lo, t_hi = float(t_days.min()), float(t_days.max())
     span = max(t_hi - t_lo, 1e-9)
     cmap = mpl_colormaps["turbo"]
+    r_pa_arr = np.empty_like(r_icrf)
     for i in range(n_imp):
-        et = et_start + float(t_sim[i])
-        phi, theta, psi = eph.lunar_libration_angles(et)
-        R = icrf_to_moon_pa(phi, theta, psi)
-        r_pa = R @ r_icrf[i]
-        frac = (t_days[i] - t_lo) / span
-        r, g, b, _a = cmap(frac)
-        canvas.add_point(r_pa, radius_km=30.0, color=(r, g, b))
+        phi, theta, psi = eph.lunar_libration_angles(
+            et_start + float(t_sim[i]))
+        r_pa_arr[i] = icrf_to_moon_pa(phi, theta, psi) @ r_icrf[i]
+    # cmap accepts an array of fracs and returns an (N, 4) RGBA
+    # in [0..1]. Slice off the alpha; the mapper's per-point uchar
+    # array is RGB-only.
+    rgba = cmap((t_days - t_lo) / span)
+    canvas.add_points(r_pa_arr, rgba[:, :3], radius_km=30.0)
 
 
 # ----------------------------------------------------------------------
 # 3D plots
 # ----------------------------------------------------------------------
-def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray) -> None:
+def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
+                         ctx: PlotContext | None = None) -> None:
     """Moon-centred view: grey sphere + yellow trajectory polyline +
-    green/red start/end markers. Camera fitted to the trajectory.
-    The polyline is *not* registered as pickable here because picking
-    one of one trajectory adds no information."""
+    green/red start/end markers + PA / ICRF reference triads. Camera
+    fitted to the trajectory. The polyline is *not* registered as
+    pickable here because picking one of one trajectory adds no
+    information.
+
+    `ctx` carries the per-run input.toml location, used to resolve
+    the lunar libration angles at the trajectory's first sample so
+    the PA triad can be drawn alongside the ICRF triad. When ctx is
+    None (dev path) or the ephemeris is unreachable, only the ICRF
+    triad is drawn -- the convention is symmetric with the impact 3D
+    view.
+    """
     canvas.add_central_body()
     pts = np.column_stack([d["x"], d["y"], d["z"]])
     canvas.add_trajectory(pts)
+    # The trajectory IS in ICRF, so the ICRF triad is identity in
+    # scene coords; the PA triad is rotated in from the libration
+    # angles at the trajectory's start time.
+    t0 = float(d["t"][0]) if d.size > 0 else 0.0
+    R = _resolve_R_icrf_to_pa(ctx, t0)
+    _add_reference_triads(canvas, scene_frame="icrf", R_icrf_to_pa=R)
 
 
 # ----------------------------------------------------------------------
@@ -1313,10 +1537,17 @@ def _make_2d_overlay(single_fn: PlotFn2D) -> OverlayFn2D:
 
 
 def _overlay_3d_orbit(canvas: VtkCanvas,
-                       items: list[tuple[Path, np.ndarray]]) -> None:
+                       items: list[tuple[Path, np.ndarray]],
+                       ctx: PlotContext | None = None) -> None:
     """3D Moon scene with N trajectories stacked, each in its own
-    turbo colour, plus a viewport legend and Ctrl+click picking
-    enabled on every polyline (via `source_path`)."""
+    turbo colour, plus a viewport legend, PA / ICRF reference triads,
+    and Ctrl+click picking enabled on every polyline (via
+    `source_path`).
+
+    Triads use the libration at the *first* trajectory's start time;
+    the lunar libration evolves on a ~1-day scale so the cross-file
+    discrepancy is visually negligible inside a single batch.
+    """
     canvas.add_central_body()
     n = len(items)
     legend_items: list[tuple[str, tuple[float, float, float]]] = []
@@ -1328,6 +1559,10 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
         )
         legend_items.append((path.name, color))
     canvas.add_legend(legend_items)
+    # Same reference-frame convention as _plot_traj_3d_orbit.
+    t0 = float(items[0][1]["t"][0]) if items and items[0][1].size > 0 else 0.0
+    R = _resolve_R_icrf_to_pa(ctx, t0)
+    _add_reference_triads(canvas, scene_frame="icrf", R_icrf_to_pa=R)
 
 
 # Inline lambdas wrapping `_plot_traj_projection` for the XY / XZ / YZ
@@ -1372,6 +1607,7 @@ PLOTS: dict[str, list[PlotSpec]] = {
                  category="Orbit shape"),
         PlotSpec("3D orbit + Moon",             "3d", _plot_traj_3d_orbit,
                  overlay_fn=_overlay_3d_orbit,
+                 mode="context",
                  category="Orbit shape"),
         # ----- Orbital elements ---------------------------------------
         # Derived from r, v. All single-line so overlay-safe out of the
@@ -1412,6 +1648,10 @@ PLOTS: dict[str, list[PlotSpec]] = {
         PlotSpec("Δx, Δy, Δz per component",    "2d", _plot_diff_xyz,
                  category="Diff (pick 2 files)", mode="diff"),
         PlotSpec("RIC frame  (radial/in-tr/cross-tr)", "2d", _plot_diff_ric,
+                 category="Diff (pick 2 files)", mode="diff"),
+        PlotSpec("|Δr| distribution",            "2d", _plot_diff_r_distribution,
+                 category="Diff (pick 2 files)", mode="diff"),
+        PlotSpec("|Δr| empirical CDF",           "2d", _plot_diff_r_cdf,
                  category="Diff (pick 2 files)", mode="diff"),
     ],
     "accel": [
