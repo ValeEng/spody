@@ -241,8 +241,19 @@ jobs:
           }
           Write-Host "Inspecting $exe ..."
           $lines = & objdump -p $exe | Select-String "DLL Name:"
+          # Whitelist split in two:
+          #   - $whitelist: classic Win32 system DLLs that live in
+          #     System32 on every Windows version we care about.
+          #   - 'api-ms-win-*' prefix match: the Windows API Set
+          #     Schema virtual names produced by the UCRT-built
+          #     MinGW runtime. These are NOT physical files we have
+          #     to bundle -- the Windows loader resolves them
+          #     transparently to ucrtbase.dll via the apiset map on
+          #     Windows 10+ (and on Windows 7/8.1 with KB2999226).
+          #     Treating them as 'bad' would force us off UCRT MinGW
+          #     for no real-world benefit.
           $whitelist = @(
-              'kernel32', 'kernelbase', 'msvcrt', 'user32',
+              'kernel32', 'kernelbase', 'msvcrt', 'ucrtbase', 'user32',
               'advapi32', 'ws2_32', 'gdi32', 'shell32',
               'ole32', 'oleaut32', 'comctl32', 'comdlg32',
               'setupapi', 'imm32', 'ntdll', 'rpcrt4', 'crypt32',
@@ -253,7 +264,9 @@ jobs:
           foreach ($line in $lines) {
               $name = ($line.Line -split 'DLL Name:')[1].Trim().ToLower()
               $base = $name -replace '\.dll$', ''
-              if ($whitelist -notcontains $base) {
+              $isWhitelisted = ($whitelist -contains $base) -or `
+                               ($base -like 'api-ms-win-*')
+              if (-not $isWhitelisted) {
                   $bad += $name
               }
               Write-Host "  $name"
