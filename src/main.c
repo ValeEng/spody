@@ -66,7 +66,7 @@ static double now_seconds(void) {
 #endif
 }
 
-#define SPODY_APP_VERSION "0.1.1-beta"
+#define SPODY_APP_VERSION "0.1.2-beta"
 
 /* One-screen summary of a parsed config, printed after a successful validate.
  * Useful as a sanity check that the file says what the user thinks it says. */

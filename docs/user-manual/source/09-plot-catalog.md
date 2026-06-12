@@ -279,6 +279,38 @@ more.
 > two coincide. See chapter 10, section 10.4 for the explicit
 > relation.
 
+#### |Δr| distribution
+
+Histogram of the per-sample position-error magnitude across the
+shared sample grid. Bin count is `min(60, sqrt(N))` so a 6-day
+LRO regression (~9k samples at 1-minute cadence) gets &asymp;60
+bins and a short smoke test still produces a readable histogram.
+
+A small box in the bottom-right corner of the figure reports the
+**median**, **p95** and **max** of the distribution. These three
+numbers are the standard summary for a regression budget when the
+underlying error distribution is **not normal** (which is the
+usual case for SPICE-vs-SpOdy `|Δr|`).
+
+#### |Δr| empirical CDF
+
+The cumulative distribution function of the same `|Δr|` samples,
+drawn as a `steps-post` line from 0 to 1. The CDF is the natural
+tool when the question is **"what fraction of samples is below
+this error?"** &mdash; read the curve at the horizontal value of
+interest, scale up to the percentile on the y axis. Conversely,
+to find the value such that 95% / 99% / 99.9% of samples are
+below it, scan the y axis at 0.95 / 0.99 / 0.999.
+
+A box in the bottom-right corner of the figure reports the
+**median**, **p95**, **p99**, **p99.9** and **max**. These are
+the **distribution-free percentile budgets** &mdash; the right
+answer regardless of whether the underlying distribution is
+normal, log-normal, multi-modal, or anything else. The standard
+"`mean &plusmn; 2σ`" 95% interval only works if the distribution
+is normal; the empirical p95 read off the CDF works in every
+case, which is the point of this plot for regression work.
+
 ## Accelerations plots (`SPDYACC_`)
 
 The accelerations binary records the per-force accelerations at

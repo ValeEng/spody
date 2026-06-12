@@ -4,6 +4,78 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
+## v0.1.2-beta &mdash; 2026-06-12
+
+One day after v0.1.1-beta, mostly bug-fix + UX polish driven by
+testing the bundle on a fresh Windows install and pushing a 9577-
+case LRO debris run through the analysis tab.
+
+### Fixed
+
+- **Windows bundle no longer fails on fresh installs.** The MinGW-
+  built `spody.exe` previously imported `libgcc_s_seh-1.dll`,
+  `libwinpthread-1.dll`, `libstdc++-6.dll` and `libgomp-1.dll`
+  from PATH, which a typical end-user Windows install does not
+  have, so the wizard's first `spody convert` call exited with
+  `STATUS_DLL_NOT_FOUND` (0xC0000135). The release CI now passes
+  `-DCMAKE_EXE_LINKER_FLAGS=-static` so the runner is a single
+  self-contained executable.
+- **Settings paths self-heal on launch.** The Settings dialog
+  previously inherited stale paths from a developer-mode QSettings
+  on the same machine (e.g. an absolute build-folder path that did
+  not exist on a fresh install), and never auto-populated on first
+  run. `SettingsStore.ensure_bundled_defaults()` now overwrites
+  any empty or now-missing path with the bundled fallback (the
+  `spody.exe` next to the launcher, the wizard-downloaded Moon
+  texture under `data/`). Custom paths that still resolve are
+  preserved.
+- **Survival timeline no longer freezes the GUI on 9k+ cases.**
+  Above 200 cases the per-row Rectangle artist path is bypassed
+  in favour of a single `LineCollection`, and the 9000-text-label
+  Y axis is replaced by a descriptive label
+  (`<N> cases -- earliest impact at top, survivors at bottom`).
+  Reverse-sort information is preserved without the rank-vs-
+  case-idx ambiguity numeric ticks would imply.
+
+### Changed
+
+- **3D impact view: instanced GPU rendering.** 9k+ impact
+  markers used to be drawn as N individual `vtkSphereSource`
+  actors, which CPU-bottlenecks at ~1k+ markers and freezes the
+  canvas on a 9577-case batch. The new `VtkCanvas.add_points()`
+  consolidates them into a single `vtkGlyph3DMapper` actor with
+  per-point uchar RGB scalars -- one GPU-instanced draw call
+  regardless of count. Pan / rotate fluid again.
+- **Frame triads unified across every 3D plot.** PA is the
+  primary (bright RGB, `2.10 × R_moon`) and ICRF the secondary
+  (muted RGB, `1.80 × R_moon`, opacity 0.25). Whichever frame
+  the scene's coordinates use, the convention is identical so
+  the reader always finds body-fixed in the saturated triad and
+  inertial in the faded one. The orbit-3D plots gain the same
+  triad pair (previously had none); they degrade gracefully to
+  scene-frame only when the per-run `input.toml` snapshot or
+  ephemeris is unreachable.
+- **`spody.exe` stdout / stderr unbuffered.** Progress lines used
+  to arrive at the GUI terminal pane in ~4 KB chunks because libc
+  defaults stdout to fully block-buffered when piped. Both
+  streams now use `setvbuf(_IONBF)` so output streams live as it
+  is emitted. (`_IOLBF` was the original picks but the Microsoft
+  UCRT silently treats it as `_IOFBF`, and `_IOLBF` / `_IOFBF`
+  with a NULL buffer and size 0 is undefined and crashed the
+  binary with `STATUS_STACK_BUFFER_OVERRUN`.)
+
+### Added
+
+- **`|Δr| distribution`** -- new diff plot. Histogram of the
+  per-sample position-error magnitude with `min(60, sqrt(N))`
+  bins. Descriptive-stats box (median / p95 / max) pinned in
+  the bottom-right corner.
+- **`|Δr| empirical CDF`** -- new diff plot. Steps-post line of
+  the empirical CDF in [0..1]. Descriptive-stats box reports
+  median, p95, p99, p99.9 and max -- the canonical
+  **distribution-free** percentile budgets for regression work
+  (no normality assumption, unlike `mean ± 2σ`).
+
 ## v0.1.1-beta &mdash; 2026-06-11
 
 The second public drop, six days after the alpha. Focused on the

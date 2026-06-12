@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spody_python"
-version = "0.1.1b0"   # semver "0.1.1-beta" in PEP 440 syntax
+version = "0.1.2b0"   # semver "0.1.2-beta" in PEP 440 syntax
 description = "Desktop GUI + binary readers for the spody propagator"
 readme = "README.md"
 requires-python = ">=3.9"
