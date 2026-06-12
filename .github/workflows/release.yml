@@ -156,11 +156,21 @@ jobs:
       # option turns on -fopenmp-simd in spody-core's inner loops.
       - name: configure cmake (windows)
         if: runner.os == 'Windows'
+        # `-static` links libgcc, libstdc++, libwinpthread and
+        # libgomp into spody.exe so the bundled binary has zero
+        # external runtime dependencies on a fresh end-user
+        # Windows install. Without it the runner exits with
+        # STATUS_DLL_NOT_FOUND (0xC0000135) on any machine that
+        # does not happen to have the MinGW runtime in PATH,
+        # which a typical user does not. Costs ~2-3 MB of binary
+        # size in exchange for a self-contained CLI; the size
+        # trade-off is a non-event next to the PySide6 bundle.
         run: >
           cmake -B build -G "MinGW Makefiles"
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
           -DSPODY_ENABLE_OMP_SIMD=ON
+          -DCMAKE_EXE_LINKER_FLAGS=-static
 
       - name: configure cmake (linux)
         if: runner.os == 'Linux'
