@@ -68,6 +68,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -129,6 +130,15 @@ class SetupWizard(QDialog):
         self._rows: dict[str, _AssetRow] = {}
         # Track the active conversion process so we can cancel it cleanly.
         self._convert_proc: QProcess | None = None
+        # Modal progress dialog for the auto-convert subprocess +
+        # a per-line scratch for the "file N writed" parser. Live
+        # only while a convert is running; reset by the finished /
+        # error handlers.
+        self._convert_dlg: QProgressDialog | None = None
+        self._convert_output_buf: bytearray = bytearray()
+        self._convert_line_buf: bytearray = bytearray()
+        self._convert_dates: list[str] = []
+        self._convert_seen_files: int = 0
         # Suppress auto-conversion during the user's destructive
         # operations (e.g. switching coverage rebuilds the row list).
         self._suspend_auto_convert = False
@@ -428,8 +438,31 @@ class SetupWizard(QDialog):
             return  # nothing to convert
 
         argv = ["convert", "ephemeris", str(de_folder), "440", *date_ids]
+        n_files = len(date_ids)
         self._convert_status.setText(
-            "converting... " + " ".join(date_ids))
+            f"converting {n_files} chunks...")
+
+        # Modal progress dialog so the user sees the conversion
+        # actually doing work (and can't accidentally hit Download
+        # again mid-convert). Drives the bar by parsing the
+        # "file N writed" lines spody-core's converter emits at
+        # the end of every per-ASCII-chunk pass (the only progress
+        # line still printed after the d44f606 debug cleanup).
+        # No cancel button: convert is fast and aborting mid-write
+        # leaves a corrupt de440.spody behind.
+        dlg = QProgressDialog(
+            f"Converting DE440 ASCII into binary .spody (0 / {n_files})",
+            "",  # cancel text (overridden below)
+            0, n_files, self,
+        )
+        dlg.setWindowTitle("Converting ephemeris")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)        # show immediately, no 4s wait
+        dlg.setCancelButton(None)        # convert is atomic; no cancel
+        dlg.setAutoClose(True)           # dismiss when value == max
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        self._convert_dlg = dlg
 
         proc = QProcess(self)
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -446,6 +479,12 @@ class SetupWizard(QDialog):
         # always has free space, and decode at exit time so we can
         # still show the full output in the error dialog on failure.
         self._convert_output_buf = bytearray()
+        # Per-line scratch for the progress parser: we accumulate
+        # chunk bytes here and slice on every '\n' so a "file N writed"
+        # line split across two readyRead callbacks still counts once.
+        self._convert_line_buf = bytearray()
+        self._convert_dates = list(date_ids)
+        self._convert_seen_files = 0
         proc.readyReadStandardOutput.connect(self._on_convert_ready_read)
         proc.finished.connect(self._on_convert_finished)
         proc.errorOccurred.connect(self._on_convert_error)
@@ -455,13 +494,43 @@ class SetupWizard(QDialog):
     def _on_convert_ready_read(self) -> None:
         """Drain the convert subprocess pipe whenever Qt notifies us
         that data is available. Bytes are accumulated in a private
-        buffer; _on_convert_finished decodes the whole thing at exit
+        buffer; `_on_convert_finished` decodes the whole thing at exit
         time so a failed conversion still surfaces the full output in
-        the dialog."""
+        the dialog. The same chunk is fed to a line-by-line scanner
+        that watches for `file N writed` to advance the progress bar.
+        """
         if self._convert_proc is None:
             return
-        self._convert_output_buf += bytes(
-            self._convert_proc.readAllStandardOutput())
+        chunk = bytes(self._convert_proc.readAllStandardOutput())
+        self._convert_output_buf += chunk
+        self._convert_line_buf += chunk
+        # Process complete \n-terminated lines from the scratch buffer.
+        while True:
+            idx = self._convert_line_buf.find(b"\n")
+            if idx < 0:
+                break
+            line = bytes(self._convert_line_buf[:idx])
+            del self._convert_line_buf[:idx + 1]
+            if line.startswith(b"file ") and b"writed" in line:
+                self._convert_seen_files = min(
+                    self._convert_seen_files + 1,
+                    len(self._convert_dates))
+                self._update_convert_progress()
+
+    def _update_convert_progress(self) -> None:
+        """Push the latest converted-chunks count into the modal
+        progress dialog (no-op if the dialog has already been
+        dismissed)."""
+        if self._convert_dlg is None:
+            return
+        i = self._convert_seen_files
+        n = len(self._convert_dates)
+        # Current chunk name: the LAST one we crossed (1-indexed).
+        chunk = self._convert_dates[i - 1] if 0 < i <= n else ""
+        suffix = f"  --  ascp{chunk}.440" if chunk else ""
+        self._convert_dlg.setValue(i)
+        self._convert_dlg.setLabelText(
+            f"Converting DE440 ASCII into binary .spody ({i} / {n}){suffix}")
 
     def _on_convert_finished(self, exit_code: int, _exit_status) -> None:
         proc = self._convert_proc
@@ -473,6 +542,17 @@ class SetupWizard(QDialog):
         out = self._convert_output_buf.decode(
             "utf-8", errors="replace").strip()
         self._convert_output_buf = bytearray()
+        self._convert_line_buf = bytearray()
+        # Close the modal regardless of exit code -- otherwise the
+        # failure QMessageBox below would render BEHIND the modal
+        # and the user would be stuck. setValue(max) + autoClose was
+        # the obvious path but Qt's auto-close only fires via the
+        # reset() chain, which autoReset=False suppresses; call
+        # close() explicitly so the dismissal is unconditional.
+        if self._convert_dlg is not None:
+            self._convert_dlg.setValue(len(self._convert_dates))
+            self._convert_dlg.close()
+            self._convert_dlg = None
         if exit_code == 0:
             self._changed = True
             self.refresh_status()
@@ -488,6 +568,10 @@ class SetupWizard(QDialog):
         self._convert_status.setText(f"conversion launch failed ({err.name})")
         self._convert_proc = None
         self._convert_output_buf = bytearray()
+        self._convert_line_buf = bytearray()
+        if self._convert_dlg is not None:
+            self._convert_dlg.cancel()
+            self._convert_dlg = None
 
 
 class _AssetRow(QWidget):
