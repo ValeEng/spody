@@ -29,6 +29,23 @@ case LRO debris run through the analysis tab.
   `spody.exe` next to the launcher, the wizard-downloaded Moon
   texture under `data/`). Custom paths that still resolve are
   preserved.
+- **Wizard's auto-convert no longer hangs on fresh installs.**
+  The C runner `spody.exe` now ships with unbuffered stdout
+  (above) so the converter emits thousands of per-record lines
+  one syscall at a time. The wizard previously waited for
+  `finished` before reading the pipe, so Windows' default 64 KB
+  pipe buffer filled, the converter blocked on `write`, and the
+  GUI was stuck on `converting...` with no exit. The wizard
+  now drains `readyReadStandardOutput` like `runner.py` already
+  does for the propagation path, so the pipe always has free
+  space.
+
+  *Indirect consequence*: on machines where the prior hang
+  produced a half-written `de440.spody`, subsequent
+  `spody batch` invocations crashed at startup with
+  `STATUS_ACCESS_VIOLATION` while reading the corrupt records.
+  With the convert always running to completion, the on-disk
+  ephemeris is consistent and the crash goes away.
 - **Survival timeline no longer freezes the GUI on 9k+ cases.**
   Above 200 cases the per-row Rectangle artist path is bypassed
   in favour of a single `LineCollection`, and the 9000-text-label
