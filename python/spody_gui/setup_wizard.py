@@ -434,18 +434,45 @@ class SetupWizard(QDialog):
         proc = QProcess(self)
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.setWorkingDirectory(str(self._store.data_dir()))
+        # The convert subprocess can emit thousands of lines on stdout
+        # (per-record diagnostics from spody-core's ASCII->binary
+        # converter). The spody.exe runner now has unbuffered stdout
+        # (setvbuf _IONBF in main.c) so every printf becomes a pipe
+        # write; if we wait for the process to finish before reading
+        # the pipe, Windows' default 64 KB pipe buffer fills, the
+        # subprocess blocks on write, and the wizard hangs visually
+        # on 'converting ...' forever. Same pattern runner.py uses:
+        # drain readyReadStandardOutput into a buffer so the pipe
+        # always has free space, and decode at exit time so we can
+        # still show the full output in the error dialog on failure.
+        self._convert_output_buf = bytearray()
+        proc.readyReadStandardOutput.connect(self._on_convert_ready_read)
         proc.finished.connect(self._on_convert_finished)
         proc.errorOccurred.connect(self._on_convert_error)
         self._convert_proc = proc
         proc.start(spody_bin, argv)
 
+    def _on_convert_ready_read(self) -> None:
+        """Drain the convert subprocess pipe whenever Qt notifies us
+        that data is available. Bytes are accumulated in a private
+        buffer; _on_convert_finished decodes the whole thing at exit
+        time so a failed conversion still surfaces the full output in
+        the dialog."""
+        if self._convert_proc is None:
+            return
+        self._convert_output_buf += bytes(
+            self._convert_proc.readAllStandardOutput())
+
     def _on_convert_finished(self, exit_code: int, _exit_status) -> None:
         proc = self._convert_proc
         self._convert_proc = None
-        out = ""
+        # Drain any final tail that arrived between the last
+        # readyReadStandardOutput and process exit.
         if proc is not None:
-            out = bytes(proc.readAllStandardOutput()).decode(
-                "utf-8", errors="replace").strip()
+            self._convert_output_buf += bytes(proc.readAllStandardOutput())
+        out = self._convert_output_buf.decode(
+            "utf-8", errors="replace").strip()
+        self._convert_output_buf = bytearray()
         if exit_code == 0:
             self._changed = True
             self.refresh_status()
@@ -460,6 +487,7 @@ class SetupWizard(QDialog):
             return
         self._convert_status.setText(f"conversion launch failed ({err.name})")
         self._convert_proc = None
+        self._convert_output_buf = bytearray()
 
 
 class _AssetRow(QWidget):
