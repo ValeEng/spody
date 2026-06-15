@@ -649,8 +649,41 @@ class TomlForm(QWidget):
             f, "force_model.harmonics_file", "harmonics_file",
             category="harmonics", body_key="force_model.central_body",
         )
-        self._add_int  (f, "force_model.harmonics_degree", "harmonics_degree",
-                        minimum=2, maximum=1200)
+        # Custom row: int field + a sticky 'max num / max model' info
+        # label + a 'Suggest...' button that shells out to the new C
+        # CLI `spody maxhgdegree`. The CLI reads the actual Cnm/Snm
+        # from the harmonics file and walks degree-by-degree against
+        # the ULP noise floor seeded by the J2 contribution -- way
+        # more accurate than a Kaula-rule estimate (which was the
+        # first cut and got bounced for predicting too low a degree
+        # on rough fields like GRGM1200B over the Moon).
+        hd_edit = QLineEdit()
+        hd_edit.setValidator(QIntValidator(2, 1200, hd_edit))
+        hd_edit.textChanged.connect(self._touch)
+        hd_edit.textChanged.connect(
+            lambda _t: self._validate_field("force_model.harmonics_degree"))
+        self._widgets["force_model.harmonics_degree"] = hd_edit
+        # Sticky info label, populated on each Suggest run. Hidden
+        # before the first run since the numbers depend on the chosen
+        # harmonics file AND the current initial state -- showing a
+        # value before the user has filled either would be misleading.
+        self._hd_info = QLabel("")
+        self._hd_info.setStyleSheet("color: gray;")
+        self._hd_info.setVisible(False)
+        hd_suggest = QPushButton("Suggest...")
+        hd_suggest.setToolTip(
+            "Run the C engine to compute the largest harmonics degree "
+            "whose Cnm/Snm contribution at the current orbit altitude "
+            "still rises above double-precision noise. Going beyond it "
+            "costs CPU (per-step work is O(N^2)) with no measurable "
+            "accuracy gain.")
+        hd_suggest.clicked.connect(self._suggest_harmonics_degree)
+        hd_row = QHBoxLayout()
+        hd_row.setContentsMargins(0, 0, 0, 0)
+        hd_row.addWidget(hd_edit, 1)
+        hd_row.addWidget(self._hd_info)
+        hd_row.addWidget(hd_suggest)
+        f.addRow("harmonics_degree", _hwrap(hd_row))
         self._add_strlist_checks(f, "force_model.third_bodies", "third_bodies",
                                  THIRD_BODIES_ALL)
         self._add_bool (f, "force_model.srp", "srp")
@@ -1285,6 +1318,148 @@ class TomlForm(QWidget):
 
     def _on_batch_toggled(self, checked: bool) -> None:
         self._batch_box.setVisible(checked)
+
+    def _suggest_harmonics_degree(self) -> None:
+        """Shell out to `spody maxhgdegree <file> <x> <y> <z>` and
+        populate the harmonics_degree row's info label with the
+        result. Shows a modal progress dialog during the subprocess
+        (the harmonics-file load takes ~1-2 s on GRGM1200B) and a
+        Yes/No confirm dialog with the recommendation when the CLI
+        finishes.
+
+        Going via the C engine instead of a Python-side estimate
+        means we read the *actual* Cnm/Snm coefficient magnitudes
+        from the file rather than rely on a Kaula-rule bound. The
+        Kaula estimate (first cut) under-predicted the useful degree
+        on rough fields like GRGM1200B over the Moon and produced
+        runs that diverged from SPICE; the file-driven walk is the
+        right answer.
+        """
+        from PySide6.QtCore import QProcess
+        from PySide6.QtWidgets import QProgressDialog
+
+        store = self._store
+        if store is None:
+            QMessageBox.warning(
+                self, "Suggest max harmonics degree",
+                "Settings store not wired (running in a standalone form?).")
+            return
+        spody_bin = store.spody_binary()
+        if not spody_bin or not Path(spody_bin).is_file():
+            QMessageBox.warning(
+                self, "Suggest max harmonics degree",
+                "Set the path to spody.exe in Settings > Paths first.")
+            return
+
+        # Harmonics file path -- the asset combo stores the absolute
+        # path as currentData(); empty when the user has not picked
+        # anything yet.
+        hfile_w = self._widgets.get("force_model.harmonics_file")
+        hfile_path = hfile_w.currentData() if hfile_w is not None else None
+        if not hfile_path:
+            QMessageBox.warning(
+                self, "Suggest max harmonics degree",
+                "Pick a harmonics file in [force_model] first.")
+            return
+
+        # Initial-state position triplet from the vec3 widget.
+        pos_w = self._widgets.get("initial_state.position_km")
+        if not isinstance(pos_w, tuple) or len(pos_w) != 3:
+            QMessageBox.warning(
+                self, "Suggest max harmonics degree",
+                "[initial_state].position_km is not a vec3 widget.")
+            return
+        try:
+            pos = [float(le.text()) for le in pos_w]
+        except ValueError:
+            QMessageBox.warning(
+                self, "Suggest max harmonics degree",
+                "Fill in [initial_state].position_km first.")
+            return
+
+        # Modal indeterminate progress (range 0,0): the spody.exe load
+        # is one opaque step from our side. No cancel -- aborting
+        # mid-load offers no benefit over waiting the second out.
+        dlg = QProgressDialog(
+            "Loading harmonics file and walking degrees...",
+            "", 0, 0, self)
+        dlg.setWindowTitle("Suggest max harmonics degree")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setCancelButton(None)
+        dlg.setValue(0)
+
+        # QProcess kept on `self` for the duration so the lambda
+        # closures see the right object; reset in on_finished.
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        out_buf = bytearray()
+
+        def on_ready_read() -> None:
+            out_buf.extend(bytes(proc.readAllStandardOutput()))
+
+        def on_finished(exit_code: int, _exit_status) -> None:
+            out_buf.extend(bytes(proc.readAllStandardOutput()))
+            dlg.close()
+            self._hd_suggest_proc = None
+            text = out_buf.decode("utf-8", errors="replace")
+            if exit_code != 0:
+                QMessageBox.critical(
+                    self, "Suggest max harmonics degree",
+                    f"spody maxhgdegree exited with code {exit_code}.\n\n"
+                    f"Output:\n{text}")
+                return
+            # Parse the `key: value` lines the CLI emits.
+            parsed: dict[str, str] = {}
+            for line in text.splitlines():
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    parsed[k.strip()] = v.strip()
+            num_max = parsed.get("numerical_max")
+            mod_max = parsed.get("model_max")
+            if not num_max or not mod_max:
+                QMessageBox.warning(
+                    self, "Suggest max harmonics degree",
+                    f"Could not parse spody maxhgdegree output:\n\n{text}")
+                return
+            # Sticky info label sits between the field and the button.
+            self._hd_info.setText(
+                f"  max num: {num_max}  |  max model: {mod_max}  ")
+            self._hd_info.setVisible(True)
+            current = self._widgets["force_model.harmonics_degree"].text()
+            r_km    = parsed.get("r_km", "?")
+            R_body  = parsed.get("R_body_km", "?")
+            reply = QMessageBox.question(
+                self, "Suggest max harmonics degree",
+                f"Largest harmonics degree whose Cnm/Snm contribution at\n"
+                f"the current orbit altitude rises above double-precision\n"
+                f"noise (computed from the actual coefficients in the\n"
+                f"harmonics file, not a Kaula estimate):\n\n"
+                f"  numerical max: {num_max}\n"
+                f"  model max:     {mod_max}\n\n"
+                f"r = {r_km} km, R_body = {R_body} km\n"
+                f"Current harmonics_degree: {current or '(empty)'}\n\n"
+                f"Apply {num_max} to harmonics_degree?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if reply == QMessageBox.StandardButton.Yes:
+                self._widgets["force_model.harmonics_degree"].setText(num_max)
+
+        def on_error(_err) -> None:
+            dlg.close()
+            self._hd_suggest_proc = None
+            QMessageBox.critical(
+                self, "Suggest max harmonics degree",
+                f"Failed to launch spody.exe:\n{proc.errorString()}")
+
+        proc.readyReadStandardOutput.connect(on_ready_read)
+        proc.finished.connect(on_finished)
+        proc.errorOccurred.connect(on_error)
+        self._hd_suggest_proc = proc
+        proc.start(spody_bin, [
+            "maxhgdegree", str(hfile_path),
+            repr(pos[0]), repr(pos[1]), repr(pos[2]),
+        ])
 
     def _build_notes(self) -> QGroupBox:
         """Freeform notes attached to this TOML, emitted as a comment

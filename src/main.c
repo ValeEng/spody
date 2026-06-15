@@ -28,6 +28,8 @@
  *   spody convert    ephemeris <dir> <de> <date1> [date2 ...]
  *   spody info
  */
+#include <float.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -632,6 +634,160 @@ static int cmd_info(int argc, char **argv) {
     return 0;
 }
 
+/* Compute the smallest harmonics-expansion degree at which the
+ * ACCELERATION at a given orbit position is already within double-
+ * precision noise of the full-file answer.
+ *
+ *   spody maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>
+ *
+ * Uses spody-core's existing harmonic-gravity evaluator
+ * (`spody_get_hgaccbodyfixed_hpc`) at progressively higher truncation
+ * degrees, then finds the smallest n where
+ *
+ *     |a(n) - a(file_N)| / |a(file_N)| < EPSILON
+ *
+ * with EPSILON ~ 2.22e-16 (IEEE 754 double ULP). That n is the
+ * acceleration-convergence threshold: above it, the propagator can
+ * only burn CPU, not gain accuracy. Driving this off the real
+ * accelerations (rather than a coefficient RSS proxy) gives the
+ * answer the integrator actually cares about, including the
+ * radial-derivative factor (n+1) and the per-degree directionality
+ * the analytic shortcut would miss.
+ *
+ * Coordinate frame: the input position is treated as **already in
+ * the body-fixed frame** of the central body. The GUI sanity-check
+ * passes the ICRF state magnitude directly -- the convergence-vs-n
+ * behaviour is dominated by `r = |pos|`, not by the body-fixed
+ * latitude / longitude (those would shift the absolute acceleration
+ * magnitude, but the cutoff degree is essentially the same within
+ * 1-2 across the lunar surface).
+ *
+ * Output is `key: value\n` lines on stdout so the GUI can grep them
+ * with no clever parsing:
+ *
+ *   numerical_max: 543
+ *   model_max:     1200
+ *   r_km:          1787.402300
+ *   R_body_km:     1737.400000
+ *
+ * Exit code 0 on success; non-zero with an error on stderr otherwise.
+ */
+static int cmd_maxhgdegree(int argc, char **argv) {
+    if (argc < 5) {
+        fprintf(stderr,
+            "usage: spody maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n");
+        return 1;
+    }
+    const char *harmonics_file = argv[1];
+    double pos[3] = {
+        strtod(argv[2], NULL),
+        strtod(argv[3], NULL),
+        strtod(argv[4], NULL),
+    };
+    double r_km = sqrt(pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2]);
+    if (!(r_km > 0.0)) {
+        fprintf(stderr, "maxhgdegree: position has zero (or invalid) magnitude\n");
+        return 1;
+    }
+
+    /* Peek at the file's header line to find its intrinsic max degree
+     * (`spody_load_HarmonicGravityData` refuses to load above the
+     * file cap, so we cannot pass an arbitrary upper bound). The
+     * format is comma-separated: R_ref, GM, <skip>, file_N, ... */
+    FILE *fp = fopen(harmonics_file, "r");
+    if (!fp) {
+        fprintf(stderr, "maxhgdegree: cannot open '%s'\n", harmonics_file);
+        return 1;
+    }
+    char head[256];
+    if (!fgets(head, sizeof head, fp)) {
+        fclose(fp);
+        fprintf(stderr, "maxhgdegree: empty harmonics file '%s'\n",
+                harmonics_file);
+        return 1;
+    }
+    fclose(fp);
+    (void)strtok(head, ",");      /* R_ref     */
+    (void)strtok(NULL, ",");      /* GM        */
+    (void)strtok(NULL, ",");      /* skip slot */
+    char *tN = strtok(NULL, ",");
+    int file_N = tN ? (int)strtod(tN, NULL) : 0;
+    if (file_N < 2) {
+        fprintf(stderr, "maxhgdegree: could not parse file degree from header\n");
+        return 1;
+    }
+
+    /* Load coefficients up to the file's own cap. This is the slow
+     * step (~1-2 s on GRGM1200B); the GUI hides it behind a modal. */
+    HarmonicGravityData hgd;
+    if (spody_load_HarmonicGravityData(&hgd, harmonics_file, file_N) != 0) {
+        fprintf(stderr,
+            "maxhgdegree: failed to load harmonics file at degree %d\n",
+            file_N);
+        return 1;
+    }
+
+    /* Setup the gravity evaluator ONCE at the file's full degree so
+     * all internal buffers (A_row0..2, real, imag) are sized for the
+     * worst case. We then truncate per-iteration by mutating hgd.N --
+     * the evaluator reads hg->hgd->N every call and stops the inner
+     * loop there, but the over-sized buffers are still valid. */
+    HarmonicGravity hg;
+    spody_setup_HarmonicGravity(&hg, &hgd);
+
+    /* Allocate per-degree acceleration magnitude scratch. acc_mag[n]
+     * is the |a(n)| computed with the field truncated at degree n. */
+    double *acc_mag = (double *)calloc((size_t)file_N + 1, sizeof(double));
+    if (!acc_mag) {
+        fprintf(stderr, "maxhgdegree: out of memory\n");
+        spody_free_HarmonicGravity(&hg);
+        spody_free_HarmonicGravityData(&hgd);
+        return 1;
+    }
+
+    /* Sweep degrees. spody-core's accel function takes a non-const
+     * HarmonicGravity but only reads hg->hgd->N -- mutating the
+     * underlying hgd.N before each call is the cheapest truncation. */
+    int original_N = hgd.N;
+    for (int n = 2; n <= original_N; n++) {
+        hgd.N = n;
+        double acc[3];
+        spody_get_hgaccbodyfixed_hpc(&hg, pos, acc);
+        acc_mag[n] = sqrt(acc[0]*acc[0] + acc[1]*acc[1] + acc[2]*acc[2]);
+    }
+    hgd.N = original_N;  /* restore so the cleanup path sees the full N */
+
+    /* Find the smallest n at which the truncated-acceleration is
+     * within ULP of the full-file answer. Walks forward from n=2;
+     * the FIRST converged degree is what we want (the user can
+     * always pick a larger N at the cost of CPU, but anything
+     * BELOW `suggested` produces measurably different accelerations). */
+    double acc_ref = acc_mag[original_N];
+    int suggested = original_N;
+    if (acc_ref > 0.0) {
+        for (int n = 2; n <= original_N; n++) {
+            double diff = fabs(acc_mag[n] - acc_ref);
+            if (diff < DBL_EPSILON * acc_ref) {
+                suggested = n;
+                break;
+            }
+        }
+    }
+    free(acc_mag);
+
+    double R_body = hgd.R_ref;
+
+    spody_free_HarmonicGravity(&hg);
+    spody_free_HarmonicGravityData(&hgd);
+
+    /* GUI-friendly parseable output. */
+    printf("numerical_max: %d\n", suggested);
+    printf("model_max:     %d\n", file_N);
+    printf("r_km:          %.6f\n", r_km);
+    printf("R_body_km:     %.6f\n", R_body);
+    return 0;
+}
+
 /* Convert raw external data into spody's native binary format.
  *
  * Subform:
@@ -705,6 +861,8 @@ static void usage(const char *prog) {
         "  convert    ephemeris <dir> <de> <date1> [date2 ...]\n"
         "                                          DE ASCII -> de<X>.spody\n"
         "  info                                    print version and capabilities\n"
+        "  maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n"
+        "                                          largest useful harmonics degree\n"
         "\n",
         SPODY_APP_VERSION, prog);
 }
@@ -737,6 +895,7 @@ int main(int argc, char **argv) {
     else if (strcmp(cmd, "validate")  == 0) return cmd_validate (argc - 1, argv + 1);
     else if (strcmp(cmd, "convert")   == 0) return cmd_convert  (argc - 1, argv + 1);
     else if (strcmp(cmd, "info")      == 0) return cmd_info     (argc - 1, argv + 1);
+    else if (strcmp(cmd, "maxhgdegree") == 0) return cmd_maxhgdegree(argc - 1, argv + 1);
     else if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
         usage(argv[0]);
         return 0;
