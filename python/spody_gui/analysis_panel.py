@@ -86,6 +86,7 @@ from spody_io.headers import SPODY_EVTB_MAGIC
 from .astronomy import sun_direction_j2000
 from .settings import SettingsStore
 from .toml_io import read_toml
+from .animation_bar import AnimationBar
 from .vtk_canvas import MOON_RADIUS_KM, VtkCanvas
 # spopy is the pure-Python re-implementation of the spody-core read
 # helpers. Used by the impact lat/lon map to project ICRF impact points
@@ -1489,17 +1490,16 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     """
     canvas.add_central_body()
     pts = np.column_stack([d["x"], d["y"], d["z"]])
-    canvas.add_trajectory(pts)
-    # Two-line legend in the top-left of the viewport explaining the
-    # green / red endpoint markers VtkCanvas.add_trajectory drew. The
-    # colours below MUST match the literals in vtk_canvas.add_trajectory
-    # (start green = (0.0, 0.9, 0.0), end red = (0.95, 0.2, 0.2)); if
-    # either side drifts the user reads the wrong colour for 'start'
-    # or 'end'. add_legend now draws a real coloured disk swatch next
-    # to each label, so the bare 'start' / 'end' words are enough.
+    # Animated variant: full polyline + a coloured marker sphere that
+    # the playback bar above the canvas slides along when the user
+    # hits Play. The legend now describes the moving marker rather
+    # than start/end endpoint dots (which are not drawn in the
+    # animated variant -- the marker subsumes the 'end' role and the
+    # trail-tip implies the 'start' as it grows).
+    canvas.add_animated_trajectory(pts, d["t"].astype(float),
+                                    color=(1.0, 0.85, 0.20))
     canvas.add_legend([
-        ("start", (0.0, 0.9, 0.0)),
-        ("end",   (0.95, 0.2, 0.2)),
+        ("trajectory + moving marker", (1.0, 0.85, 0.20)),
     ])
     # The trajectory IS in ICRF, so the ICRF triad is identity in
     # scene coords; the PA triad is rotated in from the libration
@@ -1565,8 +1565,11 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
     for i, (path, data) in enumerate(items):
         color = _turbo_color(i, n)
         pts = np.column_stack([data["x"], data["y"], data["z"]])
-        canvas.add_trajectory(
-            pts, color=color, endpoint_markers=False, source_path=path,
+        # Animated variant: each overlaid orbit gets its own marker
+        # sphere that the shared playback bar moves in parallel.
+        # Source path is forwarded so Ctrl+click picking still works.
+        canvas.add_animated_trajectory(
+            pts, data["t"].astype(float), color=color, source_path=path,
         )
         legend_items.append((path.name, color))
     canvas.add_legend(legend_items)
@@ -2030,6 +2033,16 @@ class AnalysisPanel(QWidget):
         self._vtk = VtkCanvas()
         self._vtk.set_pick_callback(self._on_pick)
 
+        # Cesium-style playback bar shown above the 3D canvas. Lights
+        # up only when the active plot dropped animated trajectories
+        # into the canvas (single + overlay 3D orbit views); stays
+        # disabled / hidden otherwise. Signals are forwarded into the
+        # canvas's animation API.
+        self._anim_bar = AnimationBar()
+        self._anim_bar.timeChanged.connect(self._on_anim_time_changed)
+        self._anim_bar.trailToggled.connect(self._on_anim_trail_toggled)
+        self._anim_bar.setVisible(False)
+
         # Stack switched by the dispatcher in `_on_plot` based on
         # PlotSpec.dim. Index 0 = 2D, index 1 = 3D.
         self._stack = QStackedWidget()
@@ -2040,11 +2053,14 @@ class AnalysisPanel(QWidget):
         self._info_label.setStyleSheet("color: gray;")
         self._info_label.setWordWrap(True)
 
-        # Plot tab content: sun bar + 2D/3D stack. Stays unchanged.
+        # Plot tab content: sun bar + animation bar + 2D/3D stack.
+        # Both extra bars hide for 2D plots; the dispatcher in
+        # `_plot_active` / `_plot_overlay` flips their visibility.
         plot_tab = QWidget()
         plot_lay = QVBoxLayout(plot_tab)
         plot_lay.setContentsMargins(0, 0, 0, 0)
         plot_lay.addWidget(self._sun_widget)
+        plot_lay.addWidget(self._anim_bar)
         plot_lay.addWidget(self._stack, 1)
 
         # Table tab content: raw record view of the loaded file. The
@@ -2410,6 +2426,7 @@ class AnalysisPanel(QWidget):
                 spec.overlay_fn(self._vtk, items)
                 self._vtk.reset_camera()
                 self._vtk.render()
+            self._sync_anim_bar_to_canvas()
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
             QMessageBox.critical(self, "Overlay failed", repr(exc))
             return
@@ -2708,6 +2725,48 @@ class AnalysisPanel(QWidget):
     # ------------------------------------------------------------------
     # Sun arrow
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 3D animation -- the bar above the canvas owns the timeline; the
+    # canvas owns the per-frame marker / trail update. These slots glue
+    # the two together. `_sync_anim_bar_to_canvas` is the helper the
+    # plot dispatcher calls after each 3D render so the bar's t-range
+    # matches the freshly-loaded handles.
+    # ------------------------------------------------------------------
+    def _on_anim_time_changed(self, t_s: float) -> None:
+        # Cheap fast path: if the active plot isn't 3D the canvas has
+        # no animation handles and set_animation_time is a no-op; we
+        # still skip the render call to avoid waking the GL context.
+        if self._stack.currentIndex() != 1:
+            return
+        self._vtk.set_animation_time(t_s)
+        self._vtk.render()
+
+    def _on_anim_trail_toggled(self, on: bool) -> None:
+        if self._stack.currentIndex() != 1:
+            return
+        self._vtk.set_trail_enabled(on)
+        # Re-emit the current time so the trail is repainted at the
+        # right cut. set_trail_enabled itself doesn't refresh geometry
+        # to avoid a redundant pass during set_time_range.
+        self._vtk.set_animation_time(self._anim_bar.current_time())
+        self._vtk.render()
+
+    def _sync_anim_bar_to_canvas(self) -> None:
+        """Show / hide / range the playback bar based on what the
+        last 3D render left in the canvas. Called from `_plot_active`
+        and `_on_overlay_selected` after the VTK scene is fully built.
+        Hidden for 2D plots (the QStackedWidget is on page 0) and for
+        3D plots that didn't register any animation handles."""
+        if self._stack.currentIndex() != 1:
+            self._anim_bar.setVisible(False)
+            return
+        rng = self._vtk.animation_time_range()
+        if rng is None:
+            self._anim_bar.setVisible(False)
+            return
+        self._anim_bar.setVisible(True)
+        self._anim_bar.set_time_range(*rng)
+
     def _on_add_sun(self) -> None:
         """Compute the Sun direction at the typed epoch and add an
         arrow to the 3D scene. Requires the 3D canvas to be active
@@ -2882,5 +2941,6 @@ class AnalysisPanel(QWidget):
                     spec.fn(self._vtk, self._data)
                 self._vtk.reset_camera()
                 self._vtk.render()
+            self._sync_anim_bar_to_canvas()
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
             QMessageBox.critical(self, "Plot failed", repr(exc))

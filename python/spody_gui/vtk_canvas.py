@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -48,6 +49,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData, vtkPolyLine
+from vtkmodules.vtkFiltersHybrid import vtkPolyDataSilhouette
 from vtkmodules.vtkFiltersSources import (
     vtkArrowSource,
     vtkRegularPolygonSource,
@@ -84,6 +86,27 @@ import vtkmodules.vtkRenderingFreeType    # noqa: F401 -- side-effect import
 MOON_RADIUS_KM = 1737.4
 
 
+@dataclass
+class _AnimHandle:
+    """One animated trajectory: the static geometry (full polyline +
+    moving marker sphere) plus the (time, point) arrays
+    set_animation_time interpolates on at every tick.
+
+    `points` is Nx3 (km, scene frame); `times` is N entries (sim
+    seconds, monotonically increasing). `marker_actor` is the sphere
+    whose Position is rewritten each frame. `line_actor` is the full
+    polyline; when the trail mode is enabled we swap its mapper's
+    input data for a progressively-extended truncation, so toggling
+    trail on/off doesn't require rebuilding the renderer."""
+    times:            "np.ndarray"     # noqa: F821 -- forward-ref to numpy
+    points:           "np.ndarray"     # noqa: F821
+    line_actor:       vtkActor
+    full_poly:        vtkPolyData      # mapper input when trail is off (whole orbit)
+    marker_actor:     vtkActor
+    silhouette_actor: vtkActor         # white outline kept in lockstep with the marker
+    color:            tuple[float, float, float] = (1.0, 0.85, 0.20)
+
+
 class VtkCanvas(QWidget):
     """Qt widget hosting a single VTK renderer. Stateless wrt to which
     file is currently shown -- `clear_scene` followed by add_*() calls
@@ -117,6 +140,14 @@ class VtkCanvas(QWidget):
         self._highlighted_actor: vtkActor | None = None
         self._highlight_extra_lw = 4.0
         self._pick_callback: Callable[[Path | None], None] | None = None
+
+        # Animation handles registered by add_animated_trajectory. Each
+        # entry carries everything set_animation_time needs to advance
+        # one moving marker + (optionally) clip its trail polyline. The
+        # `_trail_enabled` flag below switches every handle on or off in
+        # a single call from the animation bar above the canvas.
+        self._anim_handles: list[_AnimHandle] = []
+        self._trail_enabled: bool = False
         self._interactor.AddObserver(
             "LeftButtonReleaseEvent", self._on_left_button_release
         )
@@ -140,10 +171,12 @@ class VtkCanvas(QWidget):
     def clear_scene(self) -> None:
         """Remove every actor added via add_* methods. The corner triad
         (which lives on a separate marker widget) is preserved.
-        Picking state is also cleared so stale actor refs don't leak."""
+        Picking state and animation handles are also cleared so stale
+        actor refs don't leak."""
         self._renderer.RemoveAllViewProps()
         self._trajectory_actors.clear()
         self._highlighted_actor = None
+        self._anim_handles.clear()
 
     def set_central_body_texture(self, path: Path | None) -> None:
         """Default equirectangular texture used by subsequent
@@ -326,6 +359,225 @@ class VtkCanvas(QWidget):
             marker_r = max(diag * 0.005, 1.0)   # ≥ 1 km even on tiny arcs
             self._add_marker_sphere(points_km[0],  marker_r, color=(0.0, 0.9, 0.0))
             self._add_marker_sphere(points_km[-1], marker_r, color=(0.95, 0.2, 0.2))
+
+    def add_animated_trajectory(self, points_km: np.ndarray,
+                                 times_s: np.ndarray,
+                                 color: tuple[float, float, float] = (1.0, 0.85, 0.20),
+                                 line_width: float = 2.0,
+                                 source_path: Path | None = None) -> None:
+        """Like `add_trajectory` but also registers an animation
+        handle: a coloured sphere marker (sized to ~1% of the scene
+        diagonal, ≥2 km) that `set_animation_time` slides along the
+        polyline, and a record of the (times, points) arrays so the
+        trail clipping mode can rebuild a partial polyline at each
+        frame.
+
+        `times_s` is the sim time at each sample (monotonic, seconds);
+        the same length as `points_km`. The animation bar above the
+        canvas exposes the (t_min, t_max) of this and every other
+        animated trajectory via `animation_time_range`.
+
+        Endpoint marker spheres are NOT drawn here: the moving marker
+        replaces the end marker visually, and the start of the orbit
+        is implied by the trail's growing tip when trail mode is on.
+        Source-path picking is still wired through `_trajectory_actors`
+        when `source_path` is given."""
+        n = len(points_km)
+        if n < 2 or len(times_s) != n:
+            return
+        pts = np.asarray(points_km, dtype=float)
+        ts  = np.asarray(times_s,   dtype=float)
+
+        # --- Static polyline (mapper input mutates when trail is on) ---
+        vpoints = vtkPoints()
+        vpoints.SetNumberOfPoints(n)
+        for i, (x, y, z) in enumerate(pts):
+            vpoints.SetPoint(i, x, y, z)
+        polyline = vtkPolyLine()
+        polyline.GetPointIds().SetNumberOfIds(n)
+        for i in range(n):
+            polyline.GetPointIds().SetId(i, i)
+        cells = vtkCellArray()
+        cells.InsertNextCell(polyline)
+        poly = vtkPolyData()
+        poly.SetPoints(vpoints)
+        poly.SetLines(cells)
+
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputData(poly)
+        line_actor = vtkActor()
+        line_actor.SetMapper(mapper)
+        line_actor.GetProperty().SetColor(*color)
+        line_actor.GetProperty().SetLineWidth(line_width)
+        self._renderer.AddActor(line_actor)
+
+        # --- Moving marker sphere -------------------------------------
+        # The marker is intentionally oversized vs the trajectory's
+        # bounding diagonal (~3 %) and lit "from inside" via
+        # Ambient=1 + LightingOff -- it reads as a glowing puck in the
+        # otherwise scene-lit-from-the-Sun rendering, so it stands out
+        # against both the dark background and the Moon surface.
+        diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        marker_r = max(diag * 0.030, 8.0)
+        sphere = vtkSphereSource()
+        sphere.SetRadius(marker_r)
+        sphere.SetThetaResolution(24)
+        sphere.SetPhiResolution(16)
+        sphere.SetCenter(0.0, 0.0, 0.0)        # geometry centred; pose via SetPosition
+        m_mapper = vtkPolyDataMapper()
+        m_mapper.SetInputConnection(sphere.GetOutputPort())
+        marker = vtkActor()
+        marker.SetMapper(m_mapper)
+        marker.GetProperty().SetColor(*color)
+        marker.GetProperty().SetAmbient(1.0)
+        marker.GetProperty().SetDiffuse(0.0)
+        marker.GetProperty().LightingOff()
+        marker.SetPosition(*pts[0])            # park at start until first tick
+        self._renderer.AddActor(marker)
+
+        # --- White silhouette outline ---------------------------------
+        # vtkPolyDataSilhouette emits the apparent-contour edges of the
+        # sphere from the active camera's POV (recomputed every frame
+        # by VTK itself when the camera moves). A white outline pops
+        # the marker against the Moon's grey surface AND against the
+        # near-black background. The silhouette actor is moved in
+        # lockstep with the sphere -- one SetPosition call per tick.
+        silhouette = vtkPolyDataSilhouette()
+        silhouette.SetInputConnection(sphere.GetOutputPort())
+        silhouette.SetCamera(self._renderer.GetActiveCamera())
+        silhouette.SetEnableFeatureAngle(0)
+        s_mapper = vtkPolyDataMapper()
+        s_mapper.SetInputConnection(silhouette.GetOutputPort())
+        silhouette_actor = vtkActor()
+        silhouette_actor.SetMapper(s_mapper)
+        silhouette_actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+        silhouette_actor.GetProperty().SetLineWidth(2.5)
+        silhouette_actor.GetProperty().LightingOff()
+        silhouette_actor.SetPosition(*pts[0])
+        self._renderer.AddActor(silhouette_actor)
+
+        if source_path is not None:
+            self._trajectory_actors.append((line_actor, source_path))
+
+        self._anim_handles.append(_AnimHandle(
+            times=ts, points=pts, line_actor=line_actor,
+            full_poly=poly, marker_actor=marker,
+            silhouette_actor=silhouette_actor, color=color))
+
+        # If the user already turned the trail mode on for the previous
+        # scene, mirror that on the new handle so all polylines start
+        # from the same display mode.
+        if self._trail_enabled:
+            self._refresh_trail_poly(self._anim_handles[-1], ts[0])
+
+    def has_animations(self) -> bool:
+        return bool(self._anim_handles)
+
+    def animation_time_range(self) -> tuple[float, float] | None:
+        """(t_min, t_max) across every registered handle, or None when
+        nothing animated is in the scene. The slider above the canvas
+        uses this to map its 0..1 position to sim-time, and the play
+        button stops when t reaches t_max."""
+        if not self._anim_handles:
+            return None
+        t_min = min(float(h.times[0])  for h in self._anim_handles)
+        t_max = max(float(h.times[-1]) for h in self._anim_handles)
+        return t_min, t_max
+
+    def set_trail_enabled(self, enabled: bool) -> None:
+        """Toggle trail-clipping for every animated trajectory. When
+        enabled, each polyline shows only the segment from its first
+        sample up to the current animation time (set by the most
+        recent `set_animation_time` call). When disabled (default),
+        the full orbit polyline is always visible and only the marker
+        moves."""
+        if self._trail_enabled == enabled:
+            return
+        self._trail_enabled = enabled
+        if not enabled:
+            # Restore the full polyline as each mapper's input.
+            for h in self._anim_handles:
+                h.line_actor.GetMapper().SetInputData(h.full_poly)
+        # When enabled, the next set_animation_time call paints the
+        # right partial polyline; until then leave the full one in
+        # place so a render before the first tick is not blank.
+
+    def set_animation_time(self, t_s: float) -> None:
+        """Move every marker to the interpolated position at sim time
+        `t_s`. When trail mode is on, also rebuild each polyline to
+        cover only [t_min_handle, t_s] (with the trailing tip exactly
+        at the interpolated point so the marker visually 'pulls' the
+        trail). t values outside a handle's range clamp to its
+        endpoints -- so on an overlay where one orbit ends before
+        another, the shorter one freezes at its last sample."""
+        for h in self._anim_handles:
+            pos = self._interp_point(h, t_s)
+            h.marker_actor.SetPosition(*pos)
+            h.silhouette_actor.SetPosition(*pos)
+            if self._trail_enabled:
+                self._refresh_trail_poly(h, t_s, tip_point=pos)
+
+    @staticmethod
+    def _interp_point(h: _AnimHandle, t: float) -> np.ndarray:
+        """Linear interpolation of `h.points` at sim time `t`. Clamps
+        to endpoints when outside the handle's time range. The output
+        stride from spody.exe is typically 60 s, far smaller than
+        anything visually relevant -- linear interp is more than
+        enough; cubic spline would only chew CPU."""
+        ts = h.times
+        if t <= ts[0]:
+            return h.points[0]
+        if t >= ts[-1]:
+            return h.points[-1]
+        # searchsorted returns the index where `t` would be inserted;
+        # the previous index is the lower neighbour we want.
+        idx = int(np.searchsorted(ts, t)) - 1
+        t0, t1 = float(ts[idx]), float(ts[idx + 1])
+        alpha = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+        return h.points[idx] + alpha * (h.points[idx + 1] - h.points[idx])
+
+    def _refresh_trail_poly(self, h: _AnimHandle, t: float,
+                             tip_point: np.ndarray | None = None) -> None:
+        """Rebuild a vtkPolyData containing only the samples in
+        `h.points` whose `h.times` value is ≤ t, with an extra final
+        point at `tip_point` (default = interp at t) so the trail
+        ends exactly under the marker. Swaps the new poly into the
+        line actor's mapper.
+
+        Cost is O(N) per call but N is the sample count of one
+        trajectory (typically <2000); rebuilding is cheaper than
+        clipping in OpenGL via per-vertex visibility, and avoids
+        keeping a duplicate vtkPoints around per frame."""
+        ts = h.times
+        # Number of samples in [t_start, t]; this is the count BEFORE
+        # we append the interpolated tip.
+        cut = int(np.searchsorted(ts, t, side="right"))
+        if cut < 1:
+            # Pre-start: draw an empty cell (one isolated point at t_min
+            # so the actor is valid but invisible).
+            cut = 1
+        tip = tip_point if tip_point is not None else self._interp_point(h, t)
+        # Build new geometry: cut points from the file + 1 interp tip.
+        # When t is past the last sample, cut == N and the tip equals
+        # the last sample -- the duplicate is harmless visually.
+        n_out = cut + 1
+        vpts = vtkPoints()
+        vpts.SetNumberOfPoints(n_out)
+        for i in range(cut):
+            x, y, z = h.points[i]
+            vpts.SetPoint(i, x, y, z)
+        vpts.SetPoint(cut, *tip)
+
+        polyline = vtkPolyLine()
+        polyline.GetPointIds().SetNumberOfIds(n_out)
+        for i in range(n_out):
+            polyline.GetPointIds().SetId(i, i)
+        cells = vtkCellArray()
+        cells.InsertNextCell(polyline)
+        poly = vtkPolyData()
+        poly.SetPoints(vpts)
+        poly.SetLines(cells)
+        h.line_actor.GetMapper().SetInputData(poly)
 
     def add_sun_arrow(self, direction: tuple[float, float, float],
                        length_km: float = 5.0 * MOON_RADIUS_KM,
