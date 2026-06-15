@@ -169,7 +169,7 @@ _UNASSIGNED = "(unassigned)"
 # the validation error when a value is out of range). Keys are the
 # dotted paths the form uses internally.
 _TOOLTIPS: dict[str, str] = {
-    "simulation.name":               "Human-readable scenario name (also drives batch case file names).",
+    "simulation.name":               "Human-readable scenario name. Drives single-run output names AND batch per-case file names (the form mirrors this into batch.name on emit).",
     "simulation.et_start_s":         "Start epoch in TDB seconds past J2000.",
     "simulation.duration_s":         "Propagation duration in seconds; > 0.",
     "spacecraft.mass_kg":            "Dry mass in kilograms; must be > 0.",
@@ -194,15 +194,13 @@ _TOOLTIPS: dict[str, str] = {
     "integrator.h_max_s":            "Maximum step size in seconds; > h_min_s.",
     "output.mode":                   "'fixed' = uniform interval_s sampling; 'step' = one record per accepted step.",
     "output.interval_s":             "Sample interval in seconds; required when mode = fixed.",
-    "output.output_dir":             "Parent directory for the per-run timestamp folder spody.exe creates at launch (<output_dir>/<UTC-ISO8601>/). Each run is self-contained: a snapshot of this TOML lands there as input.toml alongside all output files. Leave empty to write outputs to the TOML's own directory with no per-run folder.",
+    "output.output_dir":             "Parent directory for the per-run timestamp folder spody.exe creates at launch (<output_dir>/<UTC-ISO8601>/). Each run is self-contained: a snapshot of this TOML lands there as input.toml alongside all output files. Applies to BOTH single-run propagation and batch (the form mirrors this into batch.output_dir on emit). Leave empty to write outputs to the TOML's own directory with no per-run folder.",
     "output.csv_file":               "State vector CSV stream. Auto-named '<sim_name>_state_icrf.csv' under output_dir.",
     "output.bin_file":               "State vector binary stream (SPDYOUT_). Auto-named '<sim_name>_state_icrf.bin'.",
     "output.log_file":               "Tee stdout/stderr to a file. Auto-named '<sim_name>.log'.",
     "output.accelerations_file":     "Per-force acceleration breakdown (SPDYACC_). Auto-named '<sim_name>_acc_icrf.bin'.",
     "output.events_log":             "Event triggers binary. Per-run SPDYEVT_ ('<sim_name>_events.bin') in single-propagate; aggregated SPDYEVTB ('<batch_name>_events.bin') in batch.",
     "events.eclipse_threshold":      "Sunlight-fraction crossing that fires the eclipse event; in [0, 1].",
-    "batch.name":                    "Batch run name; drives the per-case output file names.",
-    "batch.output_dir":              "Existing directory; a 'batch/' subdir is auto-created inside it.",
     "batch.thread_number":           "1 = sequential. > 1 needs the OpenMP-enabled spody build.",
     "batch.cases_file":              "CSV (today) or .spody (future): one row per case, header = column names.",
 }
@@ -825,9 +823,14 @@ class TomlForm(QWidget):
 
         self._batch_box = QWidget()
         f = QFormLayout(self._batch_box)
-        self._add_string(f, "batch.name",          "name")
-        self._add_path  (f, "batch.output_dir",    "output_dir", "",
-                         pick_dir=True)
+        # `batch.name` and `batch.output_dir` used to live here as
+        # separate string / path widgets, doubling up the name and
+        # output-folder fields the user had already filled under
+        # [simulation] and [output]. They are now derived in to_dict
+        # from `simulation.name` and `output.output_dir`, so the form
+        # exposes exactly one name field and one output folder field
+        # regardless of whether the user is running a single
+        # propagation or a batch sweep.
         # Cap thread_number to the actual logical-CPU count of the
         # host. spody is CPU-bound numerical work, so oversubscribing
         # past the available cores is only ever slower; the validator
@@ -1889,6 +1892,21 @@ class TomlForm(QWidget):
             cols = self._batch_columns_to_dict()
             if cols:
                 result.setdefault("batch", {})["columns"] = cols
+            # Mirror the form's single name + output-folder fields
+            # into the batch section so spody.exe's batch dispatcher
+            # finds the keys where it expects them. The form used to
+            # show duplicate widgets here; the mirror keeps the on-
+            # disk TOML schema unchanged while the UI surfaces one
+            # field. Skip the mirror when the source field is empty
+            # so a missing simulation.name surfaces as the same
+            # validate error it always did, instead of being masked
+            # by an empty string in batch.name.
+            sim = result.get("simulation", {})
+            if isinstance(sim, dict) and sim.get("name"):
+                result.setdefault("batch", {})["name"] = sim["name"]
+            out = result.get("output", {})
+            if isinstance(out, dict) and out.get("output_dir"):
+                result.setdefault("batch", {})["output_dir"] = out["output_dir"]
 
         # Pass-through for any top-level section we don't render at all.
         for k, v in self._passthrough.items():
@@ -1916,6 +1934,15 @@ class TomlForm(QWidget):
             # in `cases_source_file`; their `cases_file` is the derived
             # copy (recomputed by to_dict) and we just drop it from the
             # flat view so it doesn't try to find a non-existent widget.
+            #
+            # Back-compat for the name/output-folder consolidation:
+            # legacy TOMLs (and hand-written ones) may carry
+            # `batch.name` / `batch.output_dir` without populating
+            # the matching `simulation.name` / `output.output_dir`.
+            # The form no longer renders separate batch widgets, so
+            # we promote the batch values into the unified slots
+            # when those are empty -- otherwise simulation.name
+            # would silently stay blank after a load.
             batch_in = data.get("batch")
             if isinstance(batch_in, dict):
                 batch_in = dict(batch_in)
@@ -1924,6 +1951,23 @@ class TomlForm(QWidget):
                             and "cases_source_file" not in batch_in):
                         batch_in["cases_source_file"] = batch_in["cases_file"]
                 batch_in.pop("cases_file", None)
+
+                sim_in = dict(data.get("simulation") or {})
+                if batch_in.get("name") and not sim_in.get("name"):
+                    sim_in["name"] = batch_in["name"]
+                    data = {**data, "simulation": sim_in}
+                out_in = dict(data.get("output") or {})
+                if batch_in.get("output_dir") and not out_in.get("output_dir"):
+                    out_in["output_dir"] = batch_in["output_dir"]
+                    data = {**data, "output": out_in}
+
+                # Drop name/output_dir from the batch view so the
+                # flat-load pass doesn't try to find a widget that
+                # no longer exists; the values are now resolved
+                # through simulation/output and will be re-emitted
+                # under batch by to_dict.
+                batch_in.pop("name", None)
+                batch_in.pop("output_dir", None)
                 data = {**data, "batch": batch_in}
 
             # Normalise [output]: the five stream paths in the TOML
