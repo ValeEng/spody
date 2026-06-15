@@ -431,6 +431,7 @@ class TomlForm(QWidget):
         body_lay.addWidget(self._build_output())
         body_lay.addWidget(self._build_events())
         body_lay.addWidget(self._build_batch())
+        body_lay.addWidget(self._build_notes())
         body_lay.addStretch(1)
         scroll.setWidget(body)
 
@@ -1285,6 +1286,37 @@ class TomlForm(QWidget):
     def _on_batch_toggled(self, checked: bool) -> None:
         self._batch_box.setVisible(checked)
 
+    def _build_notes(self) -> QGroupBox:
+        """Freeform notes attached to this TOML, emitted as a comment
+        block at the end of the file.
+
+        Purely metadata: spody.exe never reads the comments, and the
+        TOML schema itself stays clean (no synthetic `notes` key
+        polluting the document). The value is preserved verbatim in
+        the per-run input.toml snapshot inside each run folder, so a
+        user revisiting a result months later can still find what
+        they wrote when they launched it -- 'tuned h_max down 10x to
+        chase the LRO regression', 'sweep #3 with thread_number 16
+        after the OpenMP fix', etc.
+
+        The toml_io reader scans the file for the BEGIN / END marker
+        pair (`_NOTES_BEGIN` / `_NOTES_END`) and lifts the comment
+        body back into a `notes` string on the parsed dict; the
+        emitter does the inverse on save. A TOML edited by hand
+        keeps round-tripping as long as the markers stay intact.
+        """
+        g = QGroupBox("Notes  (optional, attached to this TOML)")
+        v = QVBoxLayout(g)
+        self._notes_edit = QPlainTextEdit()
+        self._notes_edit.setPlaceholderText(
+            "Freeform notes about this scenario. Stored as a "
+            "comment block at the end of the TOML; copied verbatim "
+            "into the per-run input.toml snapshot.")
+        self._notes_edit.setMinimumHeight(80)
+        self._notes_edit.textChanged.connect(self._touch)
+        v.addWidget(self._notes_edit)
+        return g
+
     # ------------------------------------------------------------------
     # [batch.columns] helpers
     # ------------------------------------------------------------------
@@ -1911,6 +1943,14 @@ class TomlForm(QWidget):
         # Pass-through for any top-level section we don't render at all.
         for k, v in self._passthrough.items():
             result.setdefault(k, v)
+
+        # Notes: top-level string, not a table, so it sits at the
+        # outermost scope rather than under any [section]. Emitted
+        # only when non-empty -- an empty note would leave a
+        # `notes = ""` artefact in every TOML the form produces.
+        notes_text = self._notes_edit.toPlainText().strip()
+        if notes_text:
+            result["notes"] = notes_text
         return result
 
     def load_from_dict(self, data: dict[str, Any]) -> None:
@@ -2041,6 +2081,13 @@ class TomlForm(QWidget):
                 cols_data = data.get("batch", {}).get("columns", {})
                 if isinstance(cols_data, dict):
                     self._apply_loaded_batch_columns(cols_data)
+
+            # Top-level `notes` string: optional, no section. Loaded
+            # outside the flat-section pass since _flatten_dotted is
+            # scoped to _FORM_OWNED_TOP sections and would lose it.
+            notes_raw = data.get("notes", "")
+            if isinstance(notes_raw, str):
+                self._notes_edit.setPlainText(notes_raw)
         finally:
             self._loading = False
         self.clear_modified()
@@ -2436,6 +2483,11 @@ class TomlForm(QWidget):
             elif isinstance(w, dict):    # checkbox set
                 for cb in w.values():
                     cb.setChecked(False)
+        # Notes: standalone widget outside self._widgets (top-level
+        # string, not a dotted-path field). Cleared here so a fresh
+        # load doesn't inherit the previous TOML's notes.
+        if hasattr(self, "_notes_edit"):
+            self._notes_edit.clear()
 
     def _widget_value(self, key: str, w: Any) -> Any:
         if isinstance(w, QLineEdit):

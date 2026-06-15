@@ -316,11 +316,83 @@ class MainWindow(QMainWindow):
         verdict = "OK" if exit_code == 0 else f"exit {exit_code}"
         self._status_run.setText(f"{verdict} ({elapsed:.1f}s)")
         self._terminal.append_line(f"[{verdict} in {elapsed:.1f}s]")
+        # On a successful run, stamp the engine's final status line
+        # into the notes block of the per-run input.toml snapshot so
+        # a user reopening the snapshot later sees how the run went
+        # alongside whatever they wrote before launching it.
+        if exit_code == 0:
+            self._stamp_run_notes(self._runner.last_line())
         # Refresh the Analysis tree so any new outputs from this run
         # appear without the user having to hit Refresh manually.
         current = self._form.current_path()
         if current is not None:
             self._analysis.set_working_dir(current.parent)
+
+    def _stamp_run_notes(self, last_engine_line: str) -> None:
+        """Append the engine's final stdout line to the notes block
+        of the per-run `input.toml` snapshot.
+
+        Modifies only the snapshot, NOT the source TOML the user is
+        editing -- the source must stay re-usable across many runs
+        without accumulating timing tails. The snapshot lives at
+        `<output_dir>/<UTC-ISO8601>/input.toml`; we locate the most
+        recently-modified subdir of the configured `output_dir` to
+        find it without parsing engine stdout.
+
+        Silent on every failure mode (missing output_dir, unreadable
+        snapshot, ...): the goal is a nice-to-have stamp, not a
+        guaranteed contract. The run already succeeded; we are not
+        going to flag a 'failed' status on a cosmetic post-step.
+        """
+        if not last_engine_line.strip():
+            return
+        try:
+            data = self._form.to_dict()
+        except ValueError:
+            return
+        out_dir_raw = (data.get("output", {}) or {}).get("output_dir", "")
+        if not isinstance(out_dir_raw, str) or not out_dir_raw:
+            return
+        # Resolve relative to the source TOML's directory, matching
+        # what spody.exe does when reading the same key.
+        out_dir = Path(out_dir_raw)
+        current = self._form.current_path()
+        if not out_dir.is_absolute() and current is not None:
+            out_dir = (current.parent / out_dir).resolve()
+        if not out_dir.is_dir():
+            return
+        # Latest UTC-ISO8601 subfolder by mtime == the run we just
+        # finished. Using mtime over name-parsing keeps us robust to
+        # whatever timestamp pattern spody happens to use today.
+        try:
+            subdirs = [p for p in out_dir.iterdir() if p.is_dir()]
+        except OSError:
+            return
+        if not subdirs:
+            return
+        snapshot_dir = max(subdirs, key=lambda p: p.stat().st_mtime)
+        snapshot = snapshot_dir / "input.toml"
+        if not snapshot.is_file():
+            return
+        from .toml_io import read_toml, write_toml
+        try:
+            snap_data = read_toml(snapshot)
+        except Exception:  # noqa: BLE001 -- best-effort, swallow
+            return
+        existing = snap_data.get("notes", "")
+        if not isinstance(existing, str):
+            existing = ""
+        # Append the engine line as a new paragraph. A blank line
+        # between the user's notes and the stamped line keeps the
+        # rendering clean when the snapshot is opened in any editor.
+        stamped = (existing.rstrip() + "\n\n" + last_engine_line.strip()
+                   if existing.strip()
+                   else last_engine_line.strip())
+        snap_data["notes"] = stamped
+        try:
+            write_toml(snapshot, snap_data)
+        except Exception:  # noqa: BLE001
+            return
 
     def _on_run_error(self, message: str) -> None:
         self._terminal.append_line(f"[runner error: {message}]")

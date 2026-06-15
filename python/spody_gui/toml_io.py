@@ -39,6 +39,14 @@ from typing import Any
 import tomli
 
 
+# Sentinel markers around the notes comment block at the bottom of
+# the emitted TOML. Distinctive enough not to collide with anything
+# the user is likely to write by hand; the reader bails silently when
+# either marker is missing so a TOML edited externally still parses.
+_NOTES_BEGIN = "# ---NOTES BEGIN---"
+_NOTES_END   = "# ---NOTES END---"
+
+
 # Canonical section order in emitted TOML files. Matches what the
 # example TOMLs use and what spody_load_input expects. Sections whose
 # data is empty (e.g. [events] not enabled) are skipped at emit time.
@@ -89,16 +97,37 @@ _KEY_ORDER: dict[str, tuple[str, ...]] = {
 def read_toml(path: Path) -> dict[str, Any]:
     """Parse a TOML file into a plain dict. Raises FileNotFoundError if
     missing, tomli.TOMLDecodeError on syntax errors -- the caller
-    surfaces both as a message box."""
-    with Path(path).open("rb") as fp:
-        return tomli.load(fp)
+    surfaces both as a message box.
+
+    A `notes` key is populated from the comment block delimited by
+    `_NOTES_BEGIN` / `_NOTES_END` at the end of the file, when
+    present. That comment-based round-trip lets the user keep
+    freeform notes attached to their scenario without polluting the
+    TOML schema with a `notes = "..."` field."""
+    raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    data = tomli.loads(raw)
+    notes = _extract_notes(raw)
+    if notes:
+        data["notes"] = notes
+    return data
 
 
 def format_toml(data: dict[str, Any]) -> str:
     """Render `data` as canonically-formatted TOML text (without
     writing it). Same emitter as `write_toml`, exposed standalone so
-    the GUI can show a live preview of what would be written."""
-    return _format_document(data)
+    the GUI can show a live preview of what would be written.
+
+    A `notes` key (string) in `data` is removed from the body and
+    appended as a comment block at the end of the document.
+    """
+    notes = ""
+    if isinstance(data.get("notes"), str):
+        notes = data["notes"]
+        data = {k: v for k, v in data.items() if k != "notes"}
+    body = _format_document(data)
+    if notes.strip():
+        body = body.rstrip() + "\n\n" + _format_notes_block(notes) + "\n"
+    return body
 
 
 def write_toml(path: Path, data: dict[str, Any]) -> None:
@@ -110,8 +139,46 @@ def write_toml(path: Path, data: dict[str, Any]) -> None:
     parent's scalar keys as `[parent.child]` sections. Empty sections
     (no scalar keys and no sub-tables) are skipped entirely so opting
     out of an optional block (events, batch, spacecraft.srp) just
-    means not putting it in the dict."""
+    means not putting it in the dict.
+
+    A top-level `notes` string is emitted as a comment block at the
+    end of the file (see `format_toml`).
+    """
     Path(path).write_text(format_toml(data), encoding="utf-8")
+
+
+def _format_notes_block(notes: str) -> str:
+    """Wrap `notes` text into the marker-delimited comment block
+    appended to the bottom of the TOML. Each input line becomes
+    `# <line>`; empty lines become a bare `#` so the user's blank-
+    line spacing round-trips."""
+    body_lines = []
+    for line in notes.splitlines():
+        body_lines.append(f"# {line}" if line else "#")
+    return _NOTES_BEGIN + "\n" + "\n".join(body_lines) + "\n" + _NOTES_END
+
+
+def _extract_notes(raw_text: str) -> str:
+    """Scan the raw TOML text for a notes block bounded by the
+    BEGIN/END markers. Returns the user-facing text (markers
+    stripped, each comment line's `# ` prefix removed) or `""` when
+    either marker is missing. Non-comment lines inside the block are
+    skipped silently -- a manually-edited TOML with stray content in
+    the middle still loads."""
+    lines = raw_text.splitlines()
+    try:
+        i_begin = lines.index(_NOTES_BEGIN)
+        i_end = lines.index(_NOTES_END, i_begin + 1)
+    except ValueError:
+        return ""
+    out: list[str] = []
+    for line in lines[i_begin + 1:i_end]:
+        if line.startswith("# "):
+            out.append(line[2:])
+        elif line == "#":
+            out.append("")
+        # else: not a comment line, ignore silently
+    return "\n".join(out)
 
 
 # ----------------------------------------------------------------------

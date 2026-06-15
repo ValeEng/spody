@@ -38,6 +38,11 @@ class SpodyRunner(QObject):
         self._buffer = ""
         self._start_time: float = 0.0
         self._end_time: float = 0.0
+        # Most-recent non-empty line emitted to line_received -- exposed
+        # so consumers (e.g. MainWindow when stamping the per-run notes
+        # block) can read what the engine reported as its final status
+        # without having to subscribe and hand-track it themselves.
+        self._last_line: str = ""
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -51,6 +56,7 @@ class SpodyRunner(QObject):
             return
 
         self._buffer = ""
+        self._last_line = ""
         self._start_time = time.monotonic()
         self._end_time = 0.0
 
@@ -91,6 +97,12 @@ class SpodyRunner(QObject):
         end = self._end_time if self._end_time > 0.0 else time.monotonic()
         return end - self._start_time
 
+    def last_line(self) -> str:
+        """Most-recent non-empty stdout line the engine produced.
+        Empty before the first line arrives and reset on each new
+        run; meaningful only after the `finished` signal fires."""
+        return self._last_line
+
     # ------------------------------------------------------------------
     # Qt signal handlers
     # ------------------------------------------------------------------
@@ -102,11 +114,15 @@ class SpodyRunner(QObject):
         # Emit complete lines; keep any trailing partial line for next call.
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
+            if line.strip():
+                self._last_line = line
             self.line_received.emit(line)
 
     def _on_finished(self, exit_code: int, _exit_status) -> None:
         # Flush any trailing partial line that did not end with newline.
         if self._buffer:
+            if self._buffer.strip():
+                self._last_line = self._buffer
             self.line_received.emit(self._buffer)
             self._buffer = ""
         self._end_time = time.monotonic()

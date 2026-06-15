@@ -1475,10 +1475,10 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
 def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
                          ctx: PlotContext | None = None) -> None:
     """Moon-centred view: grey sphere + yellow trajectory polyline +
-    green/red start/end markers + PA / ICRF reference triads. Camera
-    fitted to the trajectory. The polyline is *not* registered as
-    pickable here because picking one of one trajectory adds no
-    information.
+    green/red start/end markers + PA / ICRF reference triads + a
+    viewport legend explaining which marker is which. Camera fitted
+    to the trajectory. The polyline is *not* registered as pickable
+    here because picking one of one trajectory adds no information.
 
     `ctx` carries the per-run input.toml location, used to resolve
     the lunar libration angles at the trajectory's first sample so
@@ -1490,6 +1490,17 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     canvas.add_central_body()
     pts = np.column_stack([d["x"], d["y"], d["z"]])
     canvas.add_trajectory(pts)
+    # Two-line legend in the top-left of the viewport explaining the
+    # green / red endpoint markers VtkCanvas.add_trajectory drew. The
+    # colours below MUST match the literals in vtk_canvas.add_trajectory
+    # (start green = (0.0, 0.9, 0.0), end red = (0.95, 0.2, 0.2)); if
+    # either side drifts the user reads the wrong colour for 'start'
+    # or 'end'. add_legend now draws a real coloured disk swatch next
+    # to each label, so the bare 'start' / 'end' words are enough.
+    canvas.add_legend([
+        ("start", (0.0, 0.9, 0.0)),
+        ("end",   (0.95, 0.2, 0.2)),
+    ])
     # The trajectory IS in ICRF, so the ICRF triad is identity in
     # scene coords; the PA triad is rotated in from the libration
     # angles at the trajectory's start time.

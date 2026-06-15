@@ -50,6 +50,7 @@ from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData, vtkPolyLine
 from vtkmodules.vtkFiltersSources import (
     vtkArrowSource,
+    vtkRegularPolygonSource,
     vtkSphereSource,
     vtkTexturedSphereSource,
 )
@@ -59,9 +60,12 @@ from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
+    vtkActor2D,
     vtkBillboardTextActor3D,
+    vtkCoordinate,
     vtkGlyph3DMapper,
     vtkPolyDataMapper,
+    vtkPolyDataMapper2D,
     vtkPropPicker,
     vtkRenderer,
     vtkTextActor,
@@ -586,31 +590,82 @@ class VtkCanvas(QWidget):
                     max_label_chars: int = 36) -> None:
         """Multi-line legend in the top-left corner of the viewport.
 
-        `items` is a list of `(label, (r, g, b))`. Each line is rendered
-        in its own colour with a 2D text actor positioned in
-        normalised-viewport coordinates so it stays put on resize.
+        Each item produces a coloured 16-sided 2D disk swatch followed
+        by the label text on the same line, both in `items[i][1]`'s
+        colour. The disk is drawn as a `vtkActor2D` with a regular-
+        polygon source in display coordinates -- guaranteed visible
+        regardless of the bundled font's Unicode coverage (VTK's
+        Courier and Arial faces do not include U+25CF / U+2022, so
+        text-only bullet prefixes render as blanks).
+
         Long labels are middle-truncated to `max_label_chars` for
-        readability."""
+        readability.
+        """
         if not items:
             return
-        for i, (label, (r, g, b)) in enumerate(items):
+        for i, (label, color) in enumerate(items):
+            r, g, b = color
             text = label
             if len(text) > max_label_chars:
                 # Keep the last ~12 chars (usually the most informative
                 # part of a filename) plus an ellipsis from the start.
                 tail = max_label_chars - 4
                 text = "..." + text[-tail:]
+            y_norm = 0.97 - i * 0.035
+
+            # Coloured disk swatch on the left.
+            self._add_legend_dot(0.020, y_norm, color)
+
+            # Text label to the right of the swatch.
             actor = vtkTextActor()
             actor.SetInput(text)
             prop = actor.GetTextProperty()
             prop.SetColor(r, g, b)
             prop.SetFontSize(12)
-            prop.SetFontFamilyToCourier()
+            prop.SetFontFamilyToArial()
             prop.SetBold(True)
             coord = actor.GetPositionCoordinate()
             coord.SetCoordinateSystemToNormalizedViewport()
-            coord.SetValue(0.015, 0.97 - i * 0.035)
+            coord.SetValue(0.030, y_norm)
             self._renderer.AddActor2D(actor)
+
+    def _add_legend_dot(self, x_norm: float, y_norm: float,
+                          color: tuple[float, float, float],
+                          radius_px: float = 5.0) -> None:
+        """Filled 16-sided coloured disk used as a legend swatch.
+
+        Built with `vtkRegularPolygonSource` + `vtkPolyDataMapper2D`
+        / `vtkActor2D`. The mapper's transform coordinate is set to
+        Display, so the polygon's `radius` is interpreted as pixels;
+        the actor's position coordinate is normalised viewport, so
+        the swatch sticks to the legend's left edge across resizes.
+        """
+        poly = vtkRegularPolygonSource()
+        poly.SetNumberOfSides(16)
+        poly.SetRadius(radius_px)
+        poly.SetCenter(0.0, 0.0, 0.0)
+        poly.GeneratePolygonOn()
+
+        mapper = vtkPolyDataMapper2D()
+        mapper.SetInputConnection(poly.GetOutputPort())
+        # Without this the mapper interprets the polygon's vertex
+        # coordinates as world units, scaling the swatch with the
+        # camera (it disappears when the user zooms out the trajectory
+        # scene). Display = raw pixels, which is what we want for a
+        # fixed-size 2D overlay.
+        disp = vtkCoordinate()
+        disp.SetCoordinateSystemToDisplay()
+        mapper.SetTransformCoordinate(disp)
+
+        actor = vtkActor2D()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(*color)
+        pos = actor.GetPositionCoordinate()
+        pos.SetCoordinateSystemToNormalizedViewport()
+        # Nudge the dot down a touch so its centre sits on the text
+        # baseline rather than at the top of the line.
+        pos.SetValue(x_norm, y_norm + 0.008)
+        self._renderer.AddActor2D(actor)
 
     # ------------------------------------------------------------------
     # Camera
