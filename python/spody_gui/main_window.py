@@ -35,6 +35,7 @@ from PySide6.QtGui import QDesktopServices
 from . import assets
 from .about_dialog import show_about
 from .analysis_panel import AnalysisPanel
+from .rerun_panel import RerunPanel
 from .runner import SpodyRunner
 from .settings import SettingsDialog, SettingsStore
 from .setup_wizard import SetupWizard, require_data_ready
@@ -70,10 +71,16 @@ class MainWindow(QMainWindow):
         run_splitter.setSizes([640, 640])
 
         self._analysis = AnalysisPanel(self._store)
+        self._rerun    = RerunPanel(self._store)
+        # The rerun tab generates a new input.toml + cases.csv subset
+        # and asks us to launch `spody batch` on it; we forward to the
+        # existing Run path so the user sees the same form/terminal UI.
+        self._rerun.runRequested.connect(self._on_rerun_requested)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(run_splitter,    "Run")
         self._tabs.addTab(self._analysis,  "Analysis")
+        self._tabs.addTab(self._rerun,     "Re-run")
         self.setCentralWidget(self._tabs)
 
         # Runner: QProcess wrapper. Wired to the terminal and status bar.
@@ -297,6 +304,24 @@ class MainWindow(QMainWindow):
 
     def _action_stop(self) -> None:
         self._runner.stop()
+
+    def _on_rerun_requested(self, toml_path: Path) -> None:
+        """RerunPanel finalised a subset and wrote a new input.toml.
+        Load it into the form (so the user sees what's about to run),
+        switch to the Run tab, and kick off `spody batch`. Any failure
+        leaves the user on the Re-run tab with a message; nothing
+        partial gets launched."""
+        if self._runner.is_running():
+            QMessageBox.warning(self, "Re-run",
+                "A spody process is already running; stop it first.")
+            return
+        if not self._maybe_save():
+            return  # current form had unsaved edits and user cancelled
+        if not self._form.load_path(toml_path):
+            return  # form already showed a message box
+        self._on_form_loaded_or_saved(toml_path)
+        self._tabs.setCurrentIndex(0)  # Run tab
+        self._action_run("batch")
 
     def _on_run_started(self) -> None:
         self._a_validate.setEnabled(False)
