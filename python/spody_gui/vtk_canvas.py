@@ -82,9 +82,22 @@ import vtkmodules.vtkRenderingOpenGL2     # noqa: F401 -- side-effect import
 import vtkmodules.vtkRenderingFreeType    # noqa: F401 -- side-effect import
 
 
-# Mean radius of the Moon in km -- single source of truth for the
-# central-body sphere in v0 (Moon-only).
-MOON_RADIUS_KM = 1737.4
+# Mean radius of the Moon in km. Kept here for backwards-compat
+# with callers that imported it (analysis_panel, scene_options
+# documentation). Authoritative source is now spody_const.h,
+# parsed by `central_bodies._load_spody_const`; if you change the
+# value, change it there.
+#
+# Local import to avoid a hard analysis_panel -> vtk_canvas
+# circular at module load: VtkCanvas itself doesn't need the
+# constant, only re-exports it.
+def _moon_radius_km_fallback() -> float:
+    try:
+        from .central_bodies import MOON_RADIUS_KM as _R
+        return _R
+    except Exception:  # noqa: BLE001 -- circular / missing module
+        return 1737.4
+MOON_RADIUS_KM = _moon_radius_km_fallback()
 
 
 @dataclass

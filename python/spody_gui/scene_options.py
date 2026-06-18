@@ -131,8 +131,12 @@ class SceneOptionsDialog(QDialog):
             "ICRF triad (inertial, muted)",
             options.show_icrf_triad,
             lambda v: self._set("show_icrf_triad", v))
+        # Label rewritten by `set_body_frame_label` whenever a new
+        # run is loaded -- e.g. "PA triad + Moon libration" on the
+        # Moon, "ITRF triad + Earth rotation" on Earth. Generic
+        # text here is the fallback before the panel calls back.
         self._cb_pa = self._make_checkbox(
-            "PA triad + Moon libration (body-fixed, animated)",
+            "Body-fixed triad + central-body rotation (animated)",
             options.show_pa_triad,
             lambda v: self._set("show_pa_triad", v))
         lay_frames.addWidget(self._cb_icrf)
@@ -175,6 +179,17 @@ class SceneOptionsDialog(QDialog):
     # ------------------------------------------------------------------
     # External API
     # ------------------------------------------------------------------
+    def set_body_frame_label(self, body_name: str,
+                              frame_tag: str) -> None:
+        """Update the body-fixed triad checkbox label to reflect the
+        run's central body. Called by the analysis panel whenever a
+        new file is loaded (different TOML may have a different
+        central body, so 'PA + Moon libration' may need to become
+        'ITRF + Earth rotation')."""
+        self._cb_pa.setText(
+            f"{frame_tag} triad + {body_name} rotation "
+            f"(body-fixed, animated)")
+
     def set_available_bodies(self, body_names: list[str]) -> None:
         """Repopulate the per-body checkbox section. Called by the
         panel when a new run is loaded (different TOML may have a

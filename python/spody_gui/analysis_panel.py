@@ -86,6 +86,12 @@ from spody_io.headers import SPODY_EVTB_MAGIC
 from .settings import SettingsStore
 from .toml_io import read_toml
 from .animation_bar import AnimationBar
+from .central_bodies import (
+    CentralBodySpec,
+    MOON_MU_KM3_S2 as _MOON_MU_KM3S2_FALLBACK,
+    default_central_body,
+    resolve_central_body,
+)
 from .scene_options import SceneOptions, SceneOptionsDialog
 from .vtk_canvas import MOON_RADIUS_KM, VtkCanvas
 # spopy is the pure-Python re-implementation of the spody-core read
@@ -126,7 +132,7 @@ PlotFn3D = Callable[[VtkCanvas, np.ndarray], None]
 # Overlay variants take a list of (source path, data array) so they
 # can render N files together with a legend. Signature mirrors the
 # single-file ones modulo the items list.
-OverlayFn2D = Callable[[Axes,      list[tuple[Path, np.ndarray]]], None]
+OverlayFn2D = Callable[..., None]  # (ax, items[, ctx]) -> None
 OverlayFn3D = Callable[[VtkCanvas, list[tuple[Path, np.ndarray]]], None]
 
 
@@ -206,11 +212,12 @@ def _plot_traj_projection(ax: Axes, d: np.ndarray, a: str, b: str) -> None:
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
 
 
-# Gravitational parameter of the Moon (km^3/s^2). spody v0 only
-# supports the Moon as the central body, so this is also the only mu
-# the orbital-elements solver needs today. When more bodies land
-# (point G), thread mu through PlotSpec or read it from the binary.
-MU_MOON_KM3_S2 = 4902.800066
+# Fallback gravitational parameter used by `_orbital_elements` when
+# no PlotContext is available (bare .bin loaded without a snapshot).
+# The constant lives in central_bodies (sourced from spody_const.h
+# at import time). For the normal context-aware path we read
+# ctx.central_body.mu_km3_s2 instead -- see `_mu_from_ctx`.
+MU_MOON_KM3_S2 = _MOON_MU_KM3S2_FALLBACK
 
 
 def _orbital_elements(d: np.ndarray, mu: float = MU_MOON_KM3_S2
@@ -298,47 +305,64 @@ def _orbital_elements(d: np.ndarray, mu: float = MU_MOON_KM3_S2
     }
 
 
-def _plot_traj_a(ax: Axes, d: np.ndarray) -> None:
-    el = _orbital_elements(d)
+def _mu_from_ctx(ctx: "PlotContext | None") -> float:
+    """Pick the central-body GM for the orbital-elements solver.
+    Reads `ctx.central_body.mu_km3_s2` when ctx is available;
+    falls back to the Moon GM for legacy callers (bare .bin
+    loaded without a snapshot).  Wrong mu would visibly bias
+    `a` and skew `e`, hence the explicit ctx threading."""
+    if ctx is not None:
+        return ctx.central_body.mu_km3_s2
+    return MU_MOON_KM3_S2
+
+
+def _plot_traj_a(ax: Axes, d: np.ndarray,
+                  ctx: "PlotContext | None" = None) -> None:
+    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
     ax.plot(d["t"], el["a"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("a [km]")
     ax.set_title("Semi-major axis"); ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_e(ax: Axes, d: np.ndarray) -> None:
-    el = _orbital_elements(d)
+def _plot_traj_e(ax: Axes, d: np.ndarray,
+                  ctx: "PlotContext | None" = None) -> None:
+    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
     ax.plot(d["t"], el["e"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("e [-]")
     ax.set_title("Eccentricity"); ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_i(ax: Axes, d: np.ndarray) -> None:
-    el = _orbital_elements(d)
+def _plot_traj_i(ax: Axes, d: np.ndarray,
+                  ctx: "PlotContext | None" = None) -> None:
+    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
     ax.plot(d["t"], el["i"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("i [deg]")
     ax.set_title("Inclination"); ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_raan(ax: Axes, d: np.ndarray) -> None:
-    el = _orbital_elements(d)
+def _plot_traj_raan(ax: Axes, d: np.ndarray,
+                     ctx: "PlotContext | None" = None) -> None:
+    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
     ax.plot(d["t"], el["raan"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("Ω [deg]")
     ax.set_title("RAAN (right ascension of ascending node)")
     ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_aop(ax: Axes, d: np.ndarray) -> None:
-    el = _orbital_elements(d)
+def _plot_traj_aop(ax: Axes, d: np.ndarray,
+                    ctx: "PlotContext | None" = None) -> None:
+    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
     ax.plot(d["t"], el["aop"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("ω [deg]")
     ax.set_title("Argument of periapsis"); ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_nu(ax: Axes, d: np.ndarray) -> None:
+def _plot_traj_nu(ax: Axes, d: np.ndarray,
+                   ctx: "PlotContext | None" = None) -> None:
     # Per-revolution saw-tooth is the correct shape for the wrapped
     # true anomaly. On long propagations this gets visually busy;
     # the user can zoom in on the toolbar.
-    el = _orbital_elements(d)
+    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
     ax.plot(d["t"], el["nu"], lw=0.6)
     ax.set_xlabel("t [s]"); ax.set_ylabel("ν [deg]")
     ax.set_title("True anomaly"); ax.grid(True, alpha=0.3)
@@ -705,10 +729,19 @@ class PlotContext:
                        that instance through here, so a re-render
                        sees the current toggles without any rebuild
                        of this context.
+    `central_body`   : CentralBodySpec for the run's central body
+                       (radius, NAIF id, body-fixed frame name,
+                       orientation provider). Resolved from the
+                       snapshot TOML's `force_model.central_body`
+                       at file-load time; falls back to the Moon
+                       default when no snapshot is found. Plot
+                       fns use it instead of hardcoding Moon
+                       constants / labels.
     """
     path: Path
     moon_texture: Path | None = None
     scene_options: SceneOptions = field(default_factory=SceneOptions)
+    central_body: CentralBodySpec = field(default_factory=default_central_body)
 
 
 def _find_run_input_toml(events_path: Path) -> Path | None:
@@ -1455,10 +1488,12 @@ _USE_TRUE_RADII       = True
 _RADIUS_PER_DECADE_KM = 600.0
 _RADIUS_BASE_KM       = 150.0
 
-# Direction-arrow length in km. 3 lunar radii (~5200 km) puts the
-# arrow tip just outside a typical LRO orbit so the arrow is fully
-# visible at the default Moon-zoom but doesn't dwarf the orbit.
-_BODY_ARROW_LEN_KM = 3.0 * MOON_RADIUS_KM
+# Direction-arrow length in central-body radii. 3 * R_body puts the
+# arrow tip just outside a typical low-altitude orbit so the arrow
+# is fully visible at the default body-zoom but doesn't dwarf the
+# orbit. Multiplied by ctx.central_body.radius_km at call time so
+# the scale follows the body (Earth: ~19000 km, Moon: ~5200 km).
+_BODY_ARROW_LEN_RBODY = 3.0
 
 
 def _power_compress_positions(positions_km: np.ndarray,
@@ -1479,17 +1514,24 @@ def _power_compress_positions(positions_km: np.ndarray,
     return positions_km * ratio[:, None]
 
 
-def _body_marker_radius_km(name: str) -> float:
-    """Display radius for a body marker. Two modes selected at module
-    load by `_USE_TRUE_RADII`:
+def _body_marker_radius_km(name: str,
+                             ref_radius_km: float = MOON_RADIUS_KM
+                             ) -> float:
+    """Display radius for a third-body marker. Two modes selected at
+    module load by `_USE_TRUE_RADII`:
 
     * True: return the tabulated physical radius (km), so Sun -> ~696k
       km, Earth -> ~6371 km, etc. Correct relative to the bodies'
-      physical distances but invisible at LRO-orbit zoom unless the
+      physical distances but invisible at low-orbit zoom unless the
       camera is way out.
     * False: log-compress to `_RADIUS_BASE_KM + decades *
       _RADIUS_PER_DECADE_KM`, clamped to >= _RADIUS_BASE_KM. Order
-      is preserved; everything fits comfortably alongside the Moon.
+      is preserved; everything fits comfortably alongside the
+      central body.
+
+    `ref_radius_km` is the central body's mean radius (e.g. Moon
+    1737 km, Earth 6371 km). Used as the log reference so the
+    compressed sizes look comparable across central bodies.
 
     Unknown / un-tabulated body names always fall back to
     `_RADIUS_BASE_KM` so a marker still draws."""
@@ -1498,9 +1540,9 @@ def _body_marker_radius_km(name: str) -> float:
         return _RADIUS_BASE_KM
     if _USE_TRUE_RADII:
         return r_phys
-    if r_phys <= MOON_RADIUS_KM:
+    if r_phys <= ref_radius_km:
         return _RADIUS_BASE_KM
-    decades = math.log10(r_phys / MOON_RADIUS_KM)
+    decades = math.log10(r_phys / ref_radius_km)
     return _RADIUS_BASE_KM + decades * _RADIUS_PER_DECADE_KM
 
 
@@ -1508,11 +1550,11 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
                        times_s: np.ndarray,
                        only: set[str] | None = None) -> None:
     """Decorate the 3D scene with one animated marker per body in
-    `force_model.third_bodies`. Silent on every failure mode (missing
-    snapshot, non-Moon central body, ephemeris unreadable, unknown
-    body name) -- the goal is opt-in scene decoration, not a hard
-    contract. The spacecraft trajectory is rendered with or without
-    this overlay.
+    `force_model.third_bodies`. Body-agnostic: the central body's
+    NAIF id (from ctx.central_body) is the only thing that decides
+    "relative to whom" body positions are queried. Silent on every
+    failure mode (missing snapshot, ephemeris unreadable, unknown
+    body name) -- opt-in scene decoration, not a hard contract.
 
     `times_s` is the simulation time grid of the spacecraft trajectory
     (one entry per sample, seconds). We evaluate each body at exactly
@@ -1522,9 +1564,9 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
     if ctx is None:
         return
     info = _resolve_run_context(ctx.path)
-    if info is None or info["central_body"].lower() != "moon" \
-            or info["ephemeris_path"] is None:
+    if info is None or info["ephemeris_path"] is None:
         return
+    central_naif = ctx.central_body.naif_id
     # `_resolve_run_context` doesn't expose third_bodies today; re-read
     # the snapshot toml directly to avoid bloating its return shape
     # for a single caller.
@@ -1542,7 +1584,6 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
     except (OSError, ValueError):
         return
 
-    NAIF_MOON = 301
     et_start  = float(info["et_start_s"])
     n         = len(times_s)
     # spopy.position is per-call; ~few microseconds each, so 60 samples
@@ -1558,11 +1599,16 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
         naif = _BODY_NAIF.get(name)
         if naif is None:
             continue
+        if naif == central_naif:
+            # Defensive: a body declared both as central and third
+            # would have been rejected by sim_setup, but skip it
+            # here too so a manually-tweaked snapshot doesn't crash.
+            continue
         color = _BODY_COLORS.get(name, (0.85, 0.85, 0.85))
         pts_icrf = np.empty((n, 3), dtype=float)
         for i in range(n):
             try:
-                pts_icrf[i] = eph.position(NAIF_MOON, naif,
+                pts_icrf[i] = eph.position(central_naif, naif,
                                             et_start + float(times_s[i]))
             except (ValueError, IndexError):
                 # Single bad sample (e.g. ET outside ephemeris coverage):
@@ -1573,14 +1619,19 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
             continue
         # 1) Body sphere + orbital arc at true (or compressed) scale
         # so the body itself is in the scene -- visible if the user
-        # zooms out from the default Moon-centric view. Marked
+        # zooms out from the default body-zoom view. Marked
         # `is_decoration` so the camera auto-fit ignores it.
-        pts_display = _power_compress_positions(pts_icrf) \
+        # Compression and marker scaling are referenced to the
+        # central body's radius so the look is consistent across
+        # bodies (Moon, Earth, ...).
+        pts_display = _power_compress_positions(
+            pts_icrf, ref_radius_km=ctx.central_body.radius_km) \
             if _DIST_EXPONENT < 0.9999 else pts_icrf
         canvas.add_animated_trajectory(
             pts_display, np.asarray(times_s, dtype=float),
             color=color, line_width=1.2,
-            marker_radius_km=_body_marker_radius_km(name),
+            marker_radius_km=_body_marker_radius_km(
+                name, ref_radius_km=ctx.central_body.radius_km),
             is_decoration=True,
         )
         # 2) Fixed-length direction arrow anchored at the origin so
@@ -1594,7 +1645,8 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
         # tolerate.
         canvas.add_animated_arrow(
             np.asarray(times_s, dtype=float), pts_icrf,
-            color=color, length_km=_BODY_ARROW_LEN_KM,
+            color=color,
+            length_km=_BODY_ARROW_LEN_RBODY * ctx.central_body.radius_km,
             is_decoration=False,
         )
 
@@ -1603,27 +1655,34 @@ def _add_animated_pa_decoration(canvas: VtkCanvas, ctx: "PlotContext",
                                   times_s: np.ndarray,
                                   show_icrf: bool = True,
                                   show_pa:   bool = True) -> None:
-    """Drop the PA + ICRF triads AND bind a libration-driven
-    orientation on the Moon body, all wired into the playback bar.
+    """Drop the ICRF + body-fixed triads AND bind a libration-driven
+    orientation on the central body, all wired into the playback
+    bar.
 
     For the ICRF-aligned scene:
-      - ICRF triad: identity in scene coords, stays static (drawn
-        once as a non-animated decoration).
-      - PA triad: columns of R_pa_to_icrf(t). Animated via
-        `add_animated_frame_triad` -- rotates with the lunar
-        libration.
-      - Central body: rotated with R_pa_to_icrf(t) so the texture's
-        mascons + mares track the PA axes. Without this the axes
-        would visibly slide over a frozen lunar surface.
+      - ICRF triad: identity in scene coords, drawn once as a
+        static muted decoration.
+      - Body-fixed triad: columns of R_bf_in_icrf(t). Animated
+        via `add_animated_frame_triad` -- rotates with the body's
+        physical attitude (lunar libration for Moon, GMST/IAU for
+        Earth in the future, ...).
+      - Central body: rotated with R_bf_in_icrf(t) so the
+        texture's surface features track the body-fixed axes.
+        Without this the axes would visibly slide over a frozen
+        surface.
+
+    Body-agnostic: the triad axis labels and the orientation
+    provider come from `ctx.central_body.bf_frame_name` /
+    `bf_orientation`. When the spec has no orientation provider
+    (or the ephemeris is unreachable) we degrade to "just the
+    static ICRF triad" rather than crashing.
 
     The design is symmetric: when we eventually add a "scene_frame=
-    'pa'" mode the call site flips which frame gets which R sequence
-    (PA static at identity, ICRF animated with R_icrf_to_pa, body
-    identity-rotated), and every VtkCanvas API stays the same.
-
-    Silent on every failure mode (no snapshot, non-Moon central body,
-    unreadable ephemeris): we fall back to the static ICRF triad and
-    skip the libration animation, so the scene always renders."""
+    'pa'" mode the call site flips which frame gets which R
+    sequence (body-fixed static at identity, ICRF animated with
+    R_icrf_to_bf, body identity-rotated), and every VtkCanvas API
+    stays the same."""
+    body = ctx.central_body if ctx is not None else default_central_body()
     # ICRF triad is identity in this scene frame; draw it as the
     # static muted triad unless the user hid it.
     if show_icrf:
@@ -1632,52 +1691,54 @@ def _add_animated_pa_decoration(canvas: VtkCanvas, ctx: "PlotContext",
                        (0.55, 0.65, 0.90))
         canvas.add_frame_triad(
             basis_in_scene=np.eye(3),
-            length_km=1.80 * MOON_RADIUS_KM,
+            length_km=1.80 * body.radius_km,
             colors_xyz=icrf_colors,
             labels_xyz=("X_icrf", "Y_icrf", "Z_icrf"),
             opacity=0.25,
         )
 
-    if not show_pa or ctx is None:
+    if not show_pa or ctx is None or body.bf_orientation is None:
         return
     info = _resolve_run_context(ctx.path)
-    if info is None or info["central_body"].lower() != "moon" \
-            or info["ephemeris_path"] is None:
+    if info is None or info["ephemeris_path"] is None:
         return
 
-    from spopy import Ephemeris, icrf_to_moon_pa
+    # Local import: spopy only needed when an orientation provider
+    # actually exercises the ephemeris.
+    from spopy import Ephemeris
     try:
         eph = Ephemeris(str(info["ephemeris_path"]))
     except (OSError, ValueError):
         return
 
-    # Sample R_icrf_to_pa at each trajectory time; columns of its
-    # transpose are PA basis vectors expressed in ICRF, which is
-    # what add_animated_frame_triad expects for an ICRF-frame scene.
+    # Sample R_icrf_to_bf at each trajectory time; columns of its
+    # transpose are body-fixed axes expressed in ICRF -- what
+    # add_animated_frame_triad expects for an ICRF-frame scene.
     et_start = float(info["et_start_s"])
     n = len(times_s)
-    R_pa_in_icrf = np.empty((n, 3, 3), dtype=float)
+    R_bf_in_icrf = np.empty((n, 3, 3), dtype=float)
     for i in range(n):
         try:
-            angles = eph.lunar_libration_angles(et_start + float(times_s[i]))
+            R = body.bf_orientation(et_start + float(times_s[i]), eph)
         except (ValueError, IndexError):
-            return  # ET out of coverage; skip libration animation entirely
-        R_pa_in_icrf[i] = icrf_to_moon_pa(*angles).T
+            return  # ET out of coverage; skip animation entirely
+        R_bf_in_icrf[i] = np.asarray(R).T
 
     pa_colors = ((1.00, 0.30, 0.30),
                  (0.30, 0.95, 0.40),
                  (0.40, 0.55, 1.00))
+    frame_tag = body.bf_frame_name.lower()
     canvas.add_animated_frame_triad(
         np.asarray(times_s, dtype=float),
-        R_pa_in_icrf,
-        length_km=2.10 * MOON_RADIUS_KM,
+        R_bf_in_icrf,
+        length_km=2.10 * body.radius_km,
         colors_xyz=pa_colors,
-        labels_xyz=("X_pa", "Y_pa", "Z_pa"),
+        labels_xyz=(f"X_{frame_tag}", f"Y_{frame_tag}", f"Z_{frame_tag}"),
     )
-    # And rotate the Moon body with the SAME matrix sequence so the
-    # surface stays glued to the PA axes.
+    # Rotate the central body with the same R sequence so the
+    # surface stays glued to the body-fixed axes.
     canvas.set_central_body_animated_orientation(
-        np.asarray(times_s, dtype=float), R_pa_in_icrf)
+        np.asarray(times_s, dtype=float), R_bf_in_icrf)
 
 
 def _resolve_R_icrf_to_pa(ctx: "PlotContext", t_sim_s: float
@@ -1806,7 +1867,8 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     triad is drawn -- the convention is symmetric with the impact 3D
     view.
     """
-    canvas.add_central_body()
+    body = ctx.central_body if ctx is not None else default_central_body()
+    canvas.add_central_body(radius_km=body.radius_km)
     opts = ctx.scene_options if ctx is not None else SceneOptions()
     ts = d["t"].astype(float)
     legend_entries: list[tuple[str, tuple[float, float, float]]] = []
@@ -1821,8 +1883,8 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
         _add_third_bodies(canvas, ctx, ts, only=opts.show_bodies)
     if legend_entries:
         canvas.add_legend(legend_entries)
-    # Animated PA triad + Moon body libration; ICRF triad static.
-    # Per-frame toggles are honoured inside the helper.
+    # Animated body-fixed triad + central-body libration; ICRF triad
+    # static. Per-frame toggles honoured inside the helper.
     _add_animated_pa_decoration(canvas, ctx, ts,
                                   show_icrf=opts.show_icrf_triad,
                                   show_pa=opts.show_pa_triad)
@@ -1849,13 +1911,26 @@ def _make_2d_overlay(single_fn: PlotFn2D) -> OverlayFn2D:
 
     Only safe for plots that add **one** line per call (otherwise the
     label tagging picks the wrong line). The registry annotates which
-    `PlotSpec` entries qualify."""
-    def overlay(ax: Axes, items: list[tuple[Path, np.ndarray]]) -> None:
+    `PlotSpec` entries qualify.
+
+    Auto-detects whether `single_fn` accepts a `ctx` argument (via
+    `inspect.signature`) and forwards the overlay's context to it
+    when it does. Plot fns that don't take ctx (e.g. |r|(t)) stay
+    callable with their existing (ax, d) signature."""
+    import inspect
+    sig = inspect.signature(single_fn)
+    forwards_ctx = len(sig.parameters) >= 3
+
+    def overlay(ax: Axes, items: list[tuple[Path, np.ndarray]],
+                 ctx: "PlotContext | None" = None) -> None:
         n = len(items)
         colors = [_turbo_color(i, n) for i in range(n)]
         ax.set_prop_cycle(color=colors)
         for path, data in items:
-            single_fn(ax, data)
+            if forwards_ctx:
+                single_fn(ax, data, ctx)
+            else:
+                single_fn(ax, data)
             lines = ax.get_lines()
             if lines:
                 lines[-1].set_label(path.name)
@@ -1878,7 +1953,8 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
     the lunar libration evolves on a ~1-day scale so the cross-file
     discrepancy is visually negligible inside a single batch.
     """
-    canvas.add_central_body()
+    body = ctx.central_body if ctx is not None else default_central_body()
+    canvas.add_central_body(radius_km=body.radius_km)
     opts = ctx.scene_options if ctx is not None else SceneOptions()
     n = len(items)
     legend_items: list[tuple[str, tuple[float, float, float]]] = []
@@ -1900,6 +1976,7 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
             path=first_path,
             moon_texture=ctx.moon_texture if ctx else None,
             scene_options=opts,
+            central_body=ctx.central_body if ctx is not None else default_central_body(),
         )
         first_ts = first_data["t"].astype(float)
         if opts.show_third_bodies:
@@ -1960,24 +2037,29 @@ PLOTS: dict[str, list[PlotSpec]] = {
         # Derived from r, v. All single-line so overlay-safe out of the
         # box. See _orbital_elements for the degenerate-case handling
         # (equatorial / circular).
+        # mode="context" so the kepler solver gets the central body's
+        # mu from ctx.central_body.mu_km3_s2 instead of the Moon
+        # fallback. Critical for non-Moon runs (Earth's mu is ~80x
+        # larger -- using Moon's mu would skew `a` by ~80x and bias
+        # `e`).
         PlotSpec("Semi-major axis  a",          "2d", _plot_traj_a,
                  overlay_fn=_make_2d_overlay(_plot_traj_a),
-                 category="Orbital elements"),
+                 category="Orbital elements", mode="context"),
         PlotSpec("Eccentricity  e",             "2d", _plot_traj_e,
                  overlay_fn=_make_2d_overlay(_plot_traj_e),
-                 category="Orbital elements"),
+                 category="Orbital elements", mode="context"),
         PlotSpec("Inclination  i",              "2d", _plot_traj_i,
                  overlay_fn=_make_2d_overlay(_plot_traj_i),
-                 category="Orbital elements"),
+                 category="Orbital elements", mode="context"),
         PlotSpec("RAAN  Ω",                     "2d", _plot_traj_raan,
                  overlay_fn=_make_2d_overlay(_plot_traj_raan),
-                 category="Orbital elements"),
+                 category="Orbital elements", mode="context"),
         PlotSpec("Arg. periapsis  ω",           "2d", _plot_traj_aop,
                  overlay_fn=_make_2d_overlay(_plot_traj_aop),
-                 category="Orbital elements"),
+                 category="Orbital elements", mode="context"),
         PlotSpec("True anomaly  ν",             "2d", _plot_traj_nu,
                  overlay_fn=_make_2d_overlay(_plot_traj_nu),
-                 category="Orbital elements"),
+                 category="Orbital elements", mode="context"),
         # ----- Diff (pick 2 files) ------------------------------------
         # mode='diff' specs subtract B from A sample-by-sample. The
         # dispatcher requires exactly two files to be selected in the
@@ -2339,6 +2421,11 @@ class AnalysisPanel(QWidget):
         # the animation bar's "Scene..." button (see wiring below).
         self._scene_options = SceneOptions()
         self._scene_dialog: SceneOptionsDialog | None = None
+        # Central body resolved from the loaded run's snapshot
+        # TOML's `force_model.central_body`. Defaults to Moon so
+        # opening a bare .bin without a snapshot still renders
+        # something (the legacy assumption).
+        self._central_body: CentralBodySpec = default_central_body()
         # Backwards-compat shim: set_default_epoch still gets called
         # from MainWindow when a TOML is loaded. We no longer need
         # the epoch in the panel (the third-body markers compute
@@ -2748,28 +2835,27 @@ class AnalysisPanel(QWidget):
                                  "None of the selected files could be read.")
             return
 
+        # Same context for 2D and 3D overlays: the central body
+        # drives orbital-element mu (2D) AND triad/body/marker
+        # scaling (3D). Built once per dispatch.
+        ovl_ctx = PlotContext(
+            path=items[0][0],
+            moon_texture=self._configured_moon_texture(),
+            scene_options=self._scene_options,
+            central_body=self._central_body,
+        ) if items else None
         try:
             if spec.dim == "2d":
                 self._stack.setCurrentIndex(0)
                 self._figure.clear()
                 ax = self._figure.add_subplot(111)
-                spec.overlay_fn(ax, items)
+                spec.overlay_fn(ax, items, ovl_ctx)
                 self._figure.tight_layout()
                 self._canvas.draw_idle()
             else:  # "3d"
                 self._stack.setCurrentIndex(1)
                 self._vtk.set_central_body_texture(self._configured_moon_texture())
                 self._vtk.clear_scene()
-                # Build an overlay ctx so the 3D overlay sees the
-                # user's Scene-options selections (per-body filter,
-                # triad toggles). `path` is the first item's so the
-                # snapshot-derived helpers (third bodies, libration)
-                # all converge on one TOML.
-                ovl_ctx = PlotContext(
-                    path=items[0][0],
-                    moon_texture=self._configured_moon_texture(),
-                    scene_options=self._scene_options,
-                ) if items else None
                 spec.overlay_fn(self._vtk, items, ovl_ctx)
                 # Pin the rotation pivot on the central body so mouse-
                 # drag rotation keeps the Moon centred even when the
@@ -2819,6 +2905,11 @@ class AnalysisPanel(QWidget):
         # session shows the right rows without re-reading the file.
         self._table_model.set_array(data, _FIELD_DISPLAY_RENAME.get(kind))
 
+        # Resolve the central body from the run's snapshot TOML
+        # (force_model.central_body) so every 3D plot reads radius
+        # + frame name + orientation from one place. Falls back to
+        # the Moon spec when no snapshot is available.
+        self._central_body = self._resolve_central_body_from_snapshot()
         # Refresh the Scene-options dialog's body list with whatever
         # `force_model.third_bodies` is declared in this run's TOML
         # (silently no-op when the snapshot is missing or the dialog
@@ -3010,7 +3101,8 @@ class AnalysisPanel(QWidget):
         # (one file = one path) -- no need to re-build per subplot.
         ctx = (PlotContext(path=self._path,
                            moon_texture=self._configured_moon_texture(),
-                           scene_options=self._scene_options)
+                           scene_options=self._scene_options,
+                           central_body=self._central_body)
                if mode == "single" and self._path is not None
                else None)
 
@@ -3157,12 +3249,40 @@ class AnalysisPanel(QWidget):
         if rng is not None and rng[0] <= saved_t <= rng[1]:
             self._anim_bar.set_time(saved_t)
 
+    def _resolve_central_body_from_snapshot(self) -> CentralBodySpec:
+        """Read `force_model.central_body` from the loaded run's
+        snapshot TOML and resolve to a `CentralBodySpec`. Falls back
+        to `default_central_body()` (Moon) whenever the snapshot is
+        missing, the TOML is unreadable, or the body name is not
+        registered (legacy `.bin` files without a snapshot keep
+        rendering as before)."""
+        if self._path is None:
+            return default_central_body()
+        info = _resolve_run_context(self._path)
+        if info is None:
+            return default_central_body()
+        try:
+            cfg = read_toml(info["toml_path"])
+        except (OSError, ValueError):
+            return default_central_body()
+        name = cfg.get("force_model", {}).get("central_body", "")
+        spec = resolve_central_body(name) if isinstance(name, str) else None
+        return spec if spec is not None else default_central_body()
+
     def _refresh_scene_dialog_bodies(self) -> None:
         """Push the current run's `force_model.third_bodies` into
-        the Scene-options dialog so the per-body checkboxes match.
-        No-op when the dialog hasn't been opened yet or the snapshot
-        is missing."""
-        if self._scene_dialog is None or self._path is None:
+        the Scene-options dialog so the per-body checkboxes match,
+        and update the body-fixed triad label so it reads "PA + Moon
+        libration" / "ITRF + Earth rotation" / ... per the resolved
+        central body. No-op when the dialog hasn't been opened yet
+        or the snapshot is missing."""
+        if self._scene_dialog is None:
+            return
+        # Body-fixed triad label always reflects the resolved central
+        # body, even before bodies are loaded.
+        self._scene_dialog.set_body_frame_label(
+            self._central_body.name, self._central_body.bf_frame_name)
+        if self._path is None:
             return
         info = _resolve_run_context(self._path)
         if info is None:
@@ -3299,7 +3419,8 @@ class AnalysisPanel(QWidget):
         # whenever self._data is (set together in load_file).
         ctx = (PlotContext(path=self._path,
                            moon_texture=self._configured_moon_texture(),
-                           scene_options=self._scene_options)
+                           scene_options=self._scene_options,
+                           central_body=self._central_body)
                if spec.mode == "context" and self._path is not None
                else None)
         try:
