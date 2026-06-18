@@ -49,6 +49,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData, vtkPolyLine
+from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkFiltersHybrid import vtkPolyDataSilhouette
 from vtkmodules.vtkFiltersSources import (
     vtkArrowSource,
@@ -107,6 +108,63 @@ class _AnimHandle:
     color:            tuple[float, float, float] = (1.0, 0.85, 0.20)
 
 
+@dataclass
+class _AnimTriadHandle:
+    """One animated reference-frame triad: three arrow actors + three
+    optional billboard label actors, all anchored at `origin` and
+    rotated each tick so their axes align with the columns of
+    `R_sequence[idx]` (nearest-or-interpolated index of `times`).
+
+    `R_sequence` is (N, 3, 3); columns are the frame's local axes
+    expressed in scene coordinates. The API stays agnostic about
+    WHICH frame this is -- today we use it for the PA triad in an
+    ICRF scene (R = R_pa_to_icrf), but a future "switch scene frame"
+    mode would feed the ICRF triad's R_icrf_to_pa here without any
+    other code change."""
+    times:        "np.ndarray"        # noqa: F821
+    R_sequence:   "np.ndarray"        # noqa: F821, (N, 3, 3)
+    arrow_actors: list                # exactly 3 vtkActor (or None per axis)
+    label_actors: list                # 3 vtkBillboardTextActor3D or None each
+    length_km:    float
+    origin:       "np.ndarray"        # noqa: F821, (3,)
+    has_labels:   bool
+
+
+@dataclass
+class _AnimBodyHandle:
+    """The central body, with a time-varying orientation. Each tick
+    rewrites the actor's UserMatrix from `R_sequence[idx]` so the
+    texture (lunar mascons, prime meridian, ...) tracks the body's
+    physical attitude.
+
+    Same design rationale as `_AnimTriadHandle`: the R sequence is
+    "this body's axes in scene coordinates". In ICRF scene with a
+    librating Moon, R = R_pa_to_icrf. In a future PA scene the body
+    would be identity (R = I) and the satellite trajectory would
+    instead be rotated per-tick."""
+    times:      "np.ndarray"          # noqa: F821
+    R_sequence: "np.ndarray"          # noqa: F821, (N, 3, 3)
+    actor:      vtkActor
+
+
+@dataclass
+class _AnimArrowHandle:
+    """One animated direction arrow: an arrow actor anchored at the
+    scene origin with a fixed length, whose orientation is rewritten
+    each tick to point toward the (interpolated) body position. Used
+    for third-body indicators (Sun, Earth, planets) so the user
+    always sees WHICH WAY the body is, even when the body itself
+    sits 150M km out of frame at the default zoom-on-Moon view.
+
+    `positions` is the body's full physical km position over time;
+    only the direction is consumed when re-orienting the arrow.
+    Length is baked into the actor's scale at creation, so it stays
+    constant during animation."""
+    times:       "np.ndarray"      # noqa: F821
+    positions:   "np.ndarray"      # noqa: F821, Nx3 km in scene frame
+    arrow_actor: vtkActor
+
+
 class VtkCanvas(QWidget):
     """Qt widget hosting a single VTK renderer. Stateless wrt to which
     file is currently shown -- `clear_scene` followed by add_*() calls
@@ -117,12 +175,61 @@ class VtkCanvas(QWidget):
         self._interactor = QVTKRenderWindowInteractor(self)
         self._render_window = self._interactor.GetRenderWindow()
 
+        # Two layered renderers, Cesium-multi-frustum style. The depth
+        # buffer's 24 bits can't span 1737 km (Moon) and 150,000,000
+        # km (Sun) at once without z-fighting -- so each layer keeps
+        # its own depth scope, tight on what IT contains, and the two
+        # layers are composited (layer 0 first, then layer 1 on top
+        # with EraseOff so layer 0's pixels survive where layer 1 has
+        # no geometry).
+        #
+        #   layer 0 (back)  -- decoration: third-body spheres &
+        #                      polylines at TRUE physical scale.
+        #                      Wide clipping; bad depth precision
+        #                      doesn't matter (bodies don't intersect).
+        #   layer 1 (front) -- primary: Moon, spacecraft trajectories,
+        #                      direction arrows, frame triads.
+        #                      Tight clipping; full depth precision
+        #                      where it matters.
+        #
+        # The interactor talks to layer 1 only; layer 0's camera is
+        # slaved to it via the ModifiedEvent observer below so the
+        # two stay in the same pose.
+        self._render_window.SetNumberOfLayers(2)
+
+        self._renderer_far = vtkRenderer()
+        self._renderer_far.SetLayer(0)
+        self._renderer_far.SetBackground(0.06, 0.07, 0.10)
+        self._renderer_far.SetInteractive(0)
+        self._render_window.AddRenderer(self._renderer_far)
+
         self._renderer = vtkRenderer()
-        self._renderer.SetBackground(0.06, 0.07, 0.10)   # near-black; matches the terminal pane
+        self._renderer.SetLayer(1)
+        # Preserve the color buffer between layer 0 and layer 1 so
+        # the body sphere pixels from layer 0 survive in regions
+        # where layer 1 has no geometry. The depth buffer, on the
+        # other hand, MUST be cleared (PreserveDepthBufferOff = the
+        # default): layer 0's depth values are in a much wider
+        # frustum (~150M km), and reusing them would make every
+        # layer-1 fragment fail the depth test against random
+        # leftover values. With fresh depth, layer 1 just composes
+        # in front of layer 0's color -- exactly the "primary always
+        # on top" semantic we want.
+        self._renderer.SetPreserveColorBuffer(1)
         self._render_window.AddRenderer(self._renderer)
 
         style = vtkInteractorStyleTrackballCamera()
+        style.SetDefaultRenderer(self._renderer)
         self._interactor.SetInteractorStyle(style)
+
+        # Slave the far camera to the top camera. ModifiedEvent fires
+        # on every position/focal/up/angle change (interactor drag,
+        # ResetCamera, SetFocalPoint, ...). The sync writes only to
+        # the FAR camera and the FAR renderer, so the observer never
+        # loops back to itself.
+        self._syncing_cameras = False
+        self._renderer.GetActiveCamera().AddObserver(
+            "ModifiedEvent", self._on_top_camera_modified)
 
         # Corner triad: independent of scene scale, always visible.
         self._axes_actor = vtkAxesActor()
@@ -146,7 +253,14 @@ class VtkCanvas(QWidget):
         # one moving marker + (optionally) clip its trail polyline. The
         # `_trail_enabled` flag below switches every handle on or off in
         # a single call from the animation bar above the canvas.
-        self._anim_handles: list[_AnimHandle] = []
+        self._anim_handles: list[_AnimHandle]       = []
+        self._anim_arrows:  list[_AnimArrowHandle]  = []
+        self._anim_triads:  list[_AnimTriadHandle]  = []
+        self._anim_body:    _AnimBodyHandle | None  = None
+        # Central body actor stash so set_central_body_animated_
+        # orientation can find it without the caller passing it back.
+        # add_central_body sets this; clear_scene resets it.
+        self._central_body_actor: vtkActor | None = None
         self._trail_enabled: bool = False
         self._interactor.AddObserver(
             "LeftButtonReleaseEvent", self._on_left_button_release
@@ -174,9 +288,14 @@ class VtkCanvas(QWidget):
         Picking state and animation handles are also cleared so stale
         actor refs don't leak."""
         self._renderer.RemoveAllViewProps()
+        self._renderer_far.RemoveAllViewProps()
         self._trajectory_actors.clear()
         self._highlighted_actor = None
         self._anim_handles.clear()
+        self._anim_arrows.clear()
+        self._anim_triads.clear()
+        self._anim_body = None
+        self._central_body_actor = None
 
     def set_central_body_texture(self, path: Path | None) -> None:
         """Default equirectangular texture used by subsequent
@@ -230,7 +349,13 @@ class VtkCanvas(QWidget):
             actor.GetProperty().SetColor(*color)
             actor.GetProperty().SetAmbient(0.30)
             actor.GetProperty().SetDiffuse(0.70)
+        # Central body is primary by definition -- it lives on the
+        # top (sharp) layer so its silhouette never gets z-fought by
+        # a far-away body sphere.
         self._renderer.AddActor(actor)
+        # Stash so set_central_body_animated_orientation can later
+        # bind a libration animation onto it.
+        self._central_body_actor = actor
 
     @staticmethod
     def _make_image_reader(path: Path):
@@ -364,7 +489,9 @@ class VtkCanvas(QWidget):
                                  times_s: np.ndarray,
                                  color: tuple[float, float, float] = (1.0, 0.85, 0.20),
                                  line_width: float = 2.0,
-                                 source_path: Path | None = None) -> None:
+                                 source_path: Path | None = None,
+                                 marker_radius_km: float | None = None,
+                                 is_decoration: bool = False) -> None:
         """Like `add_trajectory` but also registers an animation
         handle: a coloured sphere marker (sized to ~1% of the scene
         diagonal, ≥2 km) that `set_animation_time` slides along the
@@ -409,7 +536,8 @@ class VtkCanvas(QWidget):
         line_actor.SetMapper(mapper)
         line_actor.GetProperty().SetColor(*color)
         line_actor.GetProperty().SetLineWidth(line_width)
-        self._renderer.AddActor(line_actor)
+        target_renderer = self._renderer_far if is_decoration else self._renderer
+        target_renderer.AddActor(line_actor)
 
         # --- Moving marker sphere -------------------------------------
         # The marker is intentionally oversized vs the trajectory's
@@ -417,8 +545,11 @@ class VtkCanvas(QWidget):
         # Ambient=1 + LightingOff -- it reads as a glowing puck in the
         # otherwise scene-lit-from-the-Sun rendering, so it stands out
         # against both the dark background and the Moon surface.
-        diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
-        marker_r = max(diag * 0.030, 8.0)
+        if marker_radius_km is not None:
+            marker_r = float(marker_radius_km)
+        else:
+            diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+            marker_r = max(diag * 0.030, 8.0)
         sphere = vtkSphereSource()
         sphere.SetRadius(marker_r)
         sphere.SetThetaResolution(24)
@@ -433,7 +564,7 @@ class VtkCanvas(QWidget):
         marker.GetProperty().SetDiffuse(0.0)
         marker.GetProperty().LightingOff()
         marker.SetPosition(*pts[0])            # park at start until first tick
-        self._renderer.AddActor(marker)
+        target_renderer.AddActor(marker)
 
         # --- White silhouette outline ---------------------------------
         # vtkPolyDataSilhouette emits the apparent-contour edges of the
@@ -444,6 +575,9 @@ class VtkCanvas(QWidget):
         # lockstep with the sphere -- one SetPosition call per tick.
         silhouette = vtkPolyDataSilhouette()
         silhouette.SetInputConnection(sphere.GetOutputPort())
+        # Silhouette uses the TOP camera's POV; far renderer's camera
+        # is slaved to it so the contour is consistent regardless of
+        # which layer the actor lives on.
         silhouette.SetCamera(self._renderer.GetActiveCamera())
         silhouette.SetEnableFeatureAngle(0)
         s_mapper = vtkPolyDataMapper()
@@ -454,7 +588,7 @@ class VtkCanvas(QWidget):
         silhouette_actor.GetProperty().SetLineWidth(2.5)
         silhouette_actor.GetProperty().LightingOff()
         silhouette_actor.SetPosition(*pts[0])
-        self._renderer.AddActor(silhouette_actor)
+        target_renderer.AddActor(silhouette_actor)
 
         if source_path is not None:
             self._trajectory_actors.append((line_actor, source_path))
@@ -470,18 +604,188 @@ class VtkCanvas(QWidget):
         if self._trail_enabled:
             self._refresh_trail_poly(self._anim_handles[-1], ts[0])
 
+    def add_animated_arrow(self, times_s: np.ndarray,
+                            positions_km: np.ndarray,
+                            color: tuple[float, float, float],
+                            length_km: float,
+                            is_decoration: bool = False) -> None:
+        """Add a fixed-length direction arrow anchored at the origin
+        that, on every `set_animation_time(t)` call, re-orients to
+        point toward the (linearly interpolated) `positions_km` value
+        at time `t`. Used for third-body indicators: even when Earth
+        sits at 384k km and Sun at 150M km (far outside the
+        Moon-zoom default viewport), the arrows tell the user where
+        each body is relative to the central body.
+
+        `length_km` is the arrow's scene-units length and stays
+        constant; only orientation animates. Arrows default to
+        `is_decoration=False`: they belong on the sharp top layer
+        with the Moon and the orbit (UI indicators sharing the same
+        tight clip range), even when they POINT at far-away decoration
+        bodies. The animation bar's [t_min, t_max] is the union
+        across handles + arrows, so arrows alone (no animated
+        trajectory) still light up the bar."""
+        n = len(times_s)
+        if n < 1 or len(positions_km) != n:
+            return
+        ts  = np.asarray(times_s,     dtype=float)
+        pos = np.asarray(positions_km, dtype=float)
+        # Initial orientation toward positions[0]. _make_arrow_actor
+        # bakes scale + rotation + translation into the actor's
+        # transform; we then RESET orientation on every tick before
+        # applying the new rotation so it doesn't accumulate.
+        actor = self._make_arrow_actor(
+            origin_km=(0.0, 0.0, 0.0),
+            direction=tuple(pos[0]),
+            length_km=float(length_km),
+            color=color,
+            shaft_radius=0.015,
+            tip_radius=0.045,
+            tip_length=0.18,
+        )
+        # Make the arrow read against the dark background without
+        # needing a scene light to hit it.
+        actor.GetProperty().SetAmbient(1.0)
+        actor.GetProperty().SetDiffuse(0.0)
+        actor.GetProperty().LightingOff()
+        target_renderer = self._renderer_far if is_decoration else self._renderer
+        target_renderer.AddActor(actor)
+        self._anim_arrows.append(_AnimArrowHandle(
+            times=ts, positions=pos, arrow_actor=actor))
+
+    def add_animated_frame_triad(self, times_s: np.ndarray,
+                                   R_sequence: np.ndarray,
+                                   origin_km: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                                   length_km: float = 1.4 * MOON_RADIUS_KM,
+                                   colors_xyz: tuple[tuple[float, float, float], ...] = (
+                                       (1.0, 0.25, 0.25),
+                                       (0.30, 0.95, 0.35),
+                                       (0.35, 0.55, 1.00)),
+                                   labels_xyz: tuple[str, str, str] | None = None,
+                                   label_size: int = 16,
+                                   shaft_radius: float = 0.006,
+                                   tip_radius: float = 0.022,
+                                   tip_length: float = 0.10,
+                                   opacity: float = 1.0,
+                                   is_decoration: bool = False) -> None:
+        """Time-varying analogue of `add_frame_triad`. `R_sequence`
+        is (N, 3, 3) with columns = local axes expressed in scene
+        coordinates at each `times_s[i]`. On every `set_animation_time`
+        call we interpolate the rotation matrix and re-orient the
+        three arrow actors (and reposition the three labels).
+
+        The frame-switch agnostic design: today this draws the PA
+        triad in an ICRF scene with R = R_pa_to_icrf; a future PA
+        scene would pass R = R_icrf_to_pa for an animated ICRF triad,
+        no other code change needed."""
+        n = len(times_s)
+        if n < 1 or len(R_sequence) != n:
+            return
+        ts  = np.asarray(times_s,    dtype=float)
+        Rs  = np.asarray(R_sequence, dtype=float)
+        if Rs.shape != (n, 3, 3):
+            raise ValueError(
+                f"R_sequence must be (N, 3, 3), got {Rs.shape}")
+        origin = np.asarray(origin_km, dtype=float)
+        target_renderer = self._renderer_far if is_decoration else self._renderer
+
+        # Build the three arrows from the initial pose. Each arrow's
+        # orientation is rewritten on every tick; only the scale and
+        # the per-axis color stay constant.
+        arrow_actors: list[vtkActor | None] = []
+        label_actors: list = []
+        R0 = Rs[0]
+        for axis_idx in range(3):
+            direction = R0[:, axis_idx]
+            norm = float(np.linalg.norm(direction))
+            if norm < 1.0e-12:
+                arrow_actors.append(None)
+                label_actors.append(None)
+                continue
+            direction = direction / norm
+            color = colors_xyz[axis_idx]
+            arrow = self._make_arrow_actor(
+                origin_km=tuple(origin),
+                direction=tuple(direction),
+                length_km=length_km,
+                color=color,
+                shaft_radius=shaft_radius,
+                tip_radius=tip_radius,
+                tip_length=tip_length,
+            )
+            if opacity < 1.0:
+                arrow.GetProperty().SetOpacity(opacity)
+            target_renderer.AddActor(arrow)
+            arrow_actors.append(arrow)
+
+            if labels_xyz is not None:
+                tip = origin + direction * length_km * 1.05
+                label = self._make_text_label(
+                    tip, labels_xyz[axis_idx], color, label_size)
+                if opacity < 1.0:
+                    label.GetTextProperty().SetOpacity(opacity)
+                target_renderer.AddActor(label)
+                label_actors.append(label)
+            else:
+                label_actors.append(None)
+
+        self._anim_triads.append(_AnimTriadHandle(
+            times=ts, R_sequence=Rs,
+            arrow_actors=arrow_actors,
+            label_actors=label_actors,
+            length_km=length_km,
+            origin=origin,
+            has_labels=labels_xyz is not None,
+        ))
+
+    def set_central_body_animated_orientation(self, times_s: np.ndarray,
+                                                R_sequence: np.ndarray
+                                                ) -> None:
+        """Bind a time-varying orientation onto the central body
+        actor previously installed by `add_central_body`. Each tick
+        rewrites the actor's UserMatrix from `R_sequence[idx]`, so
+        the texture (Moon's prime meridian, mascons, mares) tracks
+        the body's physical attitude alongside the PA triad.
+
+        Without this, animating the PA triad would visibly desync
+        from the lunar surface features -- the axes would spin over a
+        frozen surface. Calling this from the same plot function that
+        adds the animated triad keeps the two perfectly in lockstep.
+
+        No-op when add_central_body wasn't called first."""
+        if self._central_body_actor is None:
+            return
+        n = len(times_s)
+        if n < 1 or len(R_sequence) != n:
+            return
+        Rs = np.asarray(R_sequence, dtype=float)
+        if Rs.shape != (n, 3, 3):
+            raise ValueError(
+                f"R_sequence must be (N, 3, 3), got {Rs.shape}")
+        self._anim_body = _AnimBodyHandle(
+            times=np.asarray(times_s, dtype=float),
+            R_sequence=Rs,
+            actor=self._central_body_actor,
+        )
+
     def has_animations(self) -> bool:
-        return bool(self._anim_handles)
+        return (bool(self._anim_handles) or bool(self._anim_arrows)
+                or bool(self._anim_triads) or self._anim_body is not None)
 
     def animation_time_range(self) -> tuple[float, float] | None:
         """(t_min, t_max) across every registered handle, or None when
         nothing animated is in the scene. The slider above the canvas
         uses this to map its 0..1 position to sim-time, and the play
         button stops when t reaches t_max."""
-        if not self._anim_handles:
+        if not self.has_animations():
             return None
-        t_min = min(float(h.times[0])  for h in self._anim_handles)
-        t_max = max(float(h.times[-1]) for h in self._anim_handles)
+        all_times: list[np.ndarray] = [h.times for h in self._anim_handles] \
+                                    + [a.times for a in self._anim_arrows] \
+                                    + [t.times for t in self._anim_triads]
+        if self._anim_body is not None:
+            all_times.append(self._anim_body.times)
+        t_min = min(float(ts[0])  for ts in all_times if len(ts))
+        t_max = max(float(ts[-1]) for ts in all_times if len(ts))
         return t_min, t_max
 
     def set_trail_enabled(self, enabled: bool) -> None:
@@ -516,25 +820,124 @@ class VtkCanvas(QWidget):
             h.silhouette_actor.SetPosition(*pos)
             if self._trail_enabled:
                 self._refresh_trail_poly(h, t_s, tip_point=pos)
+        for a in self._anim_arrows:
+            # Interpolated body position; arrows only consume direction.
+            d = self._interp_xyz(a.times, a.positions, t_s)
+            self._orient_arrow_to(a.arrow_actor, d)
+        for tr in self._anim_triads:
+            R_now = self._interp_R(tr.times, tr.R_sequence, t_s)
+            for axis_idx in range(3):
+                arrow = tr.arrow_actors[axis_idx]
+                if arrow is None:
+                    continue
+                axis = R_now[:, axis_idx]
+                norm = float(np.linalg.norm(axis))
+                if norm < 1.0e-12:
+                    continue
+                axis_unit = axis / norm
+                self._orient_arrow_to(arrow, axis_unit)
+                if tr.has_labels and tr.label_actors[axis_idx] is not None:
+                    tip = tr.origin + axis_unit * tr.length_km * 1.05
+                    tr.label_actors[axis_idx].SetPosition(*tip)
+        if self._anim_body is not None:
+            R_now = self._interp_R(self._anim_body.times,
+                                    self._anim_body.R_sequence, t_s)
+            self._apply_rotation_matrix(self._anim_body.actor, R_now)
 
     @staticmethod
-    def _interp_point(h: _AnimHandle, t: float) -> np.ndarray:
-        """Linear interpolation of `h.points` at sim time `t`. Clamps
-        to endpoints when outside the handle's time range. The output
-        stride from spody.exe is typically 60 s, far smaller than
-        anything visually relevant -- linear interp is more than
-        enough; cubic spline would only chew CPU."""
-        ts = h.times
-        if t <= ts[0]:
-            return h.points[0]
-        if t >= ts[-1]:
-            return h.points[-1]
-        # searchsorted returns the index where `t` would be inserted;
-        # the previous index is the lower neighbour we want.
-        idx = int(np.searchsorted(ts, t)) - 1
-        t0, t1 = float(ts[idx]), float(ts[idx + 1])
+    def _interp_xyz(times: np.ndarray, points: np.ndarray,
+                     t: float) -> np.ndarray:
+        """Linear interpolation of `points` at sim time `t`. Clamps
+        to endpoints outside `times`. The output stride from
+        spody.exe is typically 60 s, far smaller than anything
+        visually relevant -- linear is enough; spline would just
+        chew CPU. Used by both trajectory markers and direction
+        arrows."""
+        if t <= times[0]:
+            return points[0]
+        if t >= times[-1]:
+            return points[-1]
+        idx = int(np.searchsorted(times, t)) - 1
+        t0, t1 = float(times[idx]), float(times[idx + 1])
         alpha = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
-        return h.points[idx] + alpha * (h.points[idx + 1] - h.points[idx])
+        return points[idx] + alpha * (points[idx + 1] - points[idx])
+
+    @classmethod
+    def _interp_point(cls, h: _AnimHandle, t: float) -> np.ndarray:
+        return cls._interp_xyz(h.times, h.points, t)
+
+    @staticmethod
+    def _interp_R(times: np.ndarray, R_sequence: np.ndarray,
+                   t: float) -> np.ndarray:
+        """Interpolated rotation matrix at sim time `t`. Linear
+        component-wise interp between adjacent samples followed by
+        Gram-Schmidt re-orthonormalisation -- proper slerp would
+        cost more for no visible difference at the libration's slow
+        rate (~0.5 deg per minute). Clamps to endpoints outside the
+        sampled range."""
+        if t <= times[0]:
+            return R_sequence[0]
+        if t >= times[-1]:
+            return R_sequence[-1]
+        idx = int(np.searchsorted(times, t)) - 1
+        t0, t1 = float(times[idx]), float(times[idx + 1])
+        alpha = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+        R = R_sequence[idx] + alpha * (R_sequence[idx + 1] - R_sequence[idx])
+        # Re-orthonormalise columns; a linearly-interpolated rotation
+        # matrix is not strictly orthogonal, and feeding it to
+        # _orient_arrow_to / SetUserMatrix would amplify a tiny
+        # scaling error after many ticks.
+        c0 = R[:, 0]; n0 = np.linalg.norm(c0)
+        if n0 < 1.0e-12:
+            return R_sequence[idx]
+        c0 = c0 / n0
+        c1 = R[:, 1] - np.dot(R[:, 1], c0) * c0
+        n1 = np.linalg.norm(c1)
+        if n1 < 1.0e-12:
+            return R_sequence[idx]
+        c1 = c1 / n1
+        c2 = np.cross(c0, c1)
+        return np.column_stack((c0, c1, c2))
+
+    @staticmethod
+    def _apply_rotation_matrix(actor: vtkActor,
+                                 R: np.ndarray) -> None:
+        """Set `actor`'s UserMatrix to a pure rotation (R, no
+        translation, no scale). Replaces any previous UserMatrix on
+        the actor. Used by the central-body libration animation."""
+        m = vtkMatrix4x4()
+        for i in range(3):
+            for j in range(3):
+                m.SetElement(i, j, float(R[i, j]))
+            m.SetElement(i, 3, 0.0)
+        m.SetElement(3, 0, 0.0); m.SetElement(3, 1, 0.0)
+        m.SetElement(3, 2, 0.0); m.SetElement(3, 3, 1.0)
+        actor.SetUserMatrix(m)
+
+    @staticmethod
+    def _orient_arrow_to(actor: vtkActor,
+                          direction: np.ndarray) -> None:
+        """Reset `actor`'s rotation and re-orient so its local +X
+        (the natural axis of `vtkArrowSource`) points along
+        `direction`. The actor's position and scale are left alone --
+        only rotation is rewritten, so this is cheap to call per
+        frame. Identical math to `_make_arrow_actor`; centralised
+        here so the per-tick update and the initial pose stay in
+        sync."""
+        dx, dy, dz = float(direction[0]), float(direction[1]), float(direction[2])
+        dn = math.sqrt(dx * dx + dy * dy + dz * dz)
+        actor.SetOrientation(0.0, 0.0, 0.0)
+        if dn < 1.0e-12:
+            return
+        dx, dy, dz = dx / dn, dy / dn, dz / dn
+        axis_y, axis_z = -dz, dy
+        axis_len = math.hypot(axis_y, axis_z)
+        if axis_len < 1.0e-12:
+            if dx < 0.0:
+                actor.RotateWXYZ(180.0, 0.0, 1.0, 0.0)
+        else:
+            angle = math.degrees(math.acos(max(-1.0, min(1.0, dx))))
+            actor.RotateWXYZ(angle, 0.0, axis_y, axis_z)
 
     def _refresh_trail_poly(self, h: _AnimHandle, t: float,
                              tip_point: np.ndarray | None = None) -> None:
@@ -926,6 +1329,62 @@ class VtkCanvas(QWidget):
         """Fit the camera to the bounding box of all currently added
         props. Call after the last add_* of a frame."""
         self._renderer.ResetCamera()
+
+    def reset_camera_on_origin(self) -> None:
+        """Auto-fit the top renderer on its own actors (Moon +
+        spacecraft + arrows), pin the focal point on the scene
+        origin, and propagate the resulting pose to the far renderer
+        so the body sphere layer renders from the same POV.
+
+        Each renderer keeps its OWN clipping range computed from
+        only its own actors (the default behaviour of
+        ResetCameraClippingRange). That is the whole point of the
+        layered setup: top is tight (Moon-scale precision), far is
+        wide (covers 150M-km Sun) without bleeding into each other.
+
+        The interactor's trackball rotates around the focal point;
+        pinning it at origin keeps the central body visually centred
+        across rotations."""
+        self._renderer.ResetCamera()
+        cam = self._renderer.GetActiveCamera()
+        cam.SetFocalPoint(0.0, 0.0, 0.0)
+        self._renderer.ResetCameraClippingRange()
+        # The far camera follows via the ModifiedEvent observer; we
+        # also call it directly here so the first render shows the
+        # bodies in the right place even before the user touches the
+        # mouse (the observer would fire from the SetFocalPoint above
+        # already, but being explicit is cheap and reads better).
+        self._sync_far_camera()
+
+    def _on_top_camera_modified(self, _caller, _event) -> None:
+        """vtkCamera ModifiedEvent handler. Forwards the top
+        renderer's camera pose to the far renderer and refreshes its
+        own clipping range. Guarded against re-entry by
+        `_syncing_cameras`: the writes we make on the far camera fire
+        ITS ModifiedEvent, but our observer is on the TOP camera so
+        the cascade stops there; the flag is belt-and-braces in case
+        a future refactor adds a top-camera write inside sync."""
+        if self._syncing_cameras:
+            return
+        self._syncing_cameras = True
+        try:
+            self._sync_far_camera()
+        finally:
+            self._syncing_cameras = False
+
+    def _sync_far_camera(self) -> None:
+        """Copy the top camera's pose (position + focal point + view
+        up + view angle + parallel scale) to the far camera, then
+        let the far renderer recompute its own clipping range from
+        the bodies' bbox."""
+        top_cam = self._renderer.GetActiveCamera()
+        far_cam = self._renderer_far.GetActiveCamera()
+        far_cam.SetPosition(*top_cam.GetPosition())
+        far_cam.SetFocalPoint(*top_cam.GetFocalPoint())
+        far_cam.SetViewUp(*top_cam.GetViewUp())
+        far_cam.SetViewAngle(top_cam.GetViewAngle())
+        far_cam.SetParallelScale(top_cam.GetParallelScale())
+        self._renderer_far.ResetCameraClippingRange()
 
     def render(self) -> None:
         """Trigger a repaint. Call once after a batch of add_* calls."""

@@ -1362,6 +1362,307 @@ def _add_reference_triads(canvas: VtkCanvas,
         )
 
 
+# ----------------------------------------------------------------------
+# Third-body decoration for the 3D orbit views.
+#
+# Reads `force_model.third_bodies` from the run-folder TOML snapshot,
+# evaluates each body's position (relative to the Moon, ICRF, km) at
+# every trajectory sample time via spopy, applies a power-law
+# distance compression so Earth (~384k km) and Sun (~150M km) both
+# fit alongside the LRO-scale orbit (~1700 km radius), and drops
+# each body as its own animated trajectory so the shared playback
+# bar moves them in parallel with the spacecraft marker.
+#
+# Distance compression:
+#   r_display(km) = R_moon * (r / R_moon)^_DIST_EXPONENT
+# with _DIST_EXPONENT = 0.3. Numerical examples at this exponent:
+#   Earth (~221 R_moon):   221^0.3   ~=  5.0 R_moon ~=  8700 km
+#   Sun   (~86354 R_moon): 86354^0.3 ~= 28.5 R_moon ~= 49500 km
+# Power-law (vs log) gives a Sun/Earth visual ratio of ~5.7 instead
+# of ~1.8, which restores some sense of "Sun is much farther than
+# Earth" while still keeping both visible at the camera's auto-fit.
+# Directions are preserved bit-exact; only the radial magnitude is
+# squeezed.
+#
+# Body radii are similarly compressed (log10 of physical radius vs
+# R_moon, plus a small offset so even Mercury reads as a recognisable
+# spot). All bodies end up smaller than the Moon visually, with the
+# physical ordering preserved (Mercury < Mars < Venus < Earth < ...
+# < Jupiter < Sun). See `_body_marker_radius_km`.
+# ----------------------------------------------------------
+_BODY_NAIF: dict[str, int] = {
+    "Sun":     10,    # NAIF_SUN
+    "Mercury": 199,
+    "Venus":   299,
+    "Earth":   399,
+    "Mars":    499,
+    "Jupiter": 599,
+    "Saturn":  699,
+    "Uranus":  799,
+    "Neptune": 899,
+}
+
+_BODY_COLORS: dict[str, tuple[float, float, float]] = {
+    "Sun":     (1.00, 0.90, 0.25),
+    "Mercury": (0.55, 0.50, 0.45),
+    "Venus":   (0.92, 0.80, 0.55),
+    "Earth":   (0.30, 0.55, 0.95),
+    "Mars":    (0.90, 0.40, 0.30),
+    "Jupiter": (0.85, 0.70, 0.50),
+    "Saturn":  (0.90, 0.80, 0.60),
+    "Uranus":  (0.65, 0.85, 0.90),
+    "Neptune": (0.30, 0.40, 0.85),
+}
+
+# Physical mean radii in km. Source: NASA planetary fact sheet. Used
+# to derive the displayed marker radius via `_body_marker_radius_km`;
+# also handy for any future feature that wants to apply a body
+# texture at the same proportional scale.
+_BODY_RADIUS_PHYS_KM: dict[str, float] = {
+    "Mercury": 2440.0,
+    "Venus":   6052.0,
+    "Earth":   6371.0,
+    "Mars":    3390.0,
+    "Jupiter": 69911.0,
+    "Saturn":  58232.0,
+    "Uranus":  25362.0,
+    "Neptune": 24622.0,
+    "Sun":     695700.0,
+}
+
+# Power-law distance compression knob. 1.0 = identity (true physical
+# distances). Now that VtkCanvas uses Cesium-style multi-frustum
+# rendering (two layered renderers with independent depth scopes),
+# we can keep bodies at their real 150M-km / 384k-km positions
+# without z-fighting the Moon. Set < 1.0 if you want them squeezed
+# closer for a more compact view (see `_power_compress_positions`).
+_DIST_EXPONENT = 1.0
+
+# Body radii follow the same opt-in: True = physical km, False =
+# log-compressed for a "didactic" comparable-size layout. Multi-
+# frustum rendering makes True usable -- Sun (~696k km) renders in
+# its own depth scope so it doesn't blow the Moon's clipping.
+_USE_TRUE_RADII       = True
+_RADIUS_PER_DECADE_KM = 600.0
+_RADIUS_BASE_KM       = 150.0
+
+# Direction-arrow length in km. 3 lunar radii (~5200 km) puts the
+# arrow tip just outside a typical LRO orbit so the arrow is fully
+# visible at the default Moon-zoom but doesn't dwarf the orbit.
+_BODY_ARROW_LEN_KM = 3.0 * MOON_RADIUS_KM
+
+
+def _power_compress_positions(positions_km: np.ndarray,
+                                ref_radius_km: float = MOON_RADIUS_KM,
+                                exponent: float = _DIST_EXPONENT
+                                ) -> np.ndarray:
+    """Compress positions radially while preserving direction:
+        r_out = ref * (r / ref)^exponent
+
+    `exponent` in (0, 1) compresses; smaller = more squish. The Moon
+    surface (r = ref) stays at r=ref, and 0 stays at 0. Used to fold
+    Earth (~221 R_moon) and Sun (~86354 R_moon) into the same scene
+    as the LRO orbit (~1 R_moon)."""
+    r = np.linalg.norm(positions_km, axis=1)
+    safe_r = np.maximum(r, 1e-12)
+    new_r  = ref_radius_km * (safe_r / ref_radius_km) ** exponent
+    ratio  = np.where(r > 0, new_r / safe_r, 0.0)
+    return positions_km * ratio[:, None]
+
+
+def _body_marker_radius_km(name: str) -> float:
+    """Display radius for a body marker. Two modes selected at module
+    load by `_USE_TRUE_RADII`:
+
+    * True: return the tabulated physical radius (km), so Sun -> ~696k
+      km, Earth -> ~6371 km, etc. Correct relative to the bodies'
+      physical distances but invisible at LRO-orbit zoom unless the
+      camera is way out.
+    * False: log-compress to `_RADIUS_BASE_KM + decades *
+      _RADIUS_PER_DECADE_KM`, clamped to >= _RADIUS_BASE_KM. Order
+      is preserved; everything fits comfortably alongside the Moon.
+
+    Unknown / un-tabulated body names always fall back to
+    `_RADIUS_BASE_KM` so a marker still draws."""
+    r_phys = _BODY_RADIUS_PHYS_KM.get(name)
+    if r_phys is None:
+        return _RADIUS_BASE_KM
+    if _USE_TRUE_RADII:
+        return r_phys
+    if r_phys <= MOON_RADIUS_KM:
+        return _RADIUS_BASE_KM
+    decades = math.log10(r_phys / MOON_RADIUS_KM)
+    return _RADIUS_BASE_KM + decades * _RADIUS_PER_DECADE_KM
+
+
+def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
+                       times_s: np.ndarray) -> None:
+    """Decorate the 3D scene with one animated marker per body in
+    `force_model.third_bodies`. Silent on every failure mode (missing
+    snapshot, non-Moon central body, ephemeris unreadable, unknown
+    body name) -- the goal is opt-in scene decoration, not a hard
+    contract. The spacecraft trajectory is rendered with or without
+    this overlay.
+
+    `times_s` is the simulation time grid of the spacecraft trajectory
+    (one entry per sample, seconds). We evaluate each body at exactly
+    those instants so the shared animation bar moves every marker in
+    lockstep along the same timeline.
+    """
+    if ctx is None:
+        return
+    info = _resolve_run_context(ctx.path)
+    if info is None or info["central_body"].lower() != "moon" \
+            or info["ephemeris_path"] is None:
+        return
+    # `_resolve_run_context` doesn't expose third_bodies today; re-read
+    # the snapshot toml directly to avoid bloating its return shape
+    # for a single caller.
+    try:
+        cfg = read_toml(info["toml_path"])
+    except (OSError, ValueError):
+        return
+    bodies_raw = cfg.get("force_model", {}).get("third_bodies", [])
+    if not isinstance(bodies_raw, list) or not bodies_raw:
+        return
+
+    from spopy import Ephemeris
+    try:
+        eph = Ephemeris(str(info["ephemeris_path"]))
+    except (OSError, ValueError):
+        return
+
+    NAIF_MOON = 301
+    et_start  = float(info["et_start_s"])
+    n         = len(times_s)
+    # spopy.position is per-call; ~few microseconds each, so 60 samples
+    # x 3 bodies = ~180 calls is negligible. No need to batch.
+    for name in bodies_raw:
+        if not isinstance(name, str):
+            continue
+        naif = _BODY_NAIF.get(name)
+        if naif is None:
+            continue
+        color = _BODY_COLORS.get(name, (0.85, 0.85, 0.85))
+        pts_icrf = np.empty((n, 3), dtype=float)
+        for i in range(n):
+            try:
+                pts_icrf[i] = eph.position(NAIF_MOON, naif,
+                                            et_start + float(times_s[i]))
+            except (ValueError, IndexError):
+                # Single bad sample (e.g. ET outside ephemeris coverage):
+                # skip the whole body rather than draw a half-orbit.
+                pts_icrf = None  # type: ignore[assignment]
+                break
+        if pts_icrf is None:
+            continue
+        # 1) Body sphere + orbital arc at true (or compressed) scale
+        # so the body itself is in the scene -- visible if the user
+        # zooms out from the default Moon-centric view. Marked
+        # `is_decoration` so the camera auto-fit ignores it.
+        pts_display = _power_compress_positions(pts_icrf) \
+            if _DIST_EXPONENT < 0.9999 else pts_icrf
+        canvas.add_animated_trajectory(
+            pts_display, np.asarray(times_s, dtype=float),
+            color=color, line_width=1.2,
+            marker_radius_km=_body_marker_radius_km(name),
+            is_decoration=True,
+        )
+        # 2) Fixed-length direction arrow anchored at the origin so
+        # the body's direction is ALWAYS visible at the default
+        # Moon-zoom regardless of how far the body actually is. The
+        # arrow rotates each tick to track the true body direction.
+        # is_decoration=False puts it on the SHARP top layer with the
+        # Moon/orbit -- arrows are UI indicators, not far-scale
+        # geometry, so they should share the tight clip range to
+        # avoid the wide-frustum depth imprecision the body spheres
+        # tolerate.
+        canvas.add_animated_arrow(
+            np.asarray(times_s, dtype=float), pts_icrf,
+            color=color, length_km=_BODY_ARROW_LEN_KM,
+            is_decoration=False,
+        )
+
+
+def _add_animated_pa_decoration(canvas: VtkCanvas, ctx: "PlotContext",
+                                  times_s: np.ndarray) -> None:
+    """Drop the PA + ICRF triads AND bind a libration-driven
+    orientation on the Moon body, all wired into the playback bar.
+
+    For the ICRF-aligned scene:
+      - ICRF triad: identity in scene coords, stays static (drawn
+        once as a non-animated decoration).
+      - PA triad: columns of R_pa_to_icrf(t). Animated via
+        `add_animated_frame_triad` -- rotates with the lunar
+        libration.
+      - Central body: rotated with R_pa_to_icrf(t) so the texture's
+        mascons + mares track the PA axes. Without this the axes
+        would visibly slide over a frozen lunar surface.
+
+    The design is symmetric: when we eventually add a "scene_frame=
+    'pa'" mode the call site flips which frame gets which R sequence
+    (PA static at identity, ICRF animated with R_icrf_to_pa, body
+    identity-rotated), and every VtkCanvas API stays the same.
+
+    Silent on every failure mode (no snapshot, non-Moon central body,
+    unreadable ephemeris): we fall back to the static ICRF triad and
+    skip the libration animation, so the scene always renders."""
+    # ICRF triad is identity in this scene frame; always draw it as
+    # a static muted triad (matches the convention in the static
+    # `_add_reference_triads`).
+    icrf_colors = ((0.85, 0.55, 0.55),
+                   (0.55, 0.80, 0.60),
+                   (0.55, 0.65, 0.90))
+    canvas.add_frame_triad(
+        basis_in_scene=np.eye(3),
+        length_km=1.80 * MOON_RADIUS_KM,
+        colors_xyz=icrf_colors,
+        labels_xyz=("X_icrf", "Y_icrf", "Z_icrf"),
+        opacity=0.25,
+    )
+
+    if ctx is None:
+        return
+    info = _resolve_run_context(ctx.path)
+    if info is None or info["central_body"].lower() != "moon" \
+            or info["ephemeris_path"] is None:
+        return
+
+    from spopy import Ephemeris, icrf_to_moon_pa
+    try:
+        eph = Ephemeris(str(info["ephemeris_path"]))
+    except (OSError, ValueError):
+        return
+
+    # Sample R_icrf_to_pa at each trajectory time; columns of its
+    # transpose are PA basis vectors expressed in ICRF, which is
+    # what add_animated_frame_triad expects for an ICRF-frame scene.
+    et_start = float(info["et_start_s"])
+    n = len(times_s)
+    R_pa_in_icrf = np.empty((n, 3, 3), dtype=float)
+    for i in range(n):
+        try:
+            angles = eph.lunar_libration_angles(et_start + float(times_s[i]))
+        except (ValueError, IndexError):
+            return  # ET out of coverage; skip libration animation entirely
+        R_pa_in_icrf[i] = icrf_to_moon_pa(*angles).T
+
+    pa_colors = ((1.00, 0.30, 0.30),
+                 (0.30, 0.95, 0.40),
+                 (0.40, 0.55, 1.00))
+    canvas.add_animated_frame_triad(
+        np.asarray(times_s, dtype=float),
+        R_pa_in_icrf,
+        length_km=2.10 * MOON_RADIUS_KM,
+        colors_xyz=pa_colors,
+        labels_xyz=("X_pa", "Y_pa", "Z_pa"),
+    )
+    # And rotate the Moon body with the SAME matrix sequence so the
+    # surface stays glued to the PA axes.
+    canvas.set_central_body_animated_orientation(
+        np.asarray(times_s, dtype=float), R_pa_in_icrf)
+
+
 def _resolve_R_icrf_to_pa(ctx: "PlotContext", t_sim_s: float
                           ) -> np.ndarray | None:
     """Best-effort: resolve the per-run input.toml, load the
@@ -1498,15 +1799,20 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     # trail-tip implies the 'start' as it grows).
     canvas.add_animated_trajectory(pts, d["t"].astype(float),
                                     color=(1.0, 0.85, 0.20))
+    # Decorate with any third bodies the run requested in its TOML
+    # (Sun, Earth, planets). Each becomes its own animated marker
+    # driven by the same playback bar; failure modes are silent
+    # (missing snapshot, ephemeris out of coverage, ...) so the
+    # spacecraft view always renders.
+    _add_third_bodies(canvas, ctx, d["t"].astype(float))
     canvas.add_legend([
         ("trajectory + moving marker", (1.0, 0.85, 0.20)),
     ])
-    # The trajectory IS in ICRF, so the ICRF triad is identity in
-    # scene coords; the PA triad is rotated in from the libration
-    # angles at the trajectory's start time.
-    t0 = float(d["t"][0]) if d.size > 0 else 0.0
-    R = _resolve_R_icrf_to_pa(ctx, t0)
-    _add_reference_triads(canvas, scene_frame="icrf", R_icrf_to_pa=R)
+    # Animated PA triad + lunar surface rotation in lockstep with
+    # the libration. ICRF triad stays static (identity in this
+    # scene). Falls back silently to "just the ICRF triad" when no
+    # snapshot / non-Moon central body / ephemeris missing.
+    _add_animated_pa_decoration(canvas, ctx, d["t"].astype(float))
 
 
 # ----------------------------------------------------------------------
@@ -1572,11 +1878,23 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
             pts, data["t"].astype(float), color=color, source_path=path,
         )
         legend_items.append((path.name, color))
+    # Third bodies are read from the FIRST file's snapshot -- batches
+    # share the same et_start_s + force_model, so one set of body
+    # markers describes the whole overlay correctly.
+    if items:
+        first_path, first_data = items[0]
+        body_ctx = PlotContext(path=first_path,
+                                moon_texture=ctx.moon_texture if ctx else None)
+        _add_third_bodies(canvas, body_ctx, first_data["t"].astype(float))
     canvas.add_legend(legend_items)
-    # Same reference-frame convention as _plot_traj_3d_orbit.
-    t0 = float(items[0][1]["t"][0]) if items and items[0][1].size > 0 else 0.0
-    R = _resolve_R_icrf_to_pa(ctx, t0)
-    _add_reference_triads(canvas, scene_frame="icrf", R_icrf_to_pa=R)
+    # Same reference-frame convention as _plot_traj_3d_orbit: PA +
+    # Moon body animated with libration, ICRF triad static.
+    if items:
+        first_path, first_data = items[0]
+        body_ctx = PlotContext(path=first_path,
+                                moon_texture=ctx.moon_texture if ctx else None)
+        _add_animated_pa_decoration(canvas, body_ctx,
+                                      first_data["t"].astype(float))
 
 
 # Inline lambdas wrapping `_plot_traj_projection` for the XY / XZ / YZ
@@ -2424,7 +2742,11 @@ class AnalysisPanel(QWidget):
                 self._vtk.set_central_body_texture(self._configured_moon_texture())
                 self._vtk.clear_scene()
                 spec.overlay_fn(self._vtk, items)
-                self._vtk.reset_camera()
+                # Pin the rotation pivot on the central body so mouse-
+                # drag rotation keeps the Moon centred even when the
+                # auto-fit bbox is pulled off-axis by the third-body
+                # markers (Sun ~50000 km off to one side, etc.).
+                self._vtk.reset_camera_on_origin()
                 self._vtk.render()
             self._sync_anim_bar_to_canvas()
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
@@ -2939,7 +3261,10 @@ class AnalysisPanel(QWidget):
                     spec.fn(self._vtk, self._data, ctx)
                 else:
                     spec.fn(self._vtk, self._data)
-                self._vtk.reset_camera()
+                # See _on_overlay_selected for why we lock the focal
+                # point at the origin instead of using vanilla
+                # reset_camera() here.
+                self._vtk.reset_camera_on_origin()
                 self._vtk.render()
             self._sync_anim_bar_to_canvas()
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
