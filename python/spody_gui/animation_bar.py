@@ -89,8 +89,8 @@ class AnimationBar(QWidget):
     handles, so it visually 'lights up' only on the 3D orbit views.
     """
 
-    timeChanged   = Signal(float)   # sim seconds
-    trailToggled  = Signal(bool)    # True = trail clipping on
+    timeChanged          = Signal(float)   # sim seconds
+    sceneOptionsRequested = Signal()       # user clicked the Scene button
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -131,10 +131,10 @@ class AnimationBar(QWidget):
         self._speed_combo.currentIndexChanged.connect(self._on_speed_changed)
         self._speed_combo.setToolTip("Playback speed (sim time / wall time)")
 
-        self._btn_trail = QPushButton("Trail")
-        self._btn_trail.setCheckable(True)
-        self._btn_trail.setToolTip("Toggle trail clipping (off = full orbit visible)")
-        self._btn_trail.toggled.connect(self._on_trail_toggled)
+        self._btn_scene = QPushButton("Scene...")
+        self._btn_scene.setToolTip(
+            "Open Scene options (trail, triads, third bodies, ...)")
+        self._btn_scene.clicked.connect(self.sceneOptionsRequested.emit)
 
         # --- Layout ---------------------------------------------------
         lay = QHBoxLayout(self)
@@ -144,7 +144,7 @@ class AnimationBar(QWidget):
         lay.addWidget(self._slider, 1)
         lay.addWidget(self._lbl_time)
         lay.addWidget(self._speed_combo)
-        lay.addWidget(self._btn_trail)
+        lay.addWidget(self._btn_scene)
 
         # --- Play timer -----------------------------------------------
         self._timer = QTimer(self)
@@ -159,10 +159,13 @@ class AnimationBar(QWidget):
     # External API
     # ------------------------------------------------------------------
     def set_enabled(self, on: bool) -> None:
-        """Enable/disable every control. Used by the analysis panel to
-        gray the bar out for 2D plots / loads without trajectories."""
+        """Enable/disable the PLAYBACK controls. The Scene options
+        button stays enabled regardless: the user must always be able
+        to re-open the dialog (e.g. to re-enable the spacecraft
+        trajectory after toggling it off, which would otherwise leave
+        no animation handles and disable the rest of the bar)."""
         for w in (self._btn_reset, self._btn_play, self._slider,
-                  self._speed_combo, self._btn_trail):
+                  self._speed_combo):
             w.setEnabled(on)
         if not on and self._playing:
             # Don't leave the timer ticking on a disabled bar -- the
@@ -193,6 +196,13 @@ class AnimationBar(QWidget):
 
     def current_time(self) -> float:
         return self._t_cur
+
+    def set_time(self, t: float) -> None:
+        """Move the playhead to `t` (clamped to the bound range)
+        without changing the t_min/t_max binding. Used by the analysis
+        panel to preserve the playback position across re-renders
+        triggered by Scene-options toggles."""
+        self._set_time(t, emit=True, move_slider=True)
 
     # ------------------------------------------------------------------
     # Internal -- play loop
@@ -236,9 +246,6 @@ class AnimationBar(QWidget):
 
     def _on_speed_changed(self, idx: int) -> None:
         self._speed = _SPEEDS[idx][1]
-
-    def _on_trail_toggled(self, checked: bool) -> None:
-        self.trailToggled.emit(checked)
 
     # ------------------------------------------------------------------
     # Internal -- shared mutator

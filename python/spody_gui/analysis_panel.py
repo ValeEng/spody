@@ -34,7 +34,7 @@ changed manually with the Change button.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -83,10 +83,10 @@ from spody_io import (
 # package but not re-exported by spody_io.__init__; import directly so
 # _detect_kind can tell the two events formats apart.
 from spody_io.headers import SPODY_EVTB_MAGIC
-from .astronomy import sun_direction_j2000
 from .settings import SettingsStore
 from .toml_io import read_toml
 from .animation_bar import AnimationBar
+from .scene_options import SceneOptions, SceneOptionsDialog
 from .vtk_canvas import MOON_RADIUS_KM, VtkCanvas
 # spopy is the pure-Python re-implementation of the spody-core read
 # helpers. Used by the impact lat/lon map to project ICRF impact points
@@ -697,9 +697,18 @@ class PlotContext:
                        plots forward it to VtkCanvas. Resolved by the
                        panel (settings override or wizard fallback)
                        so plot fns never reach back into QSettings.
+    `scene_options`  : SceneOptions controlling what the 3D plot
+                       draws (trajectory / triads / per-body
+                       visibility). Defaults are 'show everything'.
+                       The Scene options dialog mutates the panel's
+                       SceneOptions in place and the panel passes
+                       that instance through here, so a re-render
+                       sees the current toggles without any rebuild
+                       of this context.
     """
     path: Path
     moon_texture: Path | None = None
+    scene_options: SceneOptions = field(default_factory=SceneOptions)
 
 
 def _find_run_input_toml(events_path: Path) -> Path | None:
@@ -1496,7 +1505,8 @@ def _body_marker_radius_km(name: str) -> float:
 
 
 def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
-                       times_s: np.ndarray) -> None:
+                       times_s: np.ndarray,
+                       only: set[str] | None = None) -> None:
     """Decorate the 3D scene with one animated marker per body in
     `force_model.third_bodies`. Silent on every failure mode (missing
     snapshot, non-Moon central body, ephemeris unreadable, unknown
@@ -1539,6 +1549,11 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
     # x 3 bodies = ~180 calls is negligible. No need to batch.
     for name in bodies_raw:
         if not isinstance(name, str):
+            continue
+        # `only`: when not None, restrict to the user-checked subset.
+        # An empty set means "show no bodies" (toggle all off in the
+        # Scene options dialog); None means "no filter" (legacy call).
+        if only is not None and name not in only:
             continue
         naif = _BODY_NAIF.get(name)
         if naif is None:
@@ -1585,7 +1600,9 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
 
 
 def _add_animated_pa_decoration(canvas: VtkCanvas, ctx: "PlotContext",
-                                  times_s: np.ndarray) -> None:
+                                  times_s: np.ndarray,
+                                  show_icrf: bool = True,
+                                  show_pa:   bool = True) -> None:
     """Drop the PA + ICRF triads AND bind a libration-driven
     orientation on the Moon body, all wired into the playback bar.
 
@@ -1607,21 +1624,21 @@ def _add_animated_pa_decoration(canvas: VtkCanvas, ctx: "PlotContext",
     Silent on every failure mode (no snapshot, non-Moon central body,
     unreadable ephemeris): we fall back to the static ICRF triad and
     skip the libration animation, so the scene always renders."""
-    # ICRF triad is identity in this scene frame; always draw it as
-    # a static muted triad (matches the convention in the static
-    # `_add_reference_triads`).
-    icrf_colors = ((0.85, 0.55, 0.55),
-                   (0.55, 0.80, 0.60),
-                   (0.55, 0.65, 0.90))
-    canvas.add_frame_triad(
-        basis_in_scene=np.eye(3),
-        length_km=1.80 * MOON_RADIUS_KM,
-        colors_xyz=icrf_colors,
-        labels_xyz=("X_icrf", "Y_icrf", "Z_icrf"),
-        opacity=0.25,
-    )
+    # ICRF triad is identity in this scene frame; draw it as the
+    # static muted triad unless the user hid it.
+    if show_icrf:
+        icrf_colors = ((0.85, 0.55, 0.55),
+                       (0.55, 0.80, 0.60),
+                       (0.55, 0.65, 0.90))
+        canvas.add_frame_triad(
+            basis_in_scene=np.eye(3),
+            length_km=1.80 * MOON_RADIUS_KM,
+            colors_xyz=icrf_colors,
+            labels_xyz=("X_icrf", "Y_icrf", "Z_icrf"),
+            opacity=0.25,
+        )
 
-    if ctx is None:
+    if not show_pa or ctx is None:
         return
     info = _resolve_run_context(ctx.path)
     if info is None or info["central_body"].lower() != "moon" \
@@ -1790,29 +1807,25 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     view.
     """
     canvas.add_central_body()
-    pts = np.column_stack([d["x"], d["y"], d["z"]])
-    # Animated variant: full polyline + a coloured marker sphere that
-    # the playback bar above the canvas slides along when the user
-    # hits Play. The legend now describes the moving marker rather
-    # than start/end endpoint dots (which are not drawn in the
-    # animated variant -- the marker subsumes the 'end' role and the
-    # trail-tip implies the 'start' as it grows).
-    canvas.add_animated_trajectory(pts, d["t"].astype(float),
-                                    color=(1.0, 0.85, 0.20))
-    # Decorate with any third bodies the run requested in its TOML
-    # (Sun, Earth, planets). Each becomes its own animated marker
-    # driven by the same playback bar; failure modes are silent
-    # (missing snapshot, ephemeris out of coverage, ...) so the
-    # spacecraft view always renders.
-    _add_third_bodies(canvas, ctx, d["t"].astype(float))
-    canvas.add_legend([
-        ("trajectory + moving marker", (1.0, 0.85, 0.20)),
-    ])
-    # Animated PA triad + lunar surface rotation in lockstep with
-    # the libration. ICRF triad stays static (identity in this
-    # scene). Falls back silently to "just the ICRF triad" when no
-    # snapshot / non-Moon central body / ephemeris missing.
-    _add_animated_pa_decoration(canvas, ctx, d["t"].astype(float))
+    opts = ctx.scene_options if ctx is not None else SceneOptions()
+    ts = d["t"].astype(float)
+    legend_entries: list[tuple[str, tuple[float, float, float]]] = []
+    if opts.show_trajectory:
+        pts = np.column_stack([d["x"], d["y"], d["z"]])
+        canvas.add_animated_trajectory(pts, ts, color=(1.0, 0.85, 0.20))
+        legend_entries.append(("trajectory + moving marker",
+                                (1.0, 0.85, 0.20)))
+    if opts.show_third_bodies:
+        # Per-body filtering: pass opts.show_bodies through so we
+        # only build markers for the user's selection.
+        _add_third_bodies(canvas, ctx, ts, only=opts.show_bodies)
+    if legend_entries:
+        canvas.add_legend(legend_entries)
+    # Animated PA triad + Moon body libration; ICRF triad static.
+    # Per-frame toggles are honoured inside the helper.
+    _add_animated_pa_decoration(canvas, ctx, ts,
+                                  show_icrf=opts.show_icrf_triad,
+                                  show_pa=opts.show_pa_triad)
 
 
 # ----------------------------------------------------------------------
@@ -1866,35 +1879,37 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
     discrepancy is visually negligible inside a single batch.
     """
     canvas.add_central_body()
+    opts = ctx.scene_options if ctx is not None else SceneOptions()
     n = len(items)
     legend_items: list[tuple[str, tuple[float, float, float]]] = []
-    for i, (path, data) in enumerate(items):
-        color = _turbo_color(i, n)
-        pts = np.column_stack([data["x"], data["y"], data["z"]])
-        # Animated variant: each overlaid orbit gets its own marker
-        # sphere that the shared playback bar moves in parallel.
-        # Source path is forwarded so Ctrl+click picking still works.
-        canvas.add_animated_trajectory(
-            pts, data["t"].astype(float), color=color, source_path=path,
+    if opts.show_trajectory:
+        for i, (path, data) in enumerate(items):
+            color = _turbo_color(i, n)
+            pts = np.column_stack([data["x"], data["y"], data["z"]])
+            canvas.add_animated_trajectory(
+                pts, data["t"].astype(float), color=color,
+                source_path=path,
+            )
+            legend_items.append((path.name, color))
+    # Third bodies / triads / Moon libration all read from the FIRST
+    # file's snapshot -- batches share et_start_s + force_model, so
+    # one set describes the whole overlay correctly.
+    if items:
+        first_path, first_data = items[0]
+        body_ctx = PlotContext(
+            path=first_path,
+            moon_texture=ctx.moon_texture if ctx else None,
+            scene_options=opts,
         )
-        legend_items.append((path.name, color))
-    # Third bodies are read from the FIRST file's snapshot -- batches
-    # share the same et_start_s + force_model, so one set of body
-    # markers describes the whole overlay correctly.
-    if items:
-        first_path, first_data = items[0]
-        body_ctx = PlotContext(path=first_path,
-                                moon_texture=ctx.moon_texture if ctx else None)
-        _add_third_bodies(canvas, body_ctx, first_data["t"].astype(float))
-    canvas.add_legend(legend_items)
-    # Same reference-frame convention as _plot_traj_3d_orbit: PA +
-    # Moon body animated with libration, ICRF triad static.
-    if items:
-        first_path, first_data = items[0]
-        body_ctx = PlotContext(path=first_path,
-                                moon_texture=ctx.moon_texture if ctx else None)
-        _add_animated_pa_decoration(canvas, body_ctx,
-                                      first_data["t"].astype(float))
+        first_ts = first_data["t"].astype(float)
+        if opts.show_third_bodies:
+            _add_third_bodies(canvas, body_ctx, first_ts,
+                                only=opts.show_bodies)
+        _add_animated_pa_decoration(canvas, body_ctx, first_ts,
+                                      show_icrf=opts.show_icrf_triad,
+                                      show_pa=opts.show_pa_triad)
+    if legend_items:
+        canvas.add_legend(legend_items)
 
 
 # Inline lambdas wrapping `_plot_traj_projection` for the XY / XZ / YZ
@@ -2318,22 +2333,25 @@ class AnalysisPanel(QWidget):
         # by Plot / Overlay so both share one notion of "active plot".
         self._active_spec: PlotSpec | None = None
 
-        # Sun-arrow controls (3D only). The epoch field auto-fills from
-        # the TOML currently open in the Run tab; user can override.
-        # Wrapped in its own widget so the whole row can be hidden when
-        # the active plot is 2D (Sun arrow has no meaning there).
+        # Scene-options state lives on the panel; the dialog mutates
+        # it in place. Every toggle ends up driving a re-render via
+        # _on_scene_options_changed. The dialog itself is opened from
+        # the animation bar's "Scene..." button (see wiring below).
+        self._scene_options = SceneOptions()
+        self._scene_dialog: SceneOptionsDialog | None = None
+        # Backwards-compat shim: set_default_epoch still gets called
+        # from MainWindow when a TOML is loaded. We no longer need
+        # the epoch in the panel (the third-body markers compute
+        # everything from the snapshot), but keep the field alive as
+        # a hidden no-op widget so the slot below doesn't crash.
         self._epoch_edit = QLineEdit()
-        self._epoch_edit.setPlaceholderText("et_start_s (TDB sec past J2000)")
-        btn_sun = QPushButton("+ Sun arrow")
-        btn_sun.clicked.connect(self._on_add_sun)
-        sun_row = QHBoxLayout()
-        sun_row.setContentsMargins(0, 0, 0, 0)
-        sun_row.addWidget(QLabel("Epoch:"))
-        sun_row.addWidget(self._epoch_edit, 1)
-        sun_row.addWidget(btn_sun)
+        self._epoch_edit.hide()
+        # Old per-3D toolbar slot: keep an empty hidden widget around
+        # so the existing show/hide call sites referring to
+        # `_sun_widget` don't have to be torn out -- the animation
+        # bar now hosts every 3D-only control (playback + Scene).
         self._sun_widget = QWidget()
-        self._sun_widget.setLayout(sun_row)
-        self._sun_widget.setVisible(False)   # hidden until a 3D plot fires
+        self._sun_widget.setVisible(False)
 
         # 2D page: matplotlib canvas + toolbar in a sub-widget.
         self._figure  = Figure(figsize=(6, 4))
@@ -2358,7 +2376,8 @@ class AnalysisPanel(QWidget):
         # canvas's animation API.
         self._anim_bar = AnimationBar()
         self._anim_bar.timeChanged.connect(self._on_anim_time_changed)
-        self._anim_bar.trailToggled.connect(self._on_anim_trail_toggled)
+        self._anim_bar.sceneOptionsRequested.connect(
+            self._on_open_scene_options)
         self._anim_bar.setVisible(False)
 
         # Stack switched by the dispatcher in `_on_plot` based on
@@ -2741,7 +2760,17 @@ class AnalysisPanel(QWidget):
                 self._stack.setCurrentIndex(1)
                 self._vtk.set_central_body_texture(self._configured_moon_texture())
                 self._vtk.clear_scene()
-                spec.overlay_fn(self._vtk, items)
+                # Build an overlay ctx so the 3D overlay sees the
+                # user's Scene-options selections (per-body filter,
+                # triad toggles). `path` is the first item's so the
+                # snapshot-derived helpers (third bodies, libration)
+                # all converge on one TOML.
+                ovl_ctx = PlotContext(
+                    path=items[0][0],
+                    moon_texture=self._configured_moon_texture(),
+                    scene_options=self._scene_options,
+                ) if items else None
+                spec.overlay_fn(self._vtk, items, ovl_ctx)
                 # Pin the rotation pivot on the central body so mouse-
                 # drag rotation keeps the Moon centred even when the
                 # auto-fit bbox is pulled off-axis by the third-body
@@ -2789,6 +2818,12 @@ class AnalysisPanel(QWidget):
         # Always refresh the Table model so a tab switch later in the
         # session shows the right rows without re-reading the file.
         self._table_model.set_array(data, _FIELD_DISPLAY_RENAME.get(kind))
+
+        # Refresh the Scene-options dialog's body list with whatever
+        # `force_model.third_bodies` is declared in this run's TOML
+        # (silently no-op when the snapshot is missing or the dialog
+        # has never been opened).
+        self._refresh_scene_dialog_bodies()
 
         # Rebuild the plot tree for the new kind. Auto-render the first
         # plot only when the Plot tab is currently active; if the user
@@ -2974,7 +3009,8 @@ class AnalysisPanel(QWidget):
         # Built once: context specs all consume the same PlotContext
         # (one file = one path) -- no need to re-build per subplot.
         ctx = (PlotContext(path=self._path,
-                           moon_texture=self._configured_moon_texture())
+                           moon_texture=self._configured_moon_texture(),
+                           scene_options=self._scene_options)
                if mode == "single" and self._path is not None
                else None)
 
@@ -3063,61 +3099,85 @@ class AnalysisPanel(QWidget):
         self._vtk.set_animation_time(t_s)
         self._vtk.render()
 
-    def _on_anim_trail_toggled(self, on: bool) -> None:
-        if self._stack.currentIndex() != 1:
-            return
-        self._vtk.set_trail_enabled(on)
-        # Re-emit the current time so the trail is repainted at the
-        # right cut. set_trail_enabled itself doesn't refresh geometry
-        # to avoid a redundant pass during set_time_range.
-        self._vtk.set_animation_time(self._anim_bar.current_time())
-        self._vtk.render()
-
     def _sync_anim_bar_to_canvas(self) -> None:
-        """Show / hide / range the playback bar based on what the
-        last 3D render left in the canvas. Called from `_plot_active`
-        and `_on_overlay_selected` after the VTK scene is fully built.
-        Hidden for 2D plots (the QStackedWidget is on page 0) and for
-        3D plots that didn't register any animation handles."""
+        """Show / hide / range the playback bar after every 3D render.
+
+        Visibility: the bar IS the 3D toolbar -- always visible while
+        the canvas is on the 3D page so the Scene-options button
+        stays reachable. Playback controls (play / slider / speed)
+        get enabled only when the canvas actually has animation
+        handles; otherwise they're greyed out but the Scene button
+        still works (user can re-enable the spacecraft trajectory
+        from the dialog and re-render)."""
         if self._stack.currentIndex() != 1:
-            self._anim_bar.setVisible(False)
-            return
-        rng = self._vtk.animation_time_range()
-        if rng is None:
             self._anim_bar.setVisible(False)
             return
         self._anim_bar.setVisible(True)
-        self._anim_bar.set_time_range(*rng)
+        rng = self._vtk.animation_time_range()
+        if rng is None:
+            self._anim_bar.set_enabled(False)
+        else:
+            self._anim_bar.set_time_range(*rng)
 
-    def _on_add_sun(self) -> None:
-        """Compute the Sun direction at the typed epoch and add an
-        arrow to the 3D scene. Requires the 3D canvas to be active
-        and a valid numeric epoch in the field. Re-plotting (Plot /
-        Overlay) clears the arrow as part of `clear_scene()`."""
-        text = self._epoch_edit.text().strip()
-        if not text:
-            QMessageBox.information(
-                self, "Sun arrow",
-                "Type an epoch (TDB seconds past J2000) first; usually the "
-                "same value as your TOML's simulation.et_start_s."
-            )
+    # ------------------------------------------------------------------
+    # Scene options dialog -- non-modal, mutates self._scene_options
+    # in place, and triggers a re-render of the active 3D plot on
+    # every toggle.
+    # ------------------------------------------------------------------
+    def _on_open_scene_options(self) -> None:
+        if self._scene_dialog is None:
+            self._scene_dialog = SceneOptionsDialog(
+                self._scene_options, parent=self)
+            self._scene_dialog.optionsChanged.connect(
+                self._on_scene_options_changed)
+            self._refresh_scene_dialog_bodies()
+        self._scene_dialog.show()
+        self._scene_dialog.raise_()
+        self._scene_dialog.activateWindow()
+
+    def _on_scene_options_changed(self) -> None:
+        """A Scene-options toggle fired; re-render whatever the user
+        is currently viewing so the change shows up live without a
+        manual Plot click. Trail state is a canvas-level flag that
+        survives clear_scene; we push it BEFORE the re-render so the
+        newly-added trajectories inherit the correct mode."""
+        if self._stack.currentIndex() != 1:
+            return  # 2D active; nothing to re-render
+        # 1) Trail mode is a canvas flag, not a per-handle property.
+        # Push it now so the about-to-be-added handles see the right
+        # state inside add_animated_trajectory.
+        self._vtk.set_trail_enabled(self._scene_options.trail_enabled)
+        # 2) Preserve the playhead position across the re-plot. The
+        # rebuild fires set_time_range which would otherwise snap the
+        # animation back to t_min, wiping out wherever the user was
+        # scrubbed to when they opened the dialog.
+        saved_t = self._anim_bar.current_time()
+        self._plot_active()
+        rng = self._vtk.animation_time_range()
+        if rng is not None and rng[0] <= saved_t <= rng[1]:
+            self._anim_bar.set_time(saved_t)
+
+    def _refresh_scene_dialog_bodies(self) -> None:
+        """Push the current run's `force_model.third_bodies` into
+        the Scene-options dialog so the per-body checkboxes match.
+        No-op when the dialog hasn't been opened yet or the snapshot
+        is missing."""
+        if self._scene_dialog is None or self._path is None:
+            return
+        info = _resolve_run_context(self._path)
+        if info is None:
+            self._scene_dialog.set_available_bodies([])
             return
         try:
-            et = float(text)
-        except ValueError:
-            QMessageBox.warning(self, "Sun arrow",
-                                f"'{text}' is not a valid number.")
+            cfg = read_toml(info["toml_path"])
+        except (OSError, ValueError):
+            self._scene_dialog.set_available_bodies([])
             return
-        if self._stack.currentIndex() != 1:
-            QMessageBox.information(
-                self, "Sun arrow",
-                "The Sun arrow is rendered in the 3D scene. Pick a 3D plot "
-                "(e.g. '3D orbit + Moon' or '→ Overlay selected (3D)') first."
-            )
-            return
-        d = sun_direction_j2000(et)
-        self._vtk.add_sun_arrow(d)
-        self._vtk.render()
+        bodies = cfg.get("force_model", {}).get("third_bodies", [])
+        if not isinstance(bodies, list):
+            bodies = []
+        self._scene_dialog.set_available_bodies(
+            [b for b in bodies if isinstance(b, str)])
 
     # ------------------------------------------------------------------
     # Picking (Ctrl+left-click on a trajectory in the 3D scene)
@@ -3238,7 +3298,8 @@ class AnalysisPanel(QWidget):
         # pure (ax, data, ctx) call. self._path is guaranteed non-None
         # whenever self._data is (set together in load_file).
         ctx = (PlotContext(path=self._path,
-                           moon_texture=self._configured_moon_texture())
+                           moon_texture=self._configured_moon_texture(),
+                           scene_options=self._scene_options)
                if spec.mode == "context" and self._path is not None
                else None)
         try:
