@@ -255,13 +255,24 @@ def effective_paths(root: Path) -> dict[str, str]:
 
 def moon_texture_path(root: Path) -> Path | None:
     """Return the wizard-downloaded Moon texture path if present, else
-    None. The Analysis panel uses this as a fallback when the user
-    hasn't pointed an explicit override at Settings > Paths -- so a
-    fresh install that just clicked the wizard's Download button on
-    the texture row gets the photo background 'for free' on the next
-    plot dispatch."""
-    p = root / MOON_TEXTURE.relpath
-    return p if p.is_file() else None
+    None. Thin wrapper around `central_body_texture_path(root, "Moon")`
+    kept so older settings paths and PyInstaller bundles can keep
+    calling the Moon-specific helper. New code should call the
+    body-aware variant below."""
+    return central_body_texture_path(root, "Moon")
+
+
+def central_body_texture_path(root: Path, body: str) -> Path | None:
+    """First registered texture asset (under `root`) for the named
+    central body, or None when no asset is registered / downloaded yet.
+    Phase-1 the only registered body is Moon; adding Earth in Phase 2
+    is one extra Asset entry above with `category='texture',
+    body='Earth'` and this helper picks it up automatically."""
+    for a in assets_by_category("texture", body=body):
+        p = root / a.relpath
+        if p.is_file():
+            return p
+    return None
 
 
 def assets_by_category(category: str, body: str | None = None

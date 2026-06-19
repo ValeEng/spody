@@ -712,34 +712,40 @@ class PlotContext:
     """Side-channel context passed to context-aware plot functions
     (PlotSpec.mode == 'context').
 
-    `path`           : currently loaded file -- the plot fn walks
-                       ancestors from here to locate the per-run
-                       input.toml snapshot (for et_start_s, ephemeris
-                       path, duration, cases_file).
-    `moon_texture`   : resolved Moon equirectangular texture, or None.
-                       2D plots use it as a lat/lon background; 3D
-                       plots forward it to VtkCanvas. Resolved by the
-                       panel (settings override or wizard fallback)
-                       so plot fns never reach back into QSettings.
-    `scene_options`  : SceneOptions controlling what the 3D plot
-                       draws (trajectory / triads / per-body
-                       visibility). Defaults are 'show everything'.
-                       The Scene options dialog mutates the panel's
-                       SceneOptions in place and the panel passes
-                       that instance through here, so a re-render
-                       sees the current toggles without any rebuild
-                       of this context.
-    `central_body`   : CentralBodySpec for the run's central body
-                       (radius, NAIF id, body-fixed frame name,
-                       orientation provider). Resolved from the
-                       snapshot TOML's `force_model.central_body`
-                       at file-load time; falls back to the Moon
-                       default when no snapshot is found. Plot
-                       fns use it instead of hardcoding Moon
-                       constants / labels.
+    `path`                : currently loaded file -- the plot fn walks
+                            ancestors from here to locate the per-run
+                            input.toml snapshot (for et_start_s,
+                            ephemeris path, duration, cases_file).
+    `central_body_texture`: equirectangular texture for the run's
+                            central body, or None. 2D plots use it
+                            as a lat/lon background; 3D plots forward
+                            it to VtkCanvas. Resolved by the panel
+                            via `assets.central_body_texture_path` for
+                            the active body (Settings override is
+                            consulted only for the legacy Moon case),
+                            so plot fns never reach back into
+                            QSettings.
+    `scene_options`       : SceneOptions controlling what the 3D plot
+                            draws (trajectory / triads / per-body
+                            visibility). Defaults are 'show
+                            everything'. The Scene options dialog
+                            mutates the panel's SceneOptions in place
+                            and the panel passes that instance
+                            through here, so a re-render sees the
+                            current toggles without any rebuild of
+                            this context.
+    `central_body`        : CentralBodySpec for the run's central
+                            body (radius, NAIF id, body-fixed frame
+                            name, orientation provider). Resolved
+                            from the snapshot TOML's
+                            `force_model.central_body` at file-load
+                            time; falls back to the Moon default
+                            when no snapshot is found. Plot fns use
+                            it instead of hardcoding Moon constants
+                            / labels.
     """
     path: Path
-    moon_texture: Path | None = None
+    central_body_texture: Path | None = None
     scene_options: SceneOptions = field(default_factory=SceneOptions)
     central_body: CentralBodySpec = field(default_factory=default_central_body)
 
@@ -864,18 +870,18 @@ def _ctx_missing_message(ax: Axes, title: str, reason: str) -> None:
 # runs, multi-day debris-cloud decay) day-level axes read better.
 _SEC_PER_DAY = 86400.0
 
-# Cache for the grayscale-and-downsampled Mollweide Moon background,
-# keyed by (texture_path, mtime). Avoids re-loading + resampling the
-# 2K texture every time the user clicks an impact map -- the resample
-# is the slow step (~80 ms on PIL/LANCZOS at 720x360) and the result
-# never changes across clicks. Set lazily by
-# `_load_moon_grayscale_for_mollweide`; the panel doesn't bother
-# evicting because the dict holds at most two entries (one per
-# texture path the user has ever set).
-_MOON_BG_CACHE: dict[tuple[str, float], np.ndarray] = {}
+# Cache for the grayscale-and-downsampled Mollweide central-body
+# background, keyed by (texture_path, mtime). Avoids re-loading +
+# resampling the 2K texture every time the user clicks an impact map
+# -- the resample is the slow step (~80 ms on PIL/LANCZOS at
+# 720x360) and the result never changes across clicks. Set lazily by
+# `_load_body_grayscale_for_mollweide`; the panel doesn't bother
+# evicting because the dict holds at most a handful of entries
+# (one per texture path the user has ever set across bodies).
+_BODY_BG_CACHE: dict[tuple[str, float], np.ndarray] = {}
 
 
-def _load_moon_grayscale_for_mollweide(texture_path: Path | None
+def _load_body_grayscale_for_mollweide(texture_path: Path | None
                                         ) -> np.ndarray | None:
     """Return a (lat, lon) float array suitable for `pcolormesh` on a
     Mollweide axis. Downsamples to 720x360 (~0.25 MP), converts to
@@ -884,7 +890,9 @@ def _load_moon_grayscale_for_mollweide(texture_path: Path | None
 
     The grid orientation matches `_plot_events_impact_map_mollweide`:
     row 0 is lat=+90 (top), col 0 is lon=-180 (left). Cached per
-    texture-mtime so the resample is paid once per session."""
+    texture-mtime so the resample is paid once per session. Body-
+    agnostic: the same pipeline works on a Moon, Earth or Mars
+    equirectangular image."""
     if texture_path is None or not texture_path.is_file():
         return None
     try:
@@ -892,7 +900,7 @@ def _load_moon_grayscale_for_mollweide(texture_path: Path | None
     except OSError:
         return None
     key = (str(texture_path), mtime)
-    cached = _MOON_BG_CACHE.get(key)
+    cached = _BODY_BG_CACHE.get(key)
     if cached is not None:
         return cached
     try:
@@ -905,17 +913,19 @@ def _load_moon_grayscale_for_mollweide(texture_path: Path | None
         arr = np.asarray(gray, dtype=float) / 255.0
     except (OSError, ValueError):
         return None
-    _MOON_BG_CACHE[key] = arr
+    _BODY_BG_CACHE[key] = arr
     return arr
 
 
-def _draw_mollweide_moon_background(ax: Axes, ctx: "PlotContext",
+def _draw_mollweide_body_background(ax: Axes, ctx: "PlotContext",
                                      alpha: float = 0.8) -> bool:
-    """Paint the Moon grayscale texture as a Mollweide background on
-    `ax`. Returns True on success so the caller can adapt its
-    foreground styling (e.g. white edges on top of the texture vs
-    black on a plain background)."""
-    bg = _load_moon_grayscale_for_mollweide(ctx.moon_texture)
+    """Paint the central body's grayscale texture as a Mollweide
+    background on `ax`. Returns True on success so the caller can
+    adapt its foreground styling (e.g. white edges on top of the
+    texture vs black on a plain background). Body-agnostic: the
+    texture comes from `ctx.central_body_texture` which is resolved
+    per-body upstream."""
+    bg = _load_body_grayscale_for_mollweide(ctx.central_body_texture)
     if bg is None:
         return False
     # pcolormesh with shading='flat' wants (nrow, ncol) values and
@@ -936,10 +946,16 @@ def _validate_impact_context(ax: Axes, d: np.ndarray, ctx: "PlotContext",
                               title: str
                               ) -> tuple[dict, np.ndarray, int] | None:
     """Shared gating for every impact-flavoured plot: aggregated-batch
-    file, run-folder snapshot, Moon as central body, ephemeris
-    reachable, at least one IMPACT row. On any miss draws the empty-
-    state message on `ax` and returns None; on success returns
-    `(info, impact_mask, n_impacts)`."""
+    file, run-folder snapshot, central body with a registered
+    body-fixed orientation provider, ephemeris reachable, at least
+    one IMPACT row. On any miss draws the empty-state message on
+    `ax` and returns None; on success returns
+    `(info, impact_mask, n_impacts)`.
+
+    Body-agnostic: anything in the central-body registry with a non-
+    None `bf_orientation` callable (today Moon, Phase 2 Earth) is
+    accepted; the lat/lon projection uses that callback instead of
+    hardcoding lunar librations."""
     if "case_idx" not in d.dtype.names:
         _ctx_missing_message(
             ax, title,
@@ -952,12 +968,13 @@ def _validate_impact_context(ax: Axes, d: np.ndarray, ctx: "PlotContext",
             "No input.toml found next to this events file -- the run-folder "
             "snapshot is needed for et_start_s and the ephemeris path.")
         return None
-    if info["central_body"].lower() != "moon":
+    if ctx.central_body.bf_orientation is None:
         _ctx_missing_message(
             ax, title,
-            f"Central body is '{info['central_body']}' -- the lat/lon "
-            "projection is currently Moon-only (Principal Axes via DE440 "
-            "lunar libration).")
+            f"Central body '{ctx.central_body.name}' has no body-fixed "
+            "orientation provider registered -- the lat/lon projection "
+            "needs an ICRF -> body-fixed rotation. Register one in "
+            "central_bodies._KNOWN_BODIES.")
         return None
     if info["ephemeris_path"] is None:
         _ctx_missing_message(
@@ -973,25 +990,28 @@ def _validate_impact_context(ax: Axes, d: np.ndarray, ctx: "PlotContext",
     return info, mask, n_imp
 
 
-def _compute_impact_latlon(d: np.ndarray, mask: np.ndarray, info: dict
+def _compute_impact_latlon(d: np.ndarray, mask: np.ndarray, info: dict,
+                            ctx: "PlotContext"
                             ) -> tuple[np.ndarray, np.ndarray,
                                         np.ndarray, np.ndarray] | None:
-    """Project ICRF IMPACT rows of `d[mask]` onto the lunar Principal
-    Axes frame, returning `(lat_deg, lon_deg, t_days, case_idx)`.
+    """Project ICRF IMPACT rows of `d[mask]` onto the central body's
+    body-fixed frame, returning `(lat_deg, lon_deg, t_days, case_idx)`.
 
     For every row:
         et    = sim.et_start_s + row.t
-        ang   = eph.lunar_libration_angles(et)
-        R     = icrf_to_moon_pa(*ang)
-        r_pa  = R @ row.y[0:3]              (ICRF -> Moon PA)
+        R     = ctx.central_body.bf_orientation(et, eph)     (ICRF -> BF)
+        r_bf  = R @ row.y[0:3]
         lat   = asin(z/|r|), lon = atan2(y, x)
     `t_days` is `row.t / 86400`. None on ephemeris failure (the
-    caller falls back to the empty-state message)."""
-    from spopy import Ephemeris, icrf_to_moon_pa
+    caller falls back to the empty-state message). Body-agnostic
+    via the CentralBodySpec orientation callback -- Moon today
+    (DE440 lunar librations), Earth in Phase 2 (GMST / IAU 2006)."""
+    from spopy import Ephemeris
     try:
         eph = Ephemeris(str(info["ephemeris_path"]))
     except (OSError, ValueError):
         return None
+    bf_orientation = ctx.central_body.bf_orientation
     n        = int(mask.sum())
     et_start = info["et_start_s"]
     t_sim    = d["t"][mask]
@@ -1002,12 +1022,11 @@ def _compute_impact_latlon(d: np.ndarray, mask: np.ndarray, info: dict
     lon_deg  = np.empty(n)
     for i in range(n):
         et = et_start + float(t_sim[i])
-        phi, theta, psi = eph.lunar_libration_angles(et)
-        R = icrf_to_moon_pa(phi, theta, psi)
-        r_pa = R @ r_icrf[i]
-        norm = np.linalg.norm(r_pa)
-        lat_deg[i] = np.degrees(np.arcsin(r_pa[2] / norm))
-        lon_deg[i] = np.degrees(np.arctan2(r_pa[1], r_pa[0]))
+        R = bf_orientation(et, eph)
+        r_bf = R @ r_icrf[i]
+        norm = np.linalg.norm(r_bf)
+        lat_deg[i] = np.degrees(np.arcsin(r_bf[2] / norm))
+        lon_deg[i] = np.degrees(np.arctan2(r_bf[1], r_bf[0]))
     t_days = t_sim.astype(float) / _SEC_PER_DAY
     return lat_deg, lon_deg, t_days, case_id
 
@@ -1206,12 +1225,12 @@ def _plot_events_impact_map(ax: Axes, d: np.ndarray,
     by time-of-flight (days from sim start) so a cloud's temporal
     decay shows up at a glance: dark blue = earliest impacts, red =
     latest. See `_compute_impact_latlon` for the projection pipeline."""
-    title = "Impact lat/lon on Moon"
+    title = f"Impact lat/lon on {ctx.central_body.name}"
     chk = _validate_impact_context(ax, d, ctx, title)
     if chk is None:
         return
     info, mask, n_imp = chk
-    geom = _compute_impact_latlon(d, mask, info)
+    geom = _compute_impact_latlon(d, mask, info, ctx)
     if geom is None:
         _ctx_missing_message(ax, title, "Could not open ephemeris file.")
         return
@@ -1224,10 +1243,10 @@ def _plot_events_impact_map(ax: Axes, d: np.ndarray,
     # the right. That matches `extent=[-180, 180, -90, 90]` with
     # `origin="upper"` directly -- no spatial transform needed.
     bg_ok = False
-    if ctx.moon_texture is not None and ctx.moon_texture.is_file():
+    if ctx.central_body_texture is not None and ctx.central_body_texture.is_file():
         try:
             import matplotlib.image as mpimg
-            img = mpimg.imread(str(ctx.moon_texture))
+            img = mpimg.imread(str(ctx.central_body_texture))
             ax.imshow(img, extent=[-180.0, 180.0, -90.0, 90.0],
                       origin="upper", aspect="equal",
                       interpolation="bilinear", alpha=0.85)
@@ -1242,9 +1261,11 @@ def _plot_events_impact_map(ax: Axes, d: np.ndarray,
     ax.set_xticks(np.arange(-180, 181, 30))
     ax.set_yticks(np.arange(-90,  91,  30))
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Longitude [deg, PA frame]")
-    ax.set_ylabel("Latitude [deg, PA frame]")
-    title = f"Impact locations on Moon (PA frame)  --  {n_imp} impacts"
+    bf_tag = ctx.central_body.bf_frame_name
+    ax.set_xlabel(f"Longitude [deg, {bf_tag} frame]")
+    ax.set_ylabel(f"Latitude [deg, {bf_tag} frame]")
+    title = (f"Impact locations on {ctx.central_body.name} ({bf_tag} frame)  "
+             f"--  {n_imp} impacts")
     if not bg_ok:
         title += "  (no texture)"
     ax.set_title(title)
@@ -1268,13 +1289,13 @@ def _plot_events_impact_map_mollweide(ax: Axes, d: np.ndarray,
     if chk is None:
         return
     info, mask, n_imp = chk
-    geom = _compute_impact_latlon(d, mask, info)
+    geom = _compute_impact_latlon(d, mask, info, ctx)
     if geom is None:
         _ctx_missing_message(ax, title, "Could not open ephemeris file.")
         return
     lat_deg, lon_deg, t_days, _ = geom
 
-    bg_ok = _draw_mollweide_moon_background(ax, ctx, alpha=0.85)
+    bg_ok = _draw_mollweide_body_background(ax, ctx, alpha=0.85)
     sc = ax.scatter(np.radians(lon_deg), np.radians(lat_deg),
                     c=t_days, cmap="turbo",
                     s=60, edgecolor="white" if bg_ok else "black",
@@ -1284,8 +1305,9 @@ def _plot_events_impact_map_mollweide(ax: Axes, d: np.ndarray,
     # Mollweide axes show their own canonical lat/lon labels; turn
     # off the matplotlib auto-set ones for clarity.
     ax.set_xlabel(""); ax.set_ylabel("")
-    title_text = (f"Impact locations on Moon (PA frame, Mollweide)  "
-                  f"--  {n_imp} impacts")
+    bf_tag = ctx.central_body.bf_frame_name
+    title_text = (f"Impact locations on {ctx.central_body.name} "
+                  f"({bf_tag} frame, Mollweide)  --  {n_imp} impacts")
     if not bg_ok:
         title_text += "  (no texture)"
     ax.set_title(title_text)
@@ -1309,13 +1331,13 @@ def _plot_events_impact_density(ax: Axes, d: np.ndarray,
     if chk is None:
         return
     info, mask, n_imp = chk
-    geom = _compute_impact_latlon(d, mask, info)
+    geom = _compute_impact_latlon(d, mask, info, ctx)
     if geom is None:
         _ctx_missing_message(ax, title, "Could not open ephemeris file.")
         return
     lat_deg, lon_deg, _, _ = geom
 
-    _draw_mollweide_moon_background(ax, ctx, alpha=0.6)
+    _draw_mollweide_body_background(ax, ctx, alpha=0.6)
 
     # 2.5-degree cells -- 4x denser than the original 10-deg default,
     # per user request. With a few thousand fragments the heatmap
@@ -1351,48 +1373,63 @@ def _plot_events_impact_density(ax: Axes, d: np.ndarray,
 
 def _add_reference_triads(canvas: VtkCanvas,
                            scene_frame: str,
-                           R_icrf_to_pa: np.ndarray | None) -> None:
-    """Drop the PA + ICRF reference triads with the project-wide
-    convention: PA bright (primary frame), ICRF muted with sub-1
-    opacity (secondary). The convention is identical across every 3D
-    plot so the reader always finds body-fixed in the full-saturation
-    triad and inertial in the faded one, regardless of which frame
-    the scene's coordinates are expressed in.
+                           R_icrf_to_bf: np.ndarray | None,
+                           radius_km: float = MOON_RADIUS_KM,
+                           bf_frame_label: str = "PA") -> None:
+    """Drop the body-fixed + ICRF reference triads with the project-
+    wide convention: body-fixed bright (primary frame), ICRF muted
+    with sub-1 opacity (secondary). The convention is identical
+    across every 3D plot so the reader always finds body-fixed in
+    the full-saturation triad and inertial in the faded one,
+    regardless of which frame the scene's coordinates are expressed
+    in.
 
-    `scene_frame` is 'pa' for the impact 3D view (markers placed in
-    the body-fixed frame) and 'icrf' for the trajectory 3D plots
-    (trajectory points in the inertial frame). When `R_icrf_to_pa`
-    is None (no per-run ephemeris, or non-Moon central body) we draw
-    only the scene-frame triad -- the secondary frame has no defined
-    direction without the libration angles.
-    """
-    pa_len   = 2.10 * MOON_RADIUS_KM
-    icrf_len = 1.80 * MOON_RADIUS_KM
-    pa_colors = ((1.00, 0.30, 0.30),
+    `scene_frame` is 'bf' (= body-fixed) for the impact 3D view
+    (markers placed in the body-fixed frame) and 'icrf' for the
+    trajectory 3D plots (trajectory points in the inertial frame).
+    When `R_icrf_to_bf` is None (no per-run ephemeris, or the
+    central body has no orientation provider) we draw only the
+    scene-frame triad -- the secondary frame has no defined direction
+    without the rotation.
+
+    `radius_km` is the central body's mean radius -- triad arm
+    lengths scale with it (2.1*R for bright, 1.8*R for muted) so
+    the triads stay visually right both on the Moon (R~1737 km)
+    and on Earth (R~6378 km).
+
+    `bf_frame_label` is the short tag for the body-fixed frame
+    used in axis labels ('PA' for the Moon, 'ITRF' for Earth, ...).
+    Comes from `CentralBodySpec.bf_frame_name`."""
+    bf_len   = 2.10 * radius_km
+    icrf_len = 1.80 * radius_km
+    bf_colors = ((1.00, 0.30, 0.30),
                  (0.30, 0.95, 0.40),
                  (0.40, 0.55, 1.00))
     icrf_colors = ((0.85, 0.55, 0.55),
                    (0.55, 0.80, 0.60),
                    (0.55, 0.65, 0.90))
 
-    if scene_frame == "pa":
-        pa_basis   = np.eye(3)
-        icrf_basis = R_icrf_to_pa            # ICRF basis transported into PA
+    # Accept the legacy 'pa' tag for callers that haven't switched
+    # to 'bf' yet; both name the same scene (body-fixed primary).
+    if scene_frame in ("bf", "pa"):
+        bf_basis   = np.eye(3)
+        icrf_basis = R_icrf_to_bf            # ICRF basis transported into BF
     elif scene_frame == "icrf":
         icrf_basis = np.eye(3)
-        # PA basis vectors expressed in ICRF = columns of R_pa_to_icrf
-        # = columns of R_icrf_to_pa.T. None when no libration is available.
-        pa_basis = R_icrf_to_pa.T if R_icrf_to_pa is not None else None
+        # BF basis vectors expressed in ICRF = columns of R_bf_to_icrf
+        # = columns of R_icrf_to_bf.T. None when no rotation is available.
+        bf_basis = R_icrf_to_bf.T if R_icrf_to_bf is not None else None
     else:
         raise ValueError(
-            f"scene_frame must be 'pa' or 'icrf', got {scene_frame!r}")
+            f"scene_frame must be 'bf' or 'icrf', got {scene_frame!r}")
 
-    if pa_basis is not None:
+    bf_tag = bf_frame_label.lower()
+    if bf_basis is not None:
         canvas.add_frame_triad(
-            basis_in_scene=pa_basis,
-            length_km=pa_len,
-            colors_xyz=pa_colors,
-            labels_xyz=("X_pa", "Y_pa", "Z_pa"),
+            basis_in_scene=bf_basis,
+            length_km=bf_len,
+            colors_xyz=bf_colors,
+            labels_xyz=(f"X_{bf_tag}", f"Y_{bf_tag}", f"Z_{bf_tag}"),
         )
     if icrf_basis is not None:
         canvas.add_frame_triad(
@@ -1741,71 +1778,79 @@ def _add_animated_pa_decoration(canvas: VtkCanvas, ctx: "PlotContext",
         np.asarray(times_s, dtype=float), R_bf_in_icrf)
 
 
-def _resolve_R_icrf_to_pa(ctx: "PlotContext", t_sim_s: float
+def _resolve_R_icrf_to_bf(ctx: "PlotContext", t_sim_s: float
                           ) -> np.ndarray | None:
     """Best-effort: resolve the per-run input.toml, load the
-    ephemeris, and return `R_icrf_to_pa` at `et_start_s + t_sim_s`.
+    ephemeris, and return `R_icrf_to_bf` at `et_start_s + t_sim_s`
+    using the central body's registered orientation provider.
 
-    Returns None on any failure (missing snapshot, non-Moon central
-    body, unreadable ephemeris). Used by the 3D plot functions to
-    decorate the scene with reference triads when the lunar libration
-    is available, and gracefully degrade to a scene-frame-only triad
-    when it is not."""
-    if ctx is None:
+    Returns None on any failure (missing snapshot, body has no
+    `bf_orientation` callable, unreadable ephemeris). Used by the
+    3D plot functions to decorate the scene with reference triads
+    when an orientation is available, and to gracefully degrade to
+    a scene-frame-only triad when it is not."""
+    if ctx is None or ctx.central_body.bf_orientation is None:
         return None
     info = _resolve_run_context(ctx.path)
-    if info is None or info["central_body"].lower() != "moon" \
-            or info["ephemeris_path"] is None:
+    if info is None or info["ephemeris_path"] is None:
         return None
-    from spopy import Ephemeris, icrf_to_moon_pa
+    from spopy import Ephemeris
     try:
         eph = Ephemeris(str(info["ephemeris_path"]))
     except (OSError, ValueError):
         return None
     et = info["et_start_s"] + float(t_sim_s)
-    phi, theta, psi = eph.lunar_libration_angles(et)
-    return icrf_to_moon_pa(phi, theta, psi)
+    return ctx.central_body.bf_orientation(et, eph)
 
 
 def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
                            ctx: PlotContext) -> None:
-    """3D view of the lunar surface with one small sphere per impact
-    placed in the Moon Principal Axes frame. Shares the lat/lon
+    """3D view of the central body's surface with one small sphere per
+    impact placed in the body-fixed frame. Shares the lat/lon
     projection pipeline with `_plot_events_impact_map`: same et-shift,
-    libration angles, ICRF -> PA rotation; the points are then
-    rendered as physical 30-km spheres on the textured Moon instead
-    of a 2D scatter.
+    ICRF -> body-fixed rotation (via
+    `ctx.central_body.bf_orientation`); the points are then rendered
+    as physical small spheres on the textured body instead of a 2D
+    scatter.
 
     Marker colours mirror the 2D map's `time of flight [days]`
     turbo lookup so the same colour means the same impact time
     across the two views (no in-scene colorbar -- VTK does not have
     a comfortable equivalent; the 2D Mollweide / equirect maps
-    surface the legend)."""
+    surface the legend).
+
+    Body-agnostic via the CentralBodySpec orientation callback;
+    marker radius scales with the body's mean radius so the
+    physical-30-km Moon look maps to a proportionally-sized marker
+    on Earth or any other registered body."""
+    body = ctx.central_body
+    body_args = dict(texture_path=ctx.central_body_texture,
+                     radius_km=body.radius_km)
     if "case_idx" not in d.dtype.names:
-        # Renderless wrong-format guard: draw just the Moon so the
+        # Renderless wrong-format guard: draw just the body so the
         # 3D canvas doesn't look broken.
-        canvas.add_central_body(texture_path=ctx.moon_texture)
+        canvas.add_central_body(**body_args)
         return
     info = _resolve_run_context(ctx.path)
-    if info is None or info["central_body"].lower() != "moon" \
-            or info["ephemeris_path"] is None:
-        canvas.add_central_body(texture_path=ctx.moon_texture)
+    if (info is None or info["ephemeris_path"] is None
+            or body.bf_orientation is None):
+        canvas.add_central_body(**body_args)
         return
 
     mask = d["kind"] == EVENT_KIND_IMPACT
     n_imp = int(mask.sum())
     if n_imp == 0:
-        canvas.add_central_body(texture_path=ctx.moon_texture)
+        canvas.add_central_body(**body_args)
         return
 
-    from spopy import Ephemeris, icrf_to_moon_pa
+    from spopy import Ephemeris
     try:
         eph = Ephemeris(str(info["ephemeris_path"]))
     except (OSError, ValueError):
-        canvas.add_central_body(texture_path=ctx.moon_texture)
+        canvas.add_central_body(**body_args)
         return
 
-    canvas.add_central_body(texture_path=ctx.moon_texture)
+    canvas.add_central_body(**body_args)
 
     et_start = info["et_start_s"]
     t_sim    = d["t"][mask]
@@ -1814,39 +1859,42 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
 
     # Frame triads -- drawn before the impact markers so the small
     # markers paint on top (z-fighting bias). Same convention as
-    # every other 3D plot: PA bright, ICRF muted (see
-    # `_add_reference_triads`). The scene IS the PA body-fixed
-    # frame, so R_at_start is the ICRF -> PA rotation at the start
-    # epoch which positions the ICRF triad inside the PA scene.
-    phi0, theta0, psi0 = eph.lunar_libration_angles(et_start)
-    R_at_start = icrf_to_moon_pa(phi0, theta0, psi0)
-    _add_reference_triads(canvas, scene_frame="pa",
-                           R_icrf_to_pa=R_at_start)
+    # every other 3D plot: body-fixed bright, ICRF muted (see
+    # `_add_reference_triads`). The scene IS the body-fixed frame,
+    # so R_at_start is the ICRF -> BF rotation at the start epoch
+    # which positions the ICRF triad inside the body-fixed scene.
+    R_at_start = body.bf_orientation(et_start, eph)
+    _add_reference_triads(canvas, scene_frame="bf",
+                           R_icrf_to_bf=R_at_start,
+                           radius_km=body.radius_km,
+                           bf_frame_label=body.bf_frame_name)
 
     # Build the time-of-flight colour lookup once and vectorise the
-    # per-impact PA rotation. Each impact uses its own
-    # R_icrf_to_pa(et_start + t_sim[i]) -- libration evolves on a
-    # ~1-day scale so we can NOT precompute a single R, but the
-    # per-impact rotation itself is a cheap 3x3 matmul and stays
-    # well below the cost of the old 9000-actor draw call. The
-    # markers themselves now ship through `add_points` as a single
-    # GPU-instanced actor instead of a vtkSphereSource + actor per
-    # point, which on the 9577-case LRO debris run drops the
-    # render-time freeze (~10s) to a single-frame redraw.
+    # per-impact rotation. Each impact uses its own
+    # R_icrf_to_bf(et_start + t_sim[i]) -- body orientation evolves
+    # (e.g. ~1-day scale for lunar libration, ~1-rev/day for Earth
+    # GMST), so we can NOT precompute a single R, but the per-impact
+    # rotation itself is a cheap 3x3 matmul and stays well below the
+    # cost of the old 9000-actor draw call. The markers themselves
+    # ship through `add_points` as a single GPU-instanced actor
+    # instead of a vtkSphereSource + actor per point, which on the
+    # 9577-case LRO debris run drops the render-time freeze (~10s)
+    # to a single-frame redraw.
     t_days = t_sim.astype(float) / _SEC_PER_DAY
     t_lo, t_hi = float(t_days.min()), float(t_days.max())
     span = max(t_hi - t_lo, 1e-9)
     cmap = mpl_colormaps["turbo"]
-    r_pa_arr = np.empty_like(r_icrf)
+    r_bf_arr = np.empty_like(r_icrf)
     for i in range(n_imp):
-        phi, theta, psi = eph.lunar_libration_angles(
-            et_start + float(t_sim[i]))
-        r_pa_arr[i] = icrf_to_moon_pa(phi, theta, psi) @ r_icrf[i]
+        r_bf_arr[i] = body.bf_orientation(
+            et_start + float(t_sim[i]), eph) @ r_icrf[i]
     # cmap accepts an array of fracs and returns an (N, 4) RGBA
     # in [0..1]. Slice off the alpha; the mapper's per-point uchar
-    # array is RGB-only.
+    # array is RGB-only. Marker radius scales with the body radius
+    # (Moon 30 km ~ 1.7% of R_moon; same fraction on Earth -> ~110 km).
     rgba = cmap((t_days - t_lo) / span)
-    canvas.add_points(r_pa_arr, rgba[:, :3], radius_km=30.0)
+    marker_km = 0.017 * body.radius_km
+    canvas.add_points(r_bf_arr, rgba[:, :3], radius_km=marker_km)
 
 
 # ----------------------------------------------------------------------
@@ -1974,7 +2022,7 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
         first_path, first_data = items[0]
         body_ctx = PlotContext(
             path=first_path,
-            moon_texture=ctx.moon_texture if ctx else None,
+            central_body_texture=ctx.central_body_texture if ctx else None,
             scene_options=opts,
             central_body=ctx.central_body if ctx is not None else default_central_body(),
         )
@@ -2029,7 +2077,7 @@ PLOTS: dict[str, list[PlotSpec]] = {
         PlotSpec("YZ projection",               "2d", _p_yz,
                  overlay_fn=_make_2d_overlay(_p_yz),
                  category="Orbit shape"),
-        PlotSpec("3D orbit + Moon",             "3d", _plot_traj_3d_orbit,
+        PlotSpec("3D orbit + central body",     "3d", _plot_traj_3d_orbit,
                  overlay_fn=_overlay_3d_orbit,
                  mode="context",
                  category="Orbit shape"),
@@ -2112,7 +2160,7 @@ PLOTS: dict[str, list[PlotSpec]] = {
         PlotSpec("Impact density heatmap",      "2d",
                  _plot_events_impact_density,
                  mode="context", projection="mollweide"),
-        PlotSpec("Impact 3D on Moon",           "3d",
+        PlotSpec("Impact 3D on central body",   "3d",
                  _plot_events_impact_3d,         mode="context"),
     ],
 }
@@ -2795,7 +2843,7 @@ class AnalysisPanel(QWidget):
                 f"'{spec.label}' draws multiple lines per file, so an "
                 "overlay would not be legible. Pick a single-series plot "
                 "(e.g. |r|(t), |v|(t), an orbit projection, |a_total|, "
-                "eclipse fraction, or '3D orbit + Moon') and try again."
+                "eclipse fraction, or '3D orbit + central body') and try again."
             )
             return
 
@@ -2840,7 +2888,7 @@ class AnalysisPanel(QWidget):
         # scaling (3D). Built once per dispatch.
         ovl_ctx = PlotContext(
             path=items[0][0],
-            moon_texture=self._configured_moon_texture(),
+            central_body_texture=self._configured_central_body_texture(),
             scene_options=self._scene_options,
             central_body=self._central_body,
         ) if items else None
@@ -2854,7 +2902,7 @@ class AnalysisPanel(QWidget):
                 self._canvas.draw_idle()
             else:  # "3d"
                 self._stack.setCurrentIndex(1)
-                self._vtk.set_central_body_texture(self._configured_moon_texture())
+                self._vtk.set_central_body_texture(self._configured_central_body_texture())
                 self._vtk.clear_scene()
                 spec.overlay_fn(self._vtk, items, ovl_ctx)
                 # Pin the rotation pivot on the central body so mouse-
@@ -3100,7 +3148,7 @@ class AnalysisPanel(QWidget):
         # Built once: context specs all consume the same PlotContext
         # (one file = one path) -- no need to re-build per subplot.
         ctx = (PlotContext(path=self._path,
-                           moon_texture=self._configured_moon_texture(),
+                           central_body_texture=self._configured_central_body_texture(),
                            scene_options=self._scene_options,
                            central_body=self._central_body)
                if mode == "single" and self._path is not None
@@ -3329,21 +3377,33 @@ class AnalysisPanel(QWidget):
                         self._loading_item = False
                     return
 
-    def _configured_moon_texture(self) -> Path | None:
-        """Look up the Moon texture path from Settings on demand so
-        edits via the Settings dialog take effect on the next 3D plot
-        without restarting. When the user hasn't set an explicit
-        override, fall back to the wizard-managed file under the data
-        dir (see assets.moon_texture_path); that lets a fresh install
-        get the photo texture for free after a single click in the
-        Setup wizard. Returns None when neither is present -- VtkCanvas
-        / the 2D map then fall back to the flat-grey sphere / no
-        background."""
-        raw = self._store.moon_texture()
-        if raw and Path(raw).is_file():
-            return Path(raw)
+    def _configured_central_body_texture(self) -> Path | None:
+        """Resolve the equirectangular texture for the currently loaded
+        run's central body. Looked up on demand so edits via the
+        Settings dialog take effect on the next 3D plot without
+        restarting.
+
+        Resolution order:
+          1. Legacy Moon path: when the run's central body is Moon AND
+             the user has a Settings > Paths override (`moon_texture`),
+             honour the override. Kept so existing user setups keep
+             working bit-for-bit.
+          2. Body-aware wizard fallback: walk the asset registry for
+             entries tagged `category='texture', body=<body name>`
+             and return the first one present under the data dir.
+             Adding Earth in Phase 2 is one Asset entry + nothing
+             here -- this path picks it up automatically.
+
+        Returns None when neither yields a file -- VtkCanvas / the
+        2D map then fall back to the flat-grey sphere / no background."""
         from . import assets
-        return assets.moon_texture_path(self._store.data_dir())
+        body_name = self._central_body.name
+        if body_name == "Moon":
+            raw = self._store.moon_texture()
+            if raw and Path(raw).is_file():
+                return Path(raw)
+        return assets.central_body_texture_path(
+            self._store.data_dir(), body_name)
 
     def _plot_diff(self, spec: PlotSpec) -> None:
         """Render a mode='diff' plot: two trajectories selected in the
@@ -3418,7 +3478,7 @@ class AnalysisPanel(QWidget):
         # pure (ax, data, ctx) call. self._path is guaranteed non-None
         # whenever self._data is (set together in load_file).
         ctx = (PlotContext(path=self._path,
-                           moon_texture=self._configured_moon_texture(),
+                           central_body_texture=self._configured_central_body_texture(),
                            scene_options=self._scene_options,
                            central_body=self._central_body)
                if spec.mode == "context" and self._path is not None
@@ -3437,7 +3497,7 @@ class AnalysisPanel(QWidget):
                 self._canvas.draw_idle()
             else:  # "3d"
                 self._stack.setCurrentIndex(1)
-                self._vtk.set_central_body_texture(self._configured_moon_texture())
+                self._vtk.set_central_body_texture(self._configured_central_body_texture())
                 self._vtk.clear_scene()
                 if ctx is not None:
                     spec.fn(self._vtk, self._data, ctx)
