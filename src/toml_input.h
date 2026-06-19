@@ -30,6 +30,7 @@
 #include <stddef.h>
 
 #include "app_diagnostics.h"   /* SpodyError, SpodyErrorCode */
+#include "central_body.h"      /* SpodyCentralBody + registry helpers */
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,10 +47,6 @@ typedef enum {
 typedef enum {
     SPODY_INTEG_TYPE_RKDP45 = 0
 } SpodyIntegratorType;
-
-typedef enum {
-    SPODY_CENTRAL_MOON = 0  /* v0 supports only Moon as central body */
-} SpodyCentralBody;
 
 typedef enum {
     SPODY_FRAME_CENTRAL_INERTIAL = 0

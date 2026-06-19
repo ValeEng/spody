@@ -277,10 +277,12 @@ static int req_string_array(toml_table_t *tbl,
 
 static int parse_central_body(const char *name, SpodyCentralBody *out,
                               SpodyError *err) {
-    if (strcmp(name, "Moon") == 0) { *out = SPODY_CENTRAL_MOON; return SPODY_OK; }
+    if (spody_central_body_from_name(name, out) == 0) return SPODY_OK;
+    char known[128];
+    spody_central_body_known_names(known, sizeof known);
     spody_error_set(err, SPODY_ERR_BAD_VALUE,
-            "force_model.central_body = '%s' is not supported in v0 "
-            "(supported: 'Moon')", name);
+            "force_model.central_body = '%s' is not supported "
+            "(known: %s)", name, known);
     return SPODY_ERR_BAD_VALUE;
 }
 
@@ -1276,10 +1278,13 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                     i, cfg->third_body_names[i]);
             return SPODY_ERR_BAD_VALUE;
         }
-        if (cfg->central_body == SPODY_CENTRAL_MOON && naif == 301) {
+        const SpodyCentralBodySpec *cb =
+                spody_central_body_get(cfg->central_body);
+        if (cb && naif == cb->naif) {
             spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                    "force_model.third_bodies[%d] = 'Moon' cannot coexist "
-                    "with central_body = 'Moon'", i);
+                    "force_model.third_bodies[%d] = '%s' cannot coexist "
+                    "with central_body = '%s'", i,
+                    cfg->third_body_names[i], cb->name);
             return SPODY_ERR_BAD_VALUE;
         }
         for (int j = 0; j < i; ++j) {

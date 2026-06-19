@@ -27,32 +27,6 @@
 
 #include "spody_const.h"
 
-/* Resolve central-body name to (mu, mean radius, NAIF, body-fixed
- * orientation provider). v0 supports only the Moon; this is the
- * single place to extend when adding Earth / Mars.
- *
- * `*get_R` ends up in `ForceModelContext.get_bf_rotation` so the
- * spherical-harmonics force can rotate ICRF<->body-fixed without
- * knowing which body it is. Each new central body declares its own
- * concrete provider in spody-core (analogous to
- * spody_bf_rotation_moon for the lunar libration) and the case
- * below picks the right one. */
-static int central_body_props(SpodyCentralBody body,
-                              double *mu, double *R, int *naif,
-                              spody_bf_rotation_fn *get_R,
-                              SpodyError *err) {
-    switch (body) {
-    case SPODY_CENTRAL_MOON:
-        *mu = MOON_MU; *R = MOON_RADIUS; *naif = 301;
-        *get_R = spody_bf_rotation_moon;
-        return SPODY_OK;
-    default:
-        spody_error_set(err, SPODY_ERR_INTERNAL,
-                "internal: unsupported central body enum (%d)", (int)body);
-        return SPODY_ERR_INTERNAL;
-    }
-}
-
 /* ==================================================================
  * Shared (read-only, file-mapped) resources
  * ================================================================== */
@@ -154,17 +128,21 @@ int spody_build_worker(const InputConfig *cfg,
         }
     }
 
-    /* Force model context. */
-    double mu_c = 0.0, R_c = 0.0; int naif_c = 0;
-    spody_bf_rotation_fn get_R_c = NULL;
-    int rc = central_body_props(cfg->central_body,
-                                &mu_c, &R_c, &naif_c, &get_R_c, err);
-    if (rc != SPODY_OK) goto fail;
+    /* Force model context. Central-body properties (mu, radius, NAIF,
+     * body-fixed rotation provider) come from the central_body.{h,c}
+     * registry -- this TU stays body-agnostic. */
+    const SpodyCentralBodySpec *body = spody_central_body_get(cfg->central_body);
+    if (!body) {
+        spody_error_set(err, SPODY_ERR_INTERNAL,
+                "internal: unsupported central body enum (%d)",
+                (int)cfg->central_body);
+        goto fail;
+    }
 
-    w->ctx.mu_central          = mu_c;
-    w->ctx.R_central           = R_c;
-    w->ctx.naif_central        = naif_c;
-    w->ctx.get_bf_rotation     = get_R_c;
+    w->ctx.mu_central          = body->mu;
+    w->ctx.R_central           = body->radius_km;
+    w->ctx.naif_central        = body->naif;
+    w->ctx.get_bf_rotation     = body->bf_rotation;
     w->ctx.sat                 = &w->sat;
     w->ctx.hg                  = &w->hg;
     w->ctx.eph                 = &w->eph;
@@ -172,10 +150,9 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.third_mu            = w->third_mu;
     w->ctx.n_third             = w->n_third;
     w->ctx.enable_srp          = cfg->enable_srp;
-    /* Eclipse-occulter defaults: in v0 the central body shadows the satellite.
-     * For Moon, this is naif 301 and MOON_RADIUS. */
-    w->ctx.srp_occulter_naif   = naif_c;
-    w->ctx.srp_occulter_radius = R_c;
+    /* Eclipse-occulter defaults: the central body shadows the satellite. */
+    w->ctx.srp_occulter_naif   = body->naif;
+    w->ctx.srp_occulter_radius = body->radius_km;
     w->ctx.sun_radius          = SUN_RADIUS;
     w->ctx.enable_drag         = 0;
     w->ctx.et0                 = cfg->et_start_s;

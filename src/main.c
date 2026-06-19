@@ -79,7 +79,7 @@ static void print_config_summary(const InputConfig *cfg) {
     spody_log_printf("  duration         : %.3e s  (%.3f days)\n",
            cfg->duration_s, cfg->duration_s / 86400.0);
     spody_log_printf("  central body     : %s\n",
-           cfg->central_body == SPODY_CENTRAL_MOON ? "Moon" : "?");
+           spody_central_body_name(cfg->central_body));
     spody_log_printf("  harmonics file   : %s  (N=%d)\n",
            cfg->harmonics_file, cfg->harmonics_degree);
     spody_log_printf("  ephemeris file   : %s\n", cfg->ephemeris_file);

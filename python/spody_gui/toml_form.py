@@ -39,6 +39,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from .central_bodies import known_central_body_names
+
 if TYPE_CHECKING:
     from .settings import SettingsStore
 
@@ -72,8 +74,10 @@ from PySide6.QtWidgets import (
 # Catalogue of "known" enum / list values offered as drop-down or
 # checkbox sets. Kept here (rather than in the autocomplete schema)
 # because the form's needs are slightly different -- e.g. third bodies
-# get individual checkboxes, not a combo list. Adding a new central
-# body / integrator is a one-line edit to these tuples.
+# get individual checkboxes, not a combo list. `CENTRAL_BODIES` is
+# sourced from the registry in central_bodies.py so adding a body
+# (Phase 2 = Earth) is one line there and shows up in the form
+# automatically; the other tuples are short enough to extend in place.
 # ----------------------------------------------------------------------
 class _AssetCombo(QComboBox):
     """QComboBox subclass used by `_add_asset_combo`. Each item's
@@ -125,7 +129,7 @@ class _AssetCombo(QComboBox):
         self.setCurrentIndex(self.count() - 1)
 
 
-CENTRAL_BODIES   = ("Moon",)
+CENTRAL_BODIES   = known_central_body_names()
 FRAMES           = ("central_inertial",)
 INTEGRATORS      = ("rkdp45",)
 OUTPUT_MODES     = ("fixed", "step")
@@ -181,7 +185,7 @@ _TOOLTIPS: dict[str, str] = {
     "initial_state.frame":           "Inertial reference frame. v0 supports only 'central_inertial'.",
     "initial_state.position_km":     "[x, y, z] position in km, central-body inertial frame.",
     "initial_state.velocity_kms":    "[vx, vy, vz] velocity in km/s, same frame as position.",
-    "force_model.central_body":      "Central body of the propagation. v0 supports only 'Moon'.",
+    "force_model.central_body":      "Central body of the propagation. Supported: " + ", ".join(f"'{n}'" for n in CENTRAL_BODIES) + ".",
     "force_model.harmonics_file":    "Spherical-harmonics coefficient file (e.g. GRGM1200B).",
     "force_model.harmonics_degree":  "Truncation degree; ≥ 2 and ≤ file maximum (1200 for GRGM1200B).",
     "force_model.third_bodies":      "Perturbing bodies; pick from the standard NAIF set.",

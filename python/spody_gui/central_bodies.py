@@ -208,3 +208,10 @@ def default_central_body() -> CentralBodySpec:
     must be the Moon", so loading bare `.bin` files (no snapshot)
     keeps rendering the Moon as before."""
     return _KNOWN_BODIES["Moon"]
+
+
+def known_central_body_names() -> tuple[str, ...]:
+    """Names of all registered central bodies, in declaration order.
+    Used by the TOML form (toml_form.CENTRAL_BODIES) and any other
+    place that needs to enumerate supported bodies for the user."""
+    return tuple(_KNOWN_BODIES.keys())
