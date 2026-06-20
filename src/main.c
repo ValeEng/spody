@@ -26,6 +26,7 @@
  *   spody batch      <input.toml> [--out <dir>]
  *   spody validate   <input.toml>
  *   spody convert    ephemeris <dir> <de> <date1> [date2 ...]
+ *   spody convert    harmonics_icgem <input.gfc> <output.tab> [--max-degree N]
  *   spody info
  */
 #include <float.h>
@@ -788,64 +789,127 @@ static int cmd_maxhgdegree(int argc, char **argv) {
     return 0;
 }
 
-/* Convert raw external data into spody's native binary format.
+/* Convert raw external data into spody's native binary / .tab formats.
  *
- * Subform:
- *   spody convert ephemeris <folder> <de_family> <date1> [date2 ...]
+ * Subforms:
+ *   spody convert ephemeris       <folder> <de_family> <date1> [date2 ...]
+ *   spody convert harmonics_icgem <input.gfc> <output.tab> [--max-degree N]
  *
- * `folder` holds the JPL ASCII chunks (header.<de_family> +
- * ascpXXXXX.<de_family>); the output `de<de_family>.spody` is written
- * back into the same folder. The list of dates names the chunks to
- * include (without the "ascp" prefix and ".<de>" suffix), e.g.
+ * `ephemeris`: `folder` holds the JPL ASCII chunks
+ * (header.<de_family> + ascpXXXXX.<de_family>); the output
+ * `de<de_family>.spody` is written back into the same folder. The list
+ * of dates names the chunks to include (without the "ascp" prefix and
+ * ".<de>" suffix), e.g.
  *   spody convert ephemeris ./data/DE440 440 01950 02050
  *
- * Exposed primarily so the Python setup wizard can produce the
- * ephemeris binary without shipping its own converter.
+ * `harmonics_icgem`: read an ICGEM .gfc spherical-harmonic gravity
+ * file (the standard format used by EGM2008, EGM2020, EIGEN-6C4,
+ * GOCE-DIR, GRACE GGM05C, etc.) and write a .tab file in the
+ * GRGM1200B-compatible CSV layout consumed by
+ * spody_load_HarmonicGravityData. With `--max-degree N` the output is
+ * truncated; without it the full model is kept (the harmonics loader
+ * truncates again at read time per the user's TOML).
+ *   spody convert harmonics_icgem ./data/EGM2008/EGM2008.gfc \
+ *                                 ./data/EGM2008/egm2008.tab
+ *
+ * Both subforms are exposed primarily so the Python setup wizard can
+ * produce the binary / .tab assets without shipping its own converter.
  */
 static int cmd_convert(int argc, char **argv) {
-    if (argc < 2 || strcmp(argv[1], "ephemeris") != 0) {
+    if (argc < 2) {
         fprintf(stderr,
-            "usage: spody convert ephemeris <folder> <de_family> "
+            "usage: spody convert ephemeris       <folder> <de_family> "
             "<date1> [date2 ...]\n"
-            "  e.g. spody convert ephemeris ./data/DE440 440 01950\n");
+            "       spody convert harmonics_icgem <input.gfc> <output.tab> "
+            "[--max-degree N]\n");
         return 1;
-    }
-    if (argc < 5) {
-        fprintf(stderr,
-            "convert ephemeris: need <folder>, <de_family>, and >= 1 date.\n");
-        return 1;
-    }
-    const char *folder = argv[2];
-    const char *de     = argv[3];
-    int n_files        = argc - 4;
-    const char **dates = (const char **)(argv + 4);
-
-    spody_log_printf("spody convert ephemeris: %s (DE%s, %d chunk%s)\n",
-        folder, de, n_files, n_files == 1 ? "" : "s");
-    for (int i = 0; i < n_files; ++i) {
-        spody_log_printf("  - ascp%s.%s\n", dates[i], de);
     }
 
-    /* `spody_createfile_MappedEphemerisData` builds its file paths as
-     * `./<path>/...` (CWD-relative by design, see the function in
-     * spody-core/src/spody_ephemeris.c). That breaks when `folder` is
-     * absolute or contains a drive letter. Sidestep by chdir'ing INTO
-     * the folder and passing "." -- works for both relative and
-     * absolute inputs without touching spody-core. */
-    if (spody_chdir(folder) != 0) {
-        fprintf(stderr,
-            "convert ephemeris: cannot enter folder '%s'\n", folder);
-        return 1;
+    /* ---- ephemeris ----------------------------------------------- */
+    if (strcmp(argv[1], "ephemeris") == 0) {
+        if (argc < 5) {
+            fprintf(stderr,
+                "convert ephemeris: need <folder>, <de_family>, and >= 1 date.\n");
+            return 1;
+        }
+        const char *folder = argv[2];
+        const char *de     = argv[3];
+        int n_files        = argc - 4;
+        const char **dates = (const char **)(argv + 4);
+
+        spody_log_printf("spody convert ephemeris: %s (DE%s, %d chunk%s)\n",
+            folder, de, n_files, n_files == 1 ? "" : "s");
+        for (int i = 0; i < n_files; ++i) {
+            spody_log_printf("  - ascp%s.%s\n", dates[i], de);
+        }
+
+        /* `spody_createfile_MappedEphemerisData` builds its file paths
+         * as `./<path>/...` (CWD-relative by design, see the function
+         * in spody-core/src/spody_ephemeris.c). That breaks when
+         * `folder` is absolute or contains a drive letter. Sidestep by
+         * chdir'ing INTO the folder and passing "." -- works for both
+         * relative and absolute inputs without touching spody-core. */
+        if (spody_chdir(folder) != 0) {
+            fprintf(stderr,
+                "convert ephemeris: cannot enter folder '%s'\n", folder);
+            return 1;
+        }
+        int rc = spody_createfile_MappedEphemerisData(".", dates, n_files, de);
+        if (rc != 0) {
+            fprintf(stderr,
+                "convert ephemeris: spody_createfile_MappedEphemerisData "
+                "returned %d\n", rc);
+            return 1;
+        }
+        spody_log_printf("OK -- wrote %s/de%s.spody\n", folder, de);
+        return 0;
     }
-    int rc = spody_createfile_MappedEphemerisData(".", dates, n_files, de);
-    if (rc != 0) {
-        fprintf(stderr,
-            "convert ephemeris: spody_createfile_MappedEphemerisData "
-            "returned %d\n", rc);
-        return 1;
+
+    /* ---- harmonics_icgem ----------------------------------------- */
+    if (strcmp(argv[1], "harmonics_icgem") == 0) {
+        if (argc < 4) {
+            fprintf(stderr,
+                "convert harmonics_icgem: need <input.gfc> and <output.tab>.\n"
+                "  e.g. spody convert harmonics_icgem ./data/EGM2008/EGM2008.gfc "
+                "./data/EGM2008/egm2008.tab\n");
+            return 1;
+        }
+        const char *input_gfc  = argv[2];
+        const char *output_tab = argv[3];
+        int max_degree = 0;  /* 0 = keep full model */
+        for (int i = 4; i < argc; ++i) {
+            if (strcmp(argv[i], "--max-degree") == 0 && i + 1 < argc) {
+                max_degree = (int)strtol(argv[++i], NULL, 10);
+                if (max_degree < 2) {
+                    fprintf(stderr,
+                        "convert harmonics_icgem: --max-degree must be >= 2 "
+                        "(got %d)\n", max_degree);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr,
+                    "convert harmonics_icgem: unrecognised arg '%s'\n", argv[i]);
+                return 1;
+            }
+        }
+        spody_log_printf("spody convert harmonics_icgem: %s -> %s%s\n",
+            input_gfc, output_tab,
+            max_degree > 0 ? " (truncated)" : "");
+        int rc = spody_convert_icgem_to_tab(input_gfc, output_tab, max_degree);
+        if (rc != 0) {
+            fprintf(stderr,
+                "convert harmonics_icgem: spody_convert_icgem_to_tab "
+                "returned %d\n", rc);
+            return 1;
+        }
+        spody_log_printf("OK -- wrote %s\n", output_tab);
+        return 0;
     }
-    spody_log_printf("OK -- wrote %s/de%s.spody\n", folder, de);
-    return 0;
+
+    fprintf(stderr,
+        "convert: unknown subform '%s' (expected 'ephemeris' or "
+        "'harmonics_icgem')\n", argv[1]);
+    return 1;
 }
 
 static void usage(const char *prog) {
@@ -860,6 +924,8 @@ static void usage(const char *prog) {
         "  validate   <input.toml>                 check input file (no run)\n"
         "  convert    ephemeris <dir> <de> <date1> [date2 ...]\n"
         "                                          DE ASCII -> de<X>.spody\n"
+        "  convert    harmonics_icgem <input.gfc> <output.tab> [--max-degree N]\n"
+        "                                          ICGEM .gfc -> GRGM-style .tab\n"
         "  info                                    print version and capabilities\n"
         "  maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n"
         "                                          largest useful harmonics degree\n"
