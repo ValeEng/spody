@@ -57,6 +57,30 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
     }
     shared->init_hgd = 1;
 
+    /* Earth-only: EOP table + IAU 2006/2000A_R06 series tables.
+     * Both required by spody_bf_rotation_earth at every RHS evaluation.
+     * Pre-validated by spody_validate_input to exist on disk. */
+    if (cfg->central_body == SPODY_CENTRAL_EARTH) {
+        if (spody_setup_MappedEOPData(&shared->eop_data,
+                                      cfg->eop_file) != 0) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "spody_setup_MappedEOPData failed for '%s'",
+                    cfg->eop_file);
+            goto fail;
+        }
+        shared->init_eop = 1;
+
+        if (spody_setup_MappedIAU2006Data(&shared->iau2006_data,
+                                          cfg->iau2006_dir) != 0) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "spody_setup_MappedIAU2006Data failed for '%s' "
+                    "(directory must contain tab5.2a.txt, tab5.2b.txt, "
+                    "tab5.2d.txt)", cfg->iau2006_dir);
+            goto fail;
+        }
+        shared->init_iau = 1;
+    }
+
     return SPODY_OK;
 
 fail:
@@ -66,6 +90,8 @@ fail:
 
 void spody_free_shared(SimulationShared *shared) {
     if (!shared) return;
+    if (shared->init_iau) { spody_free_MappedIAU2006Data(&shared->iau2006_data); shared->init_iau = 0; }
+    if (shared->init_eop) { spody_free_MappedEOPData     (&shared->eop_data);    shared->init_eop = 0; }
     if (shared->init_hgd) { spody_free_HarmonicGravityData(&shared->hgd); shared->init_hgd = 0; }
     if (shared->init_med) { spody_free_MappedEphemerisData(&shared->med); shared->init_med = 0; }
 }
@@ -87,6 +113,20 @@ int spody_build_worker(const InputConfig *cfg,
 
     spody_setup_HarmonicGravity(&w->hg, &shared->hgd);
     w->init_hg = 1;
+
+    /* Earth-only: per-thread EOP / IAU 2006 handles bound to the
+     * shared, read-only data. We bind them whenever the Shared has
+     * them initialised (which Shared does iff central_body == Earth);
+     * the ctx pointers below decide whether the engine actually uses
+     * them. Keeping the bind unconditional simplifies cleanup. */
+    if (shared->init_eop) {
+        spody_setup_MappedEOP(&w->eop, &shared->eop_data);
+        w->init_eop_w = 1;
+    }
+    if (shared->init_iau) {
+        spody_setup_MappedIAU2006(&w->iau2006, &shared->iau2006_data);
+        w->init_iau_w = 1;
+    }
 
     /* Spacecraft. Drag is disabled in v0 (placeholder in spody-core). */
     w->sat.mass      = cfg->mass_kg;
@@ -146,6 +186,12 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.sat                 = &w->sat;
     w->ctx.hg                  = &w->hg;
     w->ctx.eph                 = &w->eph;
+    /* EOP / IAU 2006 slots are body-specific. spody_bf_rotation_earth
+     * reads them on every step; spody_bf_rotation_moon (and any other
+     * non-Earth provider) ignores them, so passing NULL there is the
+     * documented contract. */
+    w->ctx.eop                 = w->init_eop_w ? &w->eop     : NULL;
+    w->ctx.iau2006             = w->init_iau_w ? &w->iau2006 : NULL;
     w->ctx.third_naif          = w->third_naif;
     w->ctx.third_mu            = w->third_mu;
     w->ctx.n_third             = w->n_third;
@@ -203,7 +249,9 @@ void spody_free_worker(SimulationWorker *w) {
     free(w->third_naif); w->third_naif = NULL;
     free(w->third_mu);   w->third_mu   = NULL;
     w->n_third = 0;
-    if (w->init_hg)  { spody_free_HarmonicGravity(&w->hg);  w->init_hg  = 0; }
-    if (w->init_eph) { spody_free_MappedEphemeris(&w->eph); w->init_eph = 0; }
+    if (w->init_iau_w) { spody_free_MappedIAU2006(&w->iau2006); w->init_iau_w = 0; }
+    if (w->init_eop_w) { spody_free_MappedEOP(&w->eop);         w->init_eop_w = 0; }
+    if (w->init_hg)    { spody_free_HarmonicGravity(&w->hg);    w->init_hg    = 0; }
+    if (w->init_eph)   { spody_free_MappedEphemeris(&w->eph);   w->init_eph   = 0; }
     w->shared = NULL;
 }

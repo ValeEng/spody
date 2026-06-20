@@ -43,7 +43,8 @@ extern "C" {
 #endif
 
 typedef enum {
-    SPODY_CENTRAL_MOON = 0
+    SPODY_CENTRAL_MOON  = 0,
+    SPODY_CENTRAL_EARTH = 1
 } SpodyCentralBody;
 
 /* Everything the app needs about a central body. Constructed exactly

@@ -18,14 +18,17 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "spody_const.h"        /* MOON_MU, MOON_RADIUS */
+#include "spody_const.h"             /* MOON_MU, MOON_RADIUS, EARTH_MU, EARTH_RADIUS */
+#include "spody_earth_orientation.h" /* spody_bf_rotation_earth */
 
-/* Static registry of supported central bodies. Phase 1 ships only the
- * Moon, matching the engine's body-fixed rotation coverage; Phase 2
- * will add Earth (its spody_bf_rotation_earth provider, an EGM
- * harmonics file and an EARTH_* pair of constants in spody_const.h).
+/* Static registry of supported central bodies. Order is irrelevant --
+ * lookups are linear over a single-digit list.
  *
- * Order is irrelevant -- lookups are linear over a single-digit list. */
+ * Earth's bf_rotation provider needs MappedEOP + MappedIAU2006 data
+ * via ForceModelContext (see spody_bf_rotation_earth in spody-core);
+ * sim_setup attaches those to ctx.eop / ctx.iau2006 when
+ * central_body == "Earth". The registry row itself stays the same
+ * shape as Moon -- the per-body data plumbing is owned by sim_setup. */
 static const SpodyCentralBodySpec _registry[] = {
     {
         .body        = SPODY_CENTRAL_MOON,
@@ -34,6 +37,14 @@ static const SpodyCentralBodySpec _registry[] = {
         .mu          = MOON_MU,
         .radius_km   = MOON_RADIUS,
         .bf_rotation = spody_bf_rotation_moon,
+    },
+    {
+        .body        = SPODY_CENTRAL_EARTH,
+        .name        = "Earth",
+        .naif        = 399,
+        .mu          = EARTH_MU,
+        .radius_km   = EARTH_RADIUS,
+        .bf_rotation = spody_bf_rotation_earth,
     },
 };
 static const size_t _registry_n = sizeof _registry / sizeof _registry[0];

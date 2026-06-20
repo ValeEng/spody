@@ -72,9 +72,18 @@ extern "C" {
 typedef struct {
     MappedEphemerisData med;
     HarmonicGravityData hgd;
+    /* Earth-only inputs (populated iff cfg->central_body == Earth).
+     * MappedEOPData parses finals2000A.all once at process start;
+     * MappedIAU2006Data parses the three IERS series tables (X, Y,
+     * s+XY/2) at the same time. Both are read-only post-build and can
+     * be safely shared across worker threads. */
+    MappedEOPData       eop_data;
+    MappedIAU2006Data   iau2006_data;
 
     unsigned init_med : 1;
     unsigned init_hgd : 1;
+    unsigned init_eop : 1;
+    unsigned init_iau : 1;
 } SimulationShared;
 
 /* ------------------------------------------------------------------
@@ -93,6 +102,13 @@ typedef struct {
 
     MappedEphemeris    eph;
     HarmonicGravity    hg;
+    /* Earth-only per-thread handles. MappedEOP carries a per-thread
+     * lookup cache (cached_idx + cached_valid) so we cannot share one
+     * across worker threads; MappedIAU2006 is currently stateless but
+     * kept symmetric for the same reason should it grow per-thread
+     * state later. Both reference the read-only Shared data above. */
+    MappedEOP          eop;
+    MappedIAU2006      iau2006;
     Spacecraft         sat;
     ForceModelContext  ctx;
     IntegratorAllData  integ;
@@ -104,9 +120,11 @@ typedef struct {
 
     /* Init flags drive cleanup -- each handle's free() is only called
      * when the corresponding setup actually succeeded. */
-    unsigned init_eph   : 1;
-    unsigned init_hg    : 1;
-    unsigned init_integ : 1;
+    unsigned init_eph     : 1;
+    unsigned init_hg      : 1;
+    unsigned init_eop_w   : 1;
+    unsigned init_iau_w   : 1;
+    unsigned init_integ   : 1;
 } SimulationWorker;
 
 /* ------------------------------------------------------------------

@@ -457,6 +457,31 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
                                &cfg->n_third_bodies, err))) return rc;
     if ((rc = req_bool(t, "force_model", "srp",
                        &cfg->enable_srp, err))) return rc;
+
+    /* Earth-only assets. Both are OPTIONAL at the schema level so
+     * Moon-centred TOMLs (the majority today) parse unchanged; the
+     * required-when-Earth check lives in spody_validate_input. The
+     * relative -> absolute path resolution is done here so the
+     * resolved strings are available to validation and to sim_setup
+     * regardless of whether the body actually uses them. */
+    {
+        char rel[SPODY_MAX_PATH] = {0};
+        int  present = 0;
+        if ((rc = opt_string(t, "eop_file", rel, sizeof rel, &present))) return rc;
+        if (present) {
+            resolve_path(toml_dir, rel,
+                         cfg->eop_file, sizeof cfg->eop_file);
+        }
+    }
+    {
+        char rel[SPODY_MAX_PATH] = {0};
+        int  present = 0;
+        if ((rc = opt_string(t, "iau2006_dir", rel, sizeof rel, &present))) return rc;
+        if (present) {
+            resolve_path(toml_dir, rel,
+                         cfg->iau2006_dir, sizeof cfg->iau2006_dir);
+        }
+    }
     return SPODY_OK;
 }
 
@@ -1262,9 +1287,21 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
     }
 
     /* Harmonics degree -- 1200 is the upper bound of GRGM1200B coefficients. */
-    if (cfg->harmonics_degree < 2 || cfg->harmonics_degree > 1200) {
+    /* The schema-level cap (2200) covers every model in current use
+     * (GRGM1200B N=1200, EIGEN-6C4 N=2190, EGM2008 N=2190) with a
+     * little headroom for future ones. The ACTUAL usable maximum for
+     * a given run is the N declared in the harmonics_file's header --
+     * spody_load_HarmonicGravityData rejects degree > file_N at load
+     * time with a separate error. The lower bound is 2 since
+     * degree 0 (point mass) and degree 1 (CoM origin) are absorbed
+     * in the central-body convention. */
+    if (cfg->harmonics_degree < 2 || cfg->harmonics_degree > 2200) {
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "force_model.harmonics_degree must be in [2, 1200] (got %d)",
+                "force_model.harmonics_degree = %d is outside the schema "
+                "range [2, 2200]. Note: the effective upper bound is the "
+                "N declared in the chosen harmonics_file (e.g. 1200 for "
+                "GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); this 2200 cap "
+                "is only the absolute schema ceiling.",
                 cfg->harmonics_degree);
         return SPODY_ERR_BAD_VALUE;
     }
@@ -1307,6 +1344,39 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
         spody_error_set(err, SPODY_ERR_FILE_NOT_FOUND,
                 "ephemeris_file not found: %s", cfg->ephemeris_file);
         return SPODY_ERR_FILE_NOT_FOUND;
+    }
+
+    /* Earth-only: both EOP and IAU 2006 paths required, and the canonical
+     * file inside each must exist. We probe iau2006_dir/tab5.2a.txt
+     * (the X series, biggest of the three -- if that's present the dir
+     * is almost certainly the right one) rather than stat'ing the
+     * directory itself, so the check is portable without a dir-stat
+     * helper. spody_setup_MappedIAU2006Data fails loudly later if the
+     * other two tables are missing. */
+    if (cfg->central_body == SPODY_CENTRAL_EARTH) {
+        if (cfg->eop_file[0] == '\0') {
+            spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                    "force_model.eop_file is required when central_body = 'Earth'");
+            return SPODY_ERR_MISSING_KEY;
+        }
+        if (cfg->iau2006_dir[0] == '\0') {
+            spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                    "force_model.iau2006_dir is required when central_body = 'Earth'");
+            return SPODY_ERR_MISSING_KEY;
+        }
+        if (!file_exists(cfg->eop_file)) {
+            spody_error_set(err, SPODY_ERR_FILE_NOT_FOUND,
+                    "eop_file not found: %s", cfg->eop_file);
+            return SPODY_ERR_FILE_NOT_FOUND;
+        }
+        char probe[SPODY_MAX_PATH];
+        snprintf(probe, sizeof probe, "%s/tab5.2a.txt", cfg->iau2006_dir);
+        if (!file_exists(probe)) {
+            spody_error_set(err, SPODY_ERR_FILE_NOT_FOUND,
+                    "iau2006_dir does not contain tab5.2a.txt: %s",
+                    cfg->iau2006_dir);
+            return SPODY_ERR_FILE_NOT_FOUND;
+        }
     }
 
     /* Integrator */

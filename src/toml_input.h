@@ -159,6 +159,14 @@ typedef struct {
     int              n_third_bodies;
     char             third_body_names[SPODY_MAX_THIRD_BODIES][SPODY_MAX_BODY_NAME];
     int              enable_srp;
+    /* Earth-only assets. Required (and validated to exist) when
+     * central_body == Earth, ignored otherwise. The GUI writes these
+     * fields ONLY for Earth; for Moon-or-other they stay empty strings.
+     *   eop_file    : IERS finals2000A.all (daily xp, yp, dUT1, dX, dY)
+     *   iau2006_dir : directory containing IAU 2006 tab5.2{a,b,d}.txt
+     *                 (X, Y, s+XY/2 series) */
+    char             eop_file[SPODY_MAX_PATH];         /* resolved path, "" if none */
+    char             iau2006_dir[SPODY_MAX_PATH];      /* resolved dir,  "" if none */
 
     /* [ephemeris] */
     char ephemeris_file[SPODY_MAX_PATH];               /* resolved path */
