@@ -27,6 +27,7 @@
  *   spody validate   <input.toml>
  *   spody convert    ephemeris <dir> <de> <date1> [date2 ...]
  *   spody convert    harmonics_icgem <input.gfc> <output.tab> [--max-degree N]
+ *   spody convert    sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody info
  */
 #include <float.h>
@@ -794,6 +795,8 @@ static int cmd_maxhgdegree(int argc, char **argv) {
  * Subforms:
  *   spody convert ephemeris       <folder> <de_family> <date1> [date2 ...]
  *   spody convert harmonics_icgem <input.gfc> <output.tab> [--max-degree N]
+ *   spody convert sp3             <input.sp3> <output.bin> <sat_id>
+ *                                 --eop <file> --iau2006-dir <dir>
  *
  * `ephemeris`: `folder` holds the JPL ASCII chunks
  * (header.<de_family> + ascpXXXXX.<de_family>); the output
@@ -812,8 +815,19 @@ static int cmd_maxhgdegree(int argc, char **argv) {
  *   spody convert harmonics_icgem ./data/EGM2008/EGM2008.gfc \
  *                                 ./data/EGM2008/egm2008.tab
  *
- * Both subforms are exposed primarily so the Python setup wizard can
- * produce the binary / .tab assets without shipping its own converter.
+ * `sp3`: read an IGS .sp3 precise-orbit file (GPS / Galileo / GLONASS
+ * / Beidou, ITRF positions every 15 min) and write a SpOdy SPDYOUT_
+ * binary holding ICRF positions for the requested satellite (sat_id
+ * is the 3-char identifier, e.g. G11). Used to prepare ground-truth
+ * reference trajectories that diff against a SpOdy propagation. EOP
+ * + IAU 2006 are required for the ITRF -> ICRF rotation.
+ *   spody convert sp3 ./IGS/igu23001.sp3 ./examples/gps_g11.bin G11 \
+ *                     --eop ./data/eop/finals2000A.all \
+ *                     --iau2006-dir ./data/iau2006
+ *
+ * All subforms are exposed primarily so the Python setup wizard / a
+ * validation rig can produce the binary / .tab assets without
+ * shipping its own converter.
  */
 static int cmd_convert(int argc, char **argv) {
     if (argc < 2) {
@@ -906,9 +920,56 @@ static int cmd_convert(int argc, char **argv) {
         return 0;
     }
 
+    /* ---- sp3 ----------------------------------------------------- */
+    if (strcmp(argv[1], "sp3") == 0) {
+        if (argc < 5) {
+            fprintf(stderr,
+                "convert sp3: need <input.sp3> <output.bin> <sat_id> "
+                "--eop <file> --iau2006-dir <dir>\n"
+                "  e.g. spody convert sp3 ./IGS/igu23001.sp3 \\\n"
+                "                         ./examples/gps_g11.bin G11 \\\n"
+                "                         --eop ./data/eop/finals2000A.all \\\n"
+                "                         --iau2006-dir ./data/iau2006\n");
+            return 1;
+        }
+        const char *input_sp3   = argv[2];
+        const char *output_bin  = argv[3];
+        const char *sat_id      = argv[4];
+        const char *eop_file    = NULL;
+        const char *iau2006_dir = NULL;
+        for (int i = 5; i < argc; ++i) {
+            if (strcmp(argv[i], "--eop") == 0 && i + 1 < argc) {
+                eop_file = argv[++i];
+            } else if (strcmp(argv[i], "--iau2006-dir") == 0 && i + 1 < argc) {
+                iau2006_dir = argv[++i];
+            } else {
+                fprintf(stderr,
+                    "convert sp3: unrecognised arg '%s'\n", argv[i]);
+                return 1;
+            }
+        }
+        if (!eop_file || !iau2006_dir) {
+            fprintf(stderr,
+                "convert sp3: --eop and --iau2006-dir are required\n");
+            return 1;
+        }
+        spody_log_printf("spody convert sp3: %s -> %s (sat=%s)\n",
+            input_sp3, output_bin, sat_id);
+        int rc = spody_convert_sp3_to_state_icrf(input_sp3, output_bin,
+                                                 sat_id, eop_file, iau2006_dir);
+        if (rc != 0) {
+            fprintf(stderr,
+                "convert sp3: spody_convert_sp3_to_state_icrf "
+                "returned %d\n", rc);
+            return 1;
+        }
+        spody_log_printf("OK -- wrote %s\n", output_bin);
+        return 0;
+    }
+
     fprintf(stderr,
-        "convert: unknown subform '%s' (expected 'ephemeris' or "
-        "'harmonics_icgem')\n", argv[1]);
+        "convert: unknown subform '%s' (expected 'ephemeris', "
+        "'harmonics_icgem', or 'sp3')\n", argv[1]);
     return 1;
 }
 
@@ -926,6 +987,8 @@ static void usage(const char *prog) {
         "                                          DE ASCII -> de<X>.spody\n"
         "  convert    harmonics_icgem <input.gfc> <output.tab> [--max-degree N]\n"
         "                                          ICGEM .gfc -> GRGM-style .tab\n"
+        "  convert    sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
+        "                                          IGS .sp3 -> ICRF position bin\n"
         "  info                                    print version and capabilities\n"
         "  maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n"
         "                                          largest useful harmonics degree\n"
