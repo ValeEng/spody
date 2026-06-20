@@ -79,6 +79,13 @@ results/
 examples/**/output/*
 !examples/**/output/.gitkeep
 
+# GPS validation example: only the input.toml is tracked. The .sp3
+# source files (gz + decompressed) and the converted reference binary
+# are kept locally for fast re-runs, but redistributed via the URL in
+# the TOML's source comment -- not committed.
+examples/gps_g11_validation/*
+!examples/gps_g11_validation/input.toml
+
 # Python
 __pycache__/
 *.py[cod]

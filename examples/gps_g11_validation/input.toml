@@ -1,0 +1,74 @@
+# SpOdy input file -- GPS PRN G11 24-hour validation.
+#
+# Propagates GPS PRN 11 (NORAD 39741 / SVN 71) from its first epoch in
+# the IGS final precise-orbit file for 2024-01-21, for the full 24 h
+# window covered by that file. Compare against the bundled reference
+# binary gps_g11_2024_01_21_ref.bin (also written by
+#   spody convert sp3 <input.sp3> ... G11
+# from the same source SP3) to measure SpOdy's force-model accuracy on
+# a real-world GNSS orbit.
+#
+# IGS source file (gitignored, redownload via the URL below for re-runs):
+#   examples/gps_g11_validation/IGS0OPSFIN_20240210000_01D_15M_ORB.SP3
+# GPS week 2298, day-of-week 0 (2024-01-21), ITRF positions every 15 min.
+# Download:
+#   https://igs.bkg.bund.de/root_ftp/IGS/products/2298/IGS0OPSFIN_20240210000_01D_15M_ORB.SP3.gz
+# Then regenerate the reference binary:
+#   spody convert sp3 examples/gps_g11_validation/IGS0OPSFIN_20240210000_01D_15M_ORB.SP3 \
+#                     examples/gps_g11_validation/gps_g11_2024_01_21_ref.bin G11 \
+#                     --eop data/eop/finals2000A.all \
+#                     --iau2006-dir data/iau2006
+#
+# Initial state was extracted from the FIRST epoch of the SP3 ICRF
+# binary. Velocity is a 5-point forward Lagrange derivative of the
+# first 5 SP3 positions (epochs separated by 900 s). This finite-
+# difference velocity matches the SP3 secant, not the true Keplerian
+# tangent: |v0| comes out ~3.57 km/s rather than the circular-orbit
+# 3.87 km/s. Validation residuals therefore include an initial-velocity
+# artefact that the P2.5c orbit-determination pass will minimise.
+#
+# All paths are relative to this TOML file.
+
+[simulation]
+name       = "gps_g11_2024_01_21"
+et_start_s = 7.59067251183991e+08    # 2024-01-21 00:00:00 GPS = 00:00:51.184 TT
+duration_s = 8.5500e+04              # 23.75 h (95 sample intervals of 900 s)
+
+[spacecraft]
+mass_kg = 1633.0                     # GPS Block IIF dry mass (Boeing factsheet)
+# SRP / drag are disabled; engine accuracy is dominated by gravity at GPS
+# altitude (~20,200 km), so we isolate that contribution in this baseline.
+
+[initial_state]
+# Cartesian in the Earth-centred ICRF-aligned frame. Extracted from
+# gps_g11_2024_01_21_ref.bin record 0 (position) + 4th-order forward
+# Lagrange derivative over records 0..4 (velocity).
+frame        = "central_inertial"
+position_km  = [-14680.682339076, 21945.546692795, -3092.411292524]
+velocity_kms = [    1.145437972,     1.215595948,    3.154837966]
+
+[force_model]
+central_body     = "Earth"
+harmonics_file   = "../../data/EIGEN-6C4/eigen-6c4.tab"
+harmonics_degree = 70                # standard for GPS-altitude propagation
+eop_file         = "../../data/eop/finals2000A.all"
+iau2006_dir      = "../../data/iau2006"
+third_bodies     = ["Moon", "Sun"]
+srp              = false
+
+[ephemeris]
+file = "../../data/DE440/de440.spody"
+
+[integrator]
+type     = "rkdp45"
+rel_tol  = 1.0e-12                   # tight: GPS altitude wants the conservative end
+h_init_s = 60.0
+h_min_s  = 1.0e-5
+h_max_s  = 900.0                     # matches SP3 sample interval
+
+[output]
+mode       = "fixed"
+interval_s = 900.0                   # one record per SP3 epoch
+csv_file   = "output/gps_g11_propagated.csv"
+bin_file   = "output/gps_g11_propagated.bin"
+output_dir = "output"
