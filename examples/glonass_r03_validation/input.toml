@@ -39,8 +39,14 @@ duration_s = 8.4600e+04              # 23.5 h (matches the 48-record reference)
 
 [spacecraft]
 mass_kg = 1415.0                     # GLONASS-M nominal dry mass (Roscosmos factsheet)
-# SRP / drag disabled: at GLONASS altitude (~19,100 km) accuracy is
-# gravity-dominated, so we isolate that contribution in this baseline.
+# SRP intentionally left out: at GLONASS altitude with srp=false the
+# residual against the broadcast is ~177 m RMS (24h), dominated by
+# antenna thrust + un-modelled empirical accelerations + box-wing SRP
+# direction effects. A cannonball SRP with guessed (area, Cr) made
+# things worse (~200-280 m RMS) because the in-track sign happens to
+# coincide with the residual. Closing the residual to < 10 m requires
+# either a proper IGS BOX-WING SRP (Rodriguez-Solano 2014 optical
+# parameters, paywall) or ECOM5-style empirical accelerations.
 
 [initial_state]
 # Cartesian in the Earth-centred ICRF-aligned frame. Extracted from
