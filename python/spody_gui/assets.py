@@ -163,6 +163,104 @@ MOON_TEXTURE = Asset(
     body="Moon",
 )
 
+# ----------------------------------------------------------------------
+# Earth assets (Phase 2: central body = Earth via spody_bf_rotation_earth)
+# ----------------------------------------------------------------------
+# EIGEN-6C4 gravity field (ICGEM .gfc), GFZ Potsdam + GRGS Toulouse,
+# N=2190 (GOCE + GRACE + EGM2008 combination). The raw .gfc is parsed
+# to spody's GRGM-style .tab format by `spody convert harmonics_icgem`.
+EIGEN_6C4_GFC = Asset(
+    name="EIGEN-6C4 .gfc (Earth harmonics, raw)",
+    url=("https://icgem.gfz-potsdam.de/getmodel/gfc/"
+         "7fd8fe44aa1518cd79ca84300aef4b41ddb2364aef9e82b7cdaabdb60a9053f1/"
+         "EIGEN-6C4.gfc"),
+    relpath="EIGEN-6C4/EIGEN-6C4.gfc",
+    min_bytes=100_000_000,
+    kind="raw",
+    required=False,
+    category="harmonics_source",
+    body="Earth",
+)
+
+EIGEN_6C4_TAB = Asset(
+    name="EIGEN-6C4 .tab (Earth harmonics, derived)",
+    url="",  # produced by `spody convert harmonics_icgem`
+    relpath="EIGEN-6C4/eigen-6c4.tab",
+    min_bytes=100_000_000,
+    kind="derived",
+    required=False,
+    category="harmonics",
+    body="Earth",
+)
+
+# IERS Earth orientation parameters: finals2000A.all is a single fixed-
+# width text file covering 1973..~2027, updated weekly with Bulletin A.
+EOP_FILE = Asset(
+    name="IERS EOP (finals2000A.all)",
+    url="https://datacenter.iers.org/data/9/finals2000A.all",
+    relpath="eop/finals2000A.all",
+    min_bytes=1_000_000,
+    kind="raw",
+    required=False,
+    category="eop",
+    body="Earth",
+)
+
+# IAU 2006/2000A_R06 precession-nutation series (X, Y, s+XY/2). Three
+# fixed text tables published by IERS. Listed as three separate Assets
+# because the wizard downloads them individually; the form references
+# them by the parent directory (`iau2006_dir`).
+IAU2006_TAB_X = Asset(
+    name="IAU 2006 X series (tab5.2a.txt)",
+    url="https://iers-conventions.obspm.fr/content/chapter5/additional_info/tab5.2a.txt",
+    relpath="iau2006/tab5.2a.txt",
+    min_bytes=100_000,
+    kind="raw",
+    required=False,
+    category="iau2006",
+    body="Earth",
+)
+IAU2006_TAB_Y = Asset(
+    name="IAU 2006 Y series (tab5.2b.txt)",
+    url="https://iers-conventions.obspm.fr/content/chapter5/additional_info/tab5.2b.txt",
+    relpath="iau2006/tab5.2b.txt",
+    min_bytes=100_000,
+    kind="raw",
+    required=False,
+    category="iau2006",
+    body="Earth",
+)
+IAU2006_TAB_SXY = Asset(
+    name="IAU 2006 s+XY/2 series (tab5.2d.txt)",
+    url="https://iers-conventions.obspm.fr/content/chapter5/additional_info/tab5.2d.txt",
+    relpath="iau2006/tab5.2d.txt",
+    min_bytes=1_000,
+    kind="raw",
+    required=False,
+    category="iau2006",
+    body="Earth",
+)
+
+# NASA Blue Marble Next Generation -- equirectangular RGB mosaic of
+# Earth's day side, December 2004 with topography + bathymetry. The
+# `world.topo.bathy.YYYYMM.3x5400x2700.jpg` ID encodes the monthly
+# composite + 5400x2700 resolution; we pick December because the
+# record ID `73909` is the published canonical Blue Marble image for
+# that resolution. (Other monthly IDs in the 73000-74999 range exist;
+# they're not all mirrored at every resolution.) URL is editable from
+# the wizard so users on slow connections can swap to the 1K JPEG.
+EARTH_TEXTURE = Asset(
+    name="Earth texture (NASA Blue Marble NG, December 2004, 2K)",
+    url=("https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73909/"
+         "world.topo.bathy.200412.3x5400x2700.jpg"),
+    relpath="Earth/blue_marble_december_2004_2k.jpg",
+    min_bytes=500_000,
+    kind="raw",
+    required=False,
+    category="texture",
+    body="Earth",
+)
+
 
 # --------------------------------------------------------------------------
 # Coverage profile (read/write QSettings)
@@ -201,6 +299,15 @@ def required_assets(coverage_value: str | None = None) -> tuple[Asset, ...]:
     # Optional assets sit at the bottom of the wizard card list so the
     # required ones stay grouped at top.
     out.append(MOON_TEXTURE)
+    # Earth assets are all optional today (Earth runs only when the
+    # user picks central_body="Earth"; users who only ever propagate
+    # around the Moon never need them). Grouped together so the
+    # wizard UI can show / hide them based on the body the user has
+    # selected.
+    out.extend((EIGEN_6C4_GFC, EIGEN_6C4_TAB,
+                EOP_FILE,
+                IAU2006_TAB_X, IAU2006_TAB_Y, IAU2006_TAB_SXY,
+                EARTH_TEXTURE))
     return tuple(out)
 
 

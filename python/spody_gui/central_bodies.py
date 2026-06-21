@@ -172,6 +172,46 @@ def _moon_orientation(et: float, eph) -> np.ndarray:
     return icrf_to_moon_pa(*angles)
 
 
+# Lazy-loaded EOP handle. None on first call (triggers load); a
+# spopy.MappedEOP after a successful load; the literal False sentinel
+# means "tried and failed, do not retry" (no EOP file under the
+# wizard data dir, or unreadable file).
+_earth_eop_cache: object = None
+
+
+def _earth_orientation(et: float, eph) -> np.ndarray:
+    """ICRF -> ITRS rotation at TDB epoch `et`. Mirrors spody-core's
+    spody_bf_rotation_earth: IAU 2006/2000A_R06 + IERS EOP, composed
+    via spopy.icrf_to_itrs (which wraps erfa.c2t06a).
+
+    The `eph` argument is part of the BfOrientationFn contract but
+    unused here -- Earth's rotation parameters are independent of
+    any planetary ephemeris.
+
+    Returns the identity matrix (and disables further attempts) when
+    the wizard's `<data_dir>/eop/finals2000A.all` is unreachable, so
+    the 3D scene degrades to a non-rotating Earth instead of crashing.
+    """
+    global _earth_eop_cache
+    if _earth_eop_cache is False:
+        return np.eye(3)
+    if _earth_eop_cache is None:
+        try:
+            from spopy import MappedEOP
+            from . import paths
+            eop_path = paths.data_dir() / "eop" / "finals2000A.all"
+            if not eop_path.is_file():
+                _earth_eop_cache = False
+                return np.eye(3)
+            _earth_eop_cache = MappedEOP(eop_path)
+        except (OSError, ValueError, ImportError):
+            _earth_eop_cache = False
+            return np.eye(3)
+
+    from spopy import icrf_to_itrs
+    return icrf_to_itrs(et, _earth_eop_cache)
+
+
 # ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
@@ -183,6 +223,20 @@ _KNOWN_BODIES: dict[str, CentralBodySpec] = {
         mu_km3_s2=MOON_MU_KM3_S2,
         bf_frame_name="PA",
         bf_orientation=_moon_orientation,
+    ),
+    "Earth": CentralBodySpec(
+        name="Earth",
+        naif_id=399,
+        radius_km=EARTH_RADIUS_KM,
+        mu_km3_s2=EARTH_MU_KM3_S2,
+        bf_frame_name="ITRF",
+        # Earth orientation via spopy.icrf_to_itrs (erfa.c2t06a + the
+        # wizard's finals2000A.all). Mirrors spody-core's
+        # spody_bf_rotation_earth at the SOFA precision floor. When
+        # the EOP file is missing under <data_dir>/eop/, the provider
+        # returns identity so the 3D scene still renders -- just with
+        # no Earth rotation animation.
+        bf_orientation=_earth_orientation,
     ),
 }
 

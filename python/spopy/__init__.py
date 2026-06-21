@@ -14,8 +14,7 @@
 """spopy -- pure-Python re-implementation of the spody-core read-side
 helpers the GUI needs for analysis and 3D visualisation.
 
-Today the package covers two things spody-core does in C that the
-GUI needs at interactive speed (no subprocess, no shared library):
+Today the package covers:
 
 - `ephemeris.Ephemeris`: reader for a `.spody` JPL binary, with body
   position queries via Chebyshev evaluation and lunar libration
@@ -24,17 +23,23 @@ GUI needs at interactive speed (no subprocess, no shared library):
 - `rotations.icrf_to_moon_pa` / `rotations.moon_pa_to_icrf`: rotation
   matrices from libration angles, matching
   `spody_getrotmatrix_icrf2moonpa` in the same C file.
+- `eop.MappedEOP`: parser + interpolator for the IERS finals2000A.all
+  table. Mirrors `spody_setup_MappedEOPData` /
+  `spody_interpolate_eop` in `src/spody_eop.c`.
+- `earth_orientation.icrf_to_itrs`: ICRF -> ITRS rotation via SOFA
+  (erfa.c2t06a). Mirrors `spody_bf_rotation_earth` in
+  `src/spody_earth_orientation.c` at the GUI's mas precision floor.
 
-The two together let the GUI compute, for any ET instant, the ICRF
-positions of Sun/Earth/Moon and the ICRF<->Moon PA rotation needed
-to project impact points onto the lunar body-fixed frame for the
-lat/lon impact map.
+Together these let the GUI compute, for any ET instant, the ICRF
+positions of Sun/Earth/Moon and the ICRF<->body-fixed rotation
+needed for the 3D scene (Moon PA via librations, Earth ITRS via
+IAU 2006/2000A + EOP).
 
 spopy is intentionally read-only and side-effect free: it never
-writes files, never spawns processes, and depends only on numpy +
-stdlib. Validation is done by cross-checking values against a known
-SPICE / spody.exe run; the test scripts live under `tests/spopy/`
-when added.
+writes files, never spawns processes, and depends on numpy +
+erfa (SOFA bindings, ~3 MB) + stdlib. Validation is done by cross-
+checking values against a known SPICE / spody.exe run; the test
+scripts live under `tests/spopy/` when added.
 """
 from .ephemeris import (
     Ephemeris,
@@ -43,6 +48,8 @@ from .ephemeris import (
     NAIF_NEPTUNE, NAIF_PLUTO,
 )
 from .rotations import icrf_to_moon_pa, moon_pa_to_icrf
+from .eop import MappedEOP
+from .earth_orientation import icrf_to_itrs
 
 __all__ = [
     "Ephemeris",
@@ -50,4 +57,5 @@ __all__ = [
     "NAIF_MOON", "NAIF_MARS", "NAIF_JUPITER", "NAIF_SATURN", "NAIF_URANUS",
     "NAIF_NEPTUNE", "NAIF_PLUTO",
     "icrf_to_moon_pa", "moon_pa_to_icrf",
+    "MappedEOP", "icrf_to_itrs",
 ]

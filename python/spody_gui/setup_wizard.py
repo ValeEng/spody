@@ -139,6 +139,14 @@ class SetupWizard(QDialog):
         self._convert_line_buf: bytearray = bytearray()
         self._convert_dates: list[str] = []
         self._convert_seen_files: int = 0
+        # Differentiates the parser/progress logic by which convert is
+        # running -- "ephemeris" (DE440 ASCII -> .spody) or "harmonics"
+        # (ICGEM .gfc -> GRGM .tab). One process at a time across both.
+        self._convert_kind: str = ""
+        # Harmonics-conversion state: total target degree N and the
+        # last "n=X" milestone we crossed.
+        self._convert_harm_N: int = 0
+        self._convert_harm_n_done: int = 0
         # Suppress auto-conversion during the user's destructive
         # operations (e.g. switching coverage rebuilds the row list).
         self._suspend_auto_convert = False
@@ -357,6 +365,9 @@ class SetupWizard(QDialog):
         self.assets_changed.emit()
         # Maybe everything DE440-raw is now present and we can convert.
         self._maybe_auto_convert()
+        # Same for the ICGEM .gfc -> GRGM .tab pipeline (the only
+        # Earth-side conversion exposed via the wizard today).
+        self._maybe_auto_convert_harmonics()
 
     def _on_download_all(self) -> None:
         """Kick off every missing raw download in one click. Rows handle
@@ -415,6 +426,88 @@ class SetupWizard(QDialog):
             if out_file.stat().st_mtime >= newest:
                 return  # up to date
         self._run_conversion()
+
+    def _maybe_auto_convert_harmonics(self) -> None:
+        """Decide whether to fire the EIGEN-6C4 .gfc -> .tab conversion.
+        Trigger when the raw .gfc is present AND the derived .tab is
+        either missing or older than the source. Bails out silently
+        otherwise so this method is safe to call after every download.
+
+        Mirrors `_maybe_auto_convert()` for DE440; differs only in
+        the asset names and the subprocess argv (handled by
+        `_run_harmonics_conversion`)."""
+        if self._suspend_auto_convert:
+            return
+        if self._convert_proc is not None:
+            return  # another convert in flight (DE440 or harmonics)
+        root = self._store.data_dir()
+        gfc = root / "EIGEN-6C4" / "EIGEN-6C4.gfc"
+        tab = root / "EIGEN-6C4" / "eigen-6c4.tab"
+        if not gfc.is_file():
+            return
+        if tab.is_file() and tab.stat().st_mtime >= gfc.stat().st_mtime:
+            return  # up to date
+        self._run_harmonics_conversion(gfc, tab)
+
+    def _run_harmonics_conversion(self, gfc: Path, tab: Path) -> None:
+        """Launch `spody.exe convert harmonics_icgem <input.gfc>
+        <output.tab>`. Parses the engine's per-100-degree progress lines
+        ('icgem: n=X / N writed') to drive a modal QProgressDialog."""
+        spody_bin = self._store.spody_binary()
+        if not spody_bin or not Path(spody_bin).exists():
+            self._convert_status.setText(
+                "harmonics convert blocked: configure spody binary in Settings > Paths")
+            return
+
+        # Pre-scan the .gfc header for max_degree so the progress bar
+        # has a known total. Falls back to 2190 (EIGEN-6C4 catalog
+        # ceiling) when the header field is unreadable -- the dialog
+        # still works, just with a coarser scale.
+        N_max = 2190
+        try:
+            with gfc.open("r") as f:
+                for _ in range(200):  # header lines are well within first 200
+                    line = f.readline()
+                    if not line:
+                        break
+                    if line.lstrip().startswith("max_degree"):
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[-1].isdigit():
+                            N_max = int(parts[-1])
+                        break
+        except OSError:
+            pass
+
+        argv = ["convert", "harmonics_icgem", str(gfc), str(tab)]
+        self._convert_status.setText(
+            f"converting EIGEN-6C4.gfc -> eigen-6c4.tab (N={N_max})...")
+
+        dlg = QProgressDialog(
+            f"Converting ICGEM .gfc into .tab (n=0 / {N_max})",
+            "", 0, N_max, self,
+        )
+        dlg.setWindowTitle("Converting harmonics")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setCancelButton(None)
+        dlg.setAutoClose(True)
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        self._convert_dlg = dlg
+        self._convert_kind = "harmonics"
+        self._convert_harm_N = N_max
+        self._convert_harm_n_done = 0
+        self._convert_output_buf = bytearray()
+        self._convert_line_buf = bytearray()
+
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.setWorkingDirectory(str(self._store.data_dir()))
+        proc.readyReadStandardOutput.connect(self._on_convert_ready_read)
+        proc.finished.connect(self._on_convert_finished)
+        proc.errorOccurred.connect(self._on_convert_error)
+        self._convert_proc = proc
+        proc.start(spody_bin, argv)
 
     def _run_conversion(self) -> None:
         """Launch `spody.exe convert ephemeris <DE440 folder> 440
@@ -485,6 +578,7 @@ class SetupWizard(QDialog):
         self._convert_line_buf = bytearray()
         self._convert_dates = list(date_ids)
         self._convert_seen_files = 0
+        self._convert_kind = "ephemeris"
         proc.readyReadStandardOutput.connect(self._on_convert_ready_read)
         proc.finished.connect(self._on_convert_finished)
         proc.errorOccurred.connect(self._on_convert_error)
@@ -497,7 +591,12 @@ class SetupWizard(QDialog):
         buffer; `_on_convert_finished` decodes the whole thing at exit
         time so a failed conversion still surfaces the full output in
         the dialog. The same chunk is fed to a line-by-line scanner
-        that watches for `file N writed` to advance the progress bar.
+        whose progress key depends on `_convert_kind`:
+
+          - "ephemeris" -> count 'file N writed' lines (one per
+            ASCII chunk converted by spody-core's DE440 writer)
+          - "harmonics" -> parse 'icgem: n=X / N writed' lines
+            (one per ~100 degrees of the ICGEM .gfc -> GRGM .tab pass)
         """
         if self._convert_proc is None:
             return
@@ -511,26 +610,49 @@ class SetupWizard(QDialog):
                 break
             line = bytes(self._convert_line_buf[:idx])
             del self._convert_line_buf[:idx + 1]
-            if line.startswith(b"file ") and b"writed" in line:
-                self._convert_seen_files = min(
-                    self._convert_seen_files + 1,
-                    len(self._convert_dates))
-                self._update_convert_progress()
+            if self._convert_kind == "ephemeris":
+                if line.startswith(b"file ") and b"writed" in line:
+                    self._convert_seen_files = min(
+                        self._convert_seen_files + 1,
+                        len(self._convert_dates))
+                    self._update_convert_progress()
+            elif self._convert_kind == "harmonics":
+                # Expect "icgem: n=NNN / NNNN writed".
+                if line.startswith(b"icgem: n=") and b"writed" in line:
+                    try:
+                        # Slice between "n=" and " /" for the current
+                        # degree value; tolerant of extra whitespace.
+                        head = line[len(b"icgem: n="):]
+                        n_str = head.split(b"/", 1)[0].strip()
+                        n_done = int(n_str)
+                        self._convert_harm_n_done = min(
+                            n_done, self._convert_harm_N)
+                        self._update_convert_progress()
+                    except (ValueError, IndexError):
+                        pass
 
     def _update_convert_progress(self) -> None:
-        """Push the latest converted-chunks count into the modal
-        progress dialog (no-op if the dialog has already been
-        dismissed)."""
+        """Push the latest convert progress count into the modal
+        dialog. Dispatches on `_convert_kind` so the label text and
+        the value scale match the active conversion."""
         if self._convert_dlg is None:
             return
-        i = self._convert_seen_files
-        n = len(self._convert_dates)
-        # Current chunk name: the LAST one we crossed (1-indexed).
-        chunk = self._convert_dates[i - 1] if 0 < i <= n else ""
-        suffix = f"  --  ascp{chunk}.440" if chunk else ""
-        self._convert_dlg.setValue(i)
-        self._convert_dlg.setLabelText(
-            f"Converting DE440 ASCII into binary .spody ({i} / {n}){suffix}")
+        if self._convert_kind == "ephemeris":
+            i = self._convert_seen_files
+            n = len(self._convert_dates)
+            chunk = self._convert_dates[i - 1] if 0 < i <= n else ""
+            suffix = f"  --  ascp{chunk}.440" if chunk else ""
+            self._convert_dlg.setValue(i)
+            self._convert_dlg.setLabelText(
+                f"Converting DE440 ASCII into binary .spody "
+                f"({i} / {n}){suffix}")
+        elif self._convert_kind == "harmonics":
+            i = self._convert_harm_n_done
+            n = self._convert_harm_N
+            self._convert_dlg.setValue(i)
+            self._convert_dlg.setLabelText(
+                f"Converting ICGEM .gfc into .tab "
+                f"(degree n={i} / {n})")
 
     def _on_convert_finished(self, exit_code: int, _exit_status) -> None:
         proc = self._convert_proc
@@ -541,6 +663,8 @@ class SetupWizard(QDialog):
             self._convert_output_buf += bytes(proc.readAllStandardOutput())
         out = self._convert_output_buf.decode(
             "utf-8", errors="replace").strip()
+        kind = self._convert_kind
+        self._convert_kind = ""
         self._convert_output_buf = bytearray()
         self._convert_line_buf = bytearray()
         # Close the modal regardless of exit code -- otherwise the
@@ -550,13 +674,24 @@ class SetupWizard(QDialog):
         # reset() chain, which autoReset=False suppresses; call
         # close() explicitly so the dismissal is unconditional.
         if self._convert_dlg is not None:
-            self._convert_dlg.setValue(len(self._convert_dates))
+            final = (len(self._convert_dates) if kind == "ephemeris"
+                     else self._convert_harm_N)
+            self._convert_dlg.setValue(final)
             self._convert_dlg.close()
             self._convert_dlg = None
         if exit_code == 0:
             self._changed = True
             self.refresh_status()
             self.assets_changed.emit()
+            # If the harmonics convert just finished, DE440 might still
+            # need one (or vice versa). The asset_arrived path already
+            # cascades; the explicit re-check below covers the case
+            # where this conversion was triggered by `refresh_status`
+            # rather than a fresh download.
+            if kind == "harmonics":
+                self._maybe_auto_convert()
+            elif kind == "ephemeris":
+                self._maybe_auto_convert_harmonics()
         else:
             self._convert_status.setText(f"conversion failed (exit {exit_code})")
             QMessageBox.critical(self, "Conversion failed",
@@ -567,6 +702,7 @@ class SetupWizard(QDialog):
             return
         self._convert_status.setText(f"conversion launch failed ({err.name})")
         self._convert_proc = None
+        self._convert_kind = ""
         self._convert_output_buf = bytearray()
         self._convert_line_buf = bytearray()
         if self._convert_dlg is not None:

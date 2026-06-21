@@ -26,6 +26,12 @@ dependencies = [
     "matplotlib >= 3.5",   # QtAgg backend for embedded 2D plots
     "vtk        >= 9.2",   # 3D scene (QVTKRenderWindowInteractor)
     "tomli      >= 2.0",   # TOML reader (becomes stdlib tomllib in 3.11+)
+    # SOFA (Standards Of Fundamental Astronomy) Python wrapper, ~350 kB
+    # compiled C wheel. Used by spopy.icrf_to_itrs for the IAU 2006/2010
+    # Earth orientation chain (X, Y, s series, ERA, polar motion). The
+    # GUI's Earth-centered 3D scene needs this for the ITRF triad and
+    # the textured globe rotation.
+    "pyerfa     >= 2.0",
 ]
 
 [project.optional-dependencies]

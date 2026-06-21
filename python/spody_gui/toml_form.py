@@ -187,7 +187,9 @@ _TOOLTIPS: dict[str, str] = {
     "initial_state.velocity_kms":    "[vx, vy, vz] velocity in km/s, same frame as position.",
     "force_model.central_body":      "Central body of the propagation. Supported: " + ", ".join(f"'{n}'" for n in CENTRAL_BODIES) + ".",
     "force_model.harmonics_file":    "Spherical-harmonics coefficient file (e.g. GRGM1200B).",
-    "force_model.harmonics_degree":  "Truncation degree; ≥ 2 and ≤ file maximum (1200 for GRGM1200B).",
+    "force_model.harmonics_degree":  "Truncation degree; ≥ 2 and ≤ the N declared in the chosen harmonics file (1200 for GRGM1200B Moon, 2190 for EIGEN-6C4 Earth; schema cap is 2200).",
+    "force_model.eop_file":          "IERS Earth Orientation Parameters file (finals2000A.all). Required when central_body = 'Earth'.",
+    "force_model.iau2006_dir":       "Directory containing the IAU 2006/2000A series tables (tab5.2a.txt, tab5.2b.txt, tab5.2d.txt). Required when central_body = 'Earth'.",
     "force_model.third_bodies":      "Perturbing bodies; pick from the standard NAIF set.",
     "force_model.srp":               "Enable cannonball SRP. Requires [spacecraft.srp] in spacecraft mode.",
     "ephemeris.file":                "DE-series ephemeris in the .spody binary format.",
@@ -217,7 +219,7 @@ _TOOLTIPS: dict[str, str] = {
 # (QDoubleValidator / QIntValidator) attached to the widget.
 def _pos    (v: float) -> str: return "" if v >  0.0 else "must be > 0"
 def _nonneg (v: float) -> str: return "" if v >= 0.0 else "must be >= 0"
-def _harm_deg(v: int)  -> str: return "" if 2 <= v <= 1200 else "must be in [2, 1200]"
+def _harm_deg(v: int)  -> str: return "" if 2 <= v <= 2200 else "must be in [2, 2200] (schema cap; file maximum is the effective ceiling: 1200 for GRGM1200B, 2190 for EIGEN-6C4)"
 def _frac01 (v: float) -> str: return "" if 0.0 <= v <= 1.0 else "must be in [0, 1]"
 
 _VALIDATORS: dict[str, Any] = {
@@ -662,7 +664,12 @@ class TomlForm(QWidget):
         # first cut and got bounced for predicting too low a degree
         # on rough fields like GRGM1200B over the Moon).
         hd_edit = QLineEdit()
-        hd_edit.setValidator(QIntValidator(2, 1200, hd_edit))
+        # Cap matches the engine's TOML-schema ceiling. The per-body
+        # effective max (e.g. 1200 for GRGM1200B Moon, 2190 for
+        # EIGEN-6C4 Earth) is enforced by the engine at load time
+        # against the actual harmonics file. Suggest... helper queries
+        # the file directly via `spody maxhgdegree`.
+        hd_edit.setValidator(QIntValidator(2, 2200, hd_edit))
         hd_edit.textChanged.connect(self._touch)
         hd_edit.textChanged.connect(
             lambda _t: self._validate_field("force_model.harmonics_degree"))
@@ -688,10 +695,64 @@ class TomlForm(QWidget):
         hd_row.addWidget(self._hd_info)
         hd_row.addWidget(hd_suggest)
         f.addRow("harmonics_degree", _hwrap(hd_row))
+
+        # Earth-only fields. Visible (and written to TOML) only when
+        # central_body == "Earth"; for the Moon (and any other body
+        # without an EOP / IAU 2006 dependency) the engine schema
+        # forbids them. We keep them in [force_model] for proximity
+        # with the rotation provider they configure.
+        self._fm_eop_row = self._add_path(
+            f, "force_model.eop_file", "eop_file",
+            "IERS EOP (*.all *.dat *.txt);;All Files (*)",
+        )
+        self._fm_iau_row = self._add_path(
+            f, "force_model.iau2006_dir", "iau2006_dir",
+            "", pick_dir=True,
+        )
+
         self._add_strlist_checks(f, "force_model.third_bodies", "third_bodies",
                                  THIRD_BODIES_ALL)
         self._add_bool (f, "force_model.srp", "srp")
+
+        # Hook visibility of the Earth-only rows to the central_body
+        # combo. Initial sync uses the combo's current value (set by
+        # the enum widget's default selection -- Moon).
+        self._fm_force_form = f
+        cb_combo = self._widgets["force_model.central_body"]
+        cb_combo.currentTextChanged.connect(self._on_central_body_changed)
+        self._on_central_body_changed(cb_combo.currentText())
         return g
+
+    def _on_central_body_changed(self, body: str) -> None:
+        """Show / hide the Earth-only [force_model] fields, and
+        auto-fill the path widgets with their canonical data-dir
+        defaults the first time the user switches to Earth.
+
+        When the engine sees `central_body = "Earth"` it requires
+        `eop_file` and `iau2006_dir`; for any other body those fields
+        must be absent. We mirror that by hiding the rows so the user
+        never fills them for a non-Earth run.
+
+        Defaults come from `<data_dir>/eop/finals2000A.all` and
+        `<data_dir>/iau2006/` (the relpaths defined by the wizard's
+        EOP_FILE + IAU2006_TAB_* assets). We only seed empty widgets:
+        a user-typed override survives a Moon -> Earth -> Moon -> Earth
+        round-trip.
+        """
+        if not hasattr(self, "_fm_force_form"):
+            return  # called too early during construction
+        is_earth = (body.strip().lower() == "earth")
+        for row in (self._fm_eop_row, self._fm_iau_row):
+            self._fm_force_form.setRowVisible(row, is_earth)
+
+        if is_earth and self._store is not None:
+            data_root = self._store.data_dir()
+            eop_w = self._widgets.get("force_model.eop_file")
+            iau_w = self._widgets.get("force_model.iau2006_dir")
+            if isinstance(eop_w, QLineEdit) and not eop_w.text().strip():
+                eop_w.setText(str(data_root / "eop" / "finals2000A.all"))
+            if isinstance(iau_w, QLineEdit) and not iau_w.text().strip():
+                iau_w.setText(str(data_root / "iau2006"))
 
     def _build_ephemeris(self) -> QGroupBox:
         g = QGroupBox("[ephemeris]")
@@ -1239,7 +1300,7 @@ class TomlForm(QWidget):
 
     def _add_path(self, layout: QFormLayout, key: str, label: str,
                   filter_str: str, save: bool = False,
-                  pick_dir: bool = False) -> None:
+                  pick_dir: bool = False) -> QWidget:
         edit = QLineEdit()
         edit.textChanged.connect(self._touch)
         btn = QPushButton("Browse...")
@@ -1262,7 +1323,9 @@ class TomlForm(QWidget):
         row.addWidget(edit, 1)
         row.addWidget(btn)
         self._widgets[key] = edit
-        layout.addRow(label, _hwrap(row))
+        field = _hwrap(row)
+        layout.addRow(label, field)
+        return field
 
     def _add_vec3(self, layout: QFormLayout, key: str, label: str) -> None:
         row = QHBoxLayout()
@@ -2043,6 +2106,16 @@ class TomlForm(QWidget):
             flat = {k: v for k, v in flat.items() if not k.startswith("events.")}
         if not self._batch_check.isChecked():
             flat = {k: v for k, v in flat.items() if not k.startswith("batch.")}
+
+        # Earth-only [force_model] fields: present in the engine schema
+        # ONLY when central_body == "Earth". The widgets are hidden in
+        # the form for any other body but may still hold stale text from
+        # a previous Earth run; drop them on emit so the validator
+        # never rejects the TOML on round-trip.
+        cb = flat.get("force_model.central_body", "")
+        if str(cb).strip().lower() != "earth":
+            flat.pop("force_model.eop_file",    None)
+            flat.pop("force_model.iau2006_dir", None)
 
         # output.interval_s only applies to mode == "fixed"; in step
         # mode the field is hidden in the UI but the underlying widget

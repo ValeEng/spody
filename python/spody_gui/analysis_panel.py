@@ -1474,6 +1474,7 @@ _BODY_NAIF: dict[str, int] = {
     "Mercury": 199,
     "Venus":   299,
     "Earth":   399,
+    "Moon":    301,
     "Mars":    499,
     "Jupiter": 599,
     "Saturn":  699,
@@ -1486,6 +1487,7 @@ _BODY_COLORS: dict[str, tuple[float, float, float]] = {
     "Mercury": (0.55, 0.50, 0.45),
     "Venus":   (0.92, 0.80, 0.55),
     "Earth":   (0.30, 0.55, 0.95),
+    "Moon":    (0.78, 0.78, 0.82),
     "Mars":    (0.90, 0.40, 0.30),
     "Jupiter": (0.85, 0.70, 0.50),
     "Saturn":  (0.90, 0.80, 0.60),
@@ -1501,6 +1503,7 @@ _BODY_RADIUS_PHYS_KM: dict[str, float] = {
     "Mercury": 2440.0,
     "Venus":   6052.0,
     "Earth":   6371.0,
+    "Moon":    1737.4,
     "Mars":    3390.0,
     "Jupiter": 69911.0,
     "Saturn":  58232.0,
@@ -1922,7 +1925,19 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     legend_entries: list[tuple[str, tuple[float, float, float]]] = []
     if opts.show_trajectory:
         pts = np.column_stack([d["x"], d["y"], d["z"]])
-        canvas.add_animated_trajectory(pts, ts, color=(1.0, 0.85, 0.20))
+        # Anchor marker size to the central body radius (3 % of R_body)
+        # so the spacecraft puck reads consistently across very
+        # different orbits: at LEO around Moon (R=1737 km) it was ~50
+        # km, at GLONASS around Earth (R=6378 km) it is ~190 km. The
+        # default scaling rule inside add_animated_trajectory uses the
+        # trajectory bounding box (3 % of diagonal) which over-blows
+        # the marker for high-altitude orbits like GLONASS (where the
+        # orbit diag ~50,000 km would make the marker ~1500 km, ~24 %
+        # of Earth's radius).
+        canvas.add_animated_trajectory(
+            pts, ts, color=(1.0, 0.85, 0.20),
+            marker_radius_km=0.030 * body.radius_km,
+        )
         legend_entries.append(("trajectory + moving marker",
                                 (1.0, 0.85, 0.20)))
     if opts.show_third_bodies:
