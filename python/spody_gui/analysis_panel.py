@@ -579,10 +579,16 @@ def _plot_diff_r_distribution(ax: Axes, a: np.ndarray,
     ax.set_xlabel("|Δr| [km]")
     ax.set_ylabel("# samples per bin")
     med = float(np.median(dr))
+    # RMS = sqrt(mean(dr^2)). For a non-negative residual it is the
+    # square-weighted "typical" magnitude -- always >= the median and
+    # heavier on the tail than the mean, so it is the canonical
+    # single-number summary in orbit-determination work.
+    rms = float(np.sqrt(np.mean(dr * dr)))
     p95 = float(np.percentile(dr, 95.0))
     mx  = float(dr.max())
     ax.set_title("|Δr| distribution")
     _add_stats_box(ax, [("median", med),
+                        ("RMS",    rms),
                         ("p95",    p95),
                         ("max",    mx)], unit="km")
     ax.grid(True, alpha=0.3)
@@ -615,12 +621,17 @@ def _plot_diff_r_cdf(ax: Axes, a: np.ndarray, b: np.ndarray) -> None:
     ax.set_ylabel("CDF")
     ax.set_ylim(0.0, 1.0)
     med  = float(np.median(dr))
+    # See _plot_diff_r_distribution for the RMS rationale; pinned in
+    # the same place across both stats boxes so the eye finds it
+    # between the median (central tendency) and the tail percentiles.
+    rms  = float(np.sqrt(np.mean(dr * dr)))
     p95  = float(np.percentile(dr, 95.0))
     p99  = float(np.percentile(dr, 99.0))
     p999 = float(np.percentile(dr, 99.9))
     mx   = float(dr.max())
     ax.set_title("|Δr| empirical CDF")
     _add_stats_box(ax, [("median", med),
+                        ("RMS",    rms),
                         ("p95",    p95),
                         ("p99",    p99),
                         ("p99.9",  p999),
