@@ -28,6 +28,7 @@
  *   spody convert    ephemeris <dir> <de> <date1> [date2 ...]
  *   spody convert    harmonics_icgem <input.gfc> <output.tab> [--max-degree N]
  *   spody convert    sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
+ *   spody convert    glonass <input.rnx> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody info
  */
 #include <float.h>
@@ -920,6 +921,53 @@ static int cmd_convert(int argc, char **argv) {
         return 0;
     }
 
+    /* ---- glonass ------------------------------------------------- */
+    if (strcmp(argv[1], "glonass") == 0) {
+        if (argc < 5) {
+            fprintf(stderr,
+                "convert glonass: need <input.rnx> <output.bin> <sat_id> "
+                "--eop <file> --iau2006-dir <dir>\n"
+                "  e.g. spody convert glonass ./brdc.rnx \\\n"
+                "                            ./examples/glonass_r03.bin R03 \\\n"
+                "                            --eop ./data/eop/finals2000A.all \\\n"
+                "                            --iau2006-dir ./data/iau2006\n");
+            return 1;
+        }
+        const char *input_rnx   = argv[2];
+        const char *output_bin  = argv[3];
+        const char *sat_id      = argv[4];
+        const char *eop_file    = NULL;
+        const char *iau2006_dir = NULL;
+        for (int i = 5; i < argc; ++i) {
+            if (strcmp(argv[i], "--eop") == 0 && i + 1 < argc) {
+                eop_file = argv[++i];
+            } else if (strcmp(argv[i], "--iau2006-dir") == 0 && i + 1 < argc) {
+                iau2006_dir = argv[++i];
+            } else {
+                fprintf(stderr,
+                    "convert glonass: unrecognised arg '%s'\n", argv[i]);
+                return 1;
+            }
+        }
+        if (!eop_file || !iau2006_dir) {
+            fprintf(stderr,
+                "convert glonass: --eop and --iau2006-dir are required\n");
+            return 1;
+        }
+        spody_log_printf("spody convert glonass: %s -> %s (sat=%s)\n",
+            input_rnx, output_bin, sat_id);
+        int rc = spody_convert_glonass_to_state_icrf(input_rnx, output_bin,
+                                                     sat_id, eop_file, iau2006_dir);
+        if (rc != 0) {
+            fprintf(stderr,
+                "convert glonass: spody_convert_glonass_to_state_icrf "
+                "returned %d\n", rc);
+            return 1;
+        }
+        spody_log_printf("OK -- wrote %s\n", output_bin);
+        return 0;
+    }
+
     /* ---- sp3 ----------------------------------------------------- */
     if (strcmp(argv[1], "sp3") == 0) {
         if (argc < 5) {
@@ -969,7 +1017,7 @@ static int cmd_convert(int argc, char **argv) {
 
     fprintf(stderr,
         "convert: unknown subform '%s' (expected 'ephemeris', "
-        "'harmonics_icgem', or 'sp3')\n", argv[1]);
+        "'harmonics_icgem', 'sp3', or 'glonass')\n", argv[1]);
     return 1;
 }
 
@@ -989,6 +1037,8 @@ static void usage(const char *prog) {
         "                                          ICGEM .gfc -> GRGM-style .tab\n"
         "  convert    sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
         "                                          IGS .sp3 -> ICRF position bin\n"
+        "  convert    glonass <input.rnx> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
+        "                                          RINEX GLONASS nav -> ICRF state bin\n"
         "  info                                    print version and capabilities\n"
         "  maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n"
         "                                          largest useful harmonics degree\n"

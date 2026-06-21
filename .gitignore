@@ -86,6 +86,12 @@ examples/**/output/*
 examples/gps_g11_validation/*
 !examples/gps_g11_validation/input.toml
 
+# GLONASS validation example: only the input.toml is tracked. The
+# .rnx broadcast nav source files and the converted reference binary
+# are regenerable from the URL in the TOML's source comment.
+examples/glonass_r03_validation/*
+!examples/glonass_r03_validation/input.toml
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,0 +1,77 @@
+# SpOdy input file -- GLONASS R03 23.5-hour validation.
+#
+# Propagates GLONASS slot 03 from its first broadcast epoch in the
+# IGS RINEX-NAV file for 2024-01-21, for the 23.5 h window covered
+# by that file's R03 records. Compare against the bundled reference
+# binary glonass_r03_2024_01_21_ref.bin (also written by
+#   spody convert glonass <input.rnx> ... R03
+# from the same source RINEX) to measure SpOdy's force-model accuracy
+# on a real-world GNSS orbit.
+#
+# Why GLONASS rather than GPS for this benchmark: GLONASS broadcast
+# nav messages carry position AND velocity in PZ-90 every ~30 min,
+# while GPS / Galileo / BeiDou broadcast Keplerian elements with no
+# direct velocity. Bootstrapping the propagator initial state from
+# GLONASS broadcast gives broadcast-precision (~few m, ~few cm/s)
+# initial conditions -- 4 orders of magnitude better than the
+# finite-difference velocity we would extract from a sp3 position
+# series. Residuals are then dominated by force-model error (what we
+# want to measure), not by initial-condition artefact.
+#
+# IGS source file (gitignored, redownload via the URL below):
+#   examples/glonass_r03_validation/BRDC00WRD_R_20240210000_01D_RN.rnx
+# RINEX 3.05 GLONASS nav, 2024-01-21, ~1248 messages across 24 GLONASS
+# satellites every ~30 minutes.
+# Download:
+#   https://igs.bkg.bund.de/root_ftp/IGS/BRDC/2024/021/BRDC00WRD_R_20240210000_01D_RN.rnx.gz
+# Then regenerate the reference binary:
+#   spody convert glonass examples/glonass_r03_validation/BRDC00WRD_R_20240210000_01D_RN.rnx \
+#                         examples/glonass_r03_validation/glonass_r03_2024_01_21_ref.bin R03 \
+#                         --eop data/eop/finals2000A.all \
+#                         --iau2006-dir data/iau2006
+#
+# All paths are relative to this TOML file.
+
+[simulation]
+name       = "glonass_r03_2024_01_21"
+et_start_s = 7.59068169184001e+08    # TOC of first R03 broadcast (UTC + 69.184s)
+duration_s = 8.4600e+04              # 23.5 h (matches the 48-record reference)
+
+[spacecraft]
+mass_kg = 1415.0                     # GLONASS-M nominal dry mass (Roscosmos factsheet)
+# SRP / drag disabled: at GLONASS altitude (~19,100 km) accuracy is
+# gravity-dominated, so we isolate that contribution in this baseline.
+
+[initial_state]
+# Cartesian in the Earth-centred ICRF-aligned frame. Extracted from
+# glonass_r03_2024_01_21_ref.bin record 0 (broadcast r + v with the
+# omega_earth x r correction already applied by spody convert glonass).
+frame        = "central_inertial"
+position_km  = [-8579.039032441, 22918.244045827, 7359.806329693]
+velocity_kms = [-1.288977293,    -1.565022338,   3.386996283]
+
+[force_model]
+central_body     = "Earth"
+harmonics_file   = "../../data/EIGEN-6C4/eigen-6c4.tab"
+harmonics_degree = 70                # standard for GNSS-altitude propagation
+eop_file         = "../../data/eop/finals2000A.all"
+iau2006_dir      = "../../data/iau2006"
+third_bodies     = ["Moon", "Sun"]
+srp              = false
+
+[ephemeris]
+file = "../../data/DE440/de440.spody"
+
+[integrator]
+type     = "rkdp45"
+rel_tol  = 1.0e-12                   # tight: GNSS altitude wants the conservative end
+h_init_s = 60.0
+h_min_s  = 1.0e-5
+h_max_s  = 1800.0                    # matches GLONASS broadcast TOC spacing
+
+[output]
+mode       = "fixed"
+interval_s = 1800.0                  # one record per broadcast TOC (~30 min)
+csv_file   = "output/glonass_r03_propagated.csv"
+bin_file   = "output/glonass_r03_propagated.bin"
+output_dir = "output"
