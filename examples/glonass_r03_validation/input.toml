@@ -47,8 +47,8 @@ mass_kg = 1415.0                     # GLONASS-M nominal dry mass (Roscosmos fac
 # glonass_r03_2024_01_21_ref.bin record 0 (broadcast r + v with the
 # omega_earth x r correction already applied by spody convert glonass).
 frame        = "central_inertial"
-position_km  = [-8579.039032441, 22918.244045827, 7359.806329693]
-velocity_kms = [-1.288977293,    -1.565022338,   3.386996283]
+position_km  = [-8552.101405666, 22904.249106065, 7434.346273165]
+velocity_kms = [-1.275631495,    -1.570732693,   3.387706378]
 
 [force_model]
 central_body     = "Earth"

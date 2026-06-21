@@ -119,3 +119,8 @@ note.txt
 # converted .spody binary). Sits at the repo root in dev mode so the
 # GUI sees the same `data/` it would in a portable bundle.
 data/
+
+# Local-only diagnostic scripts (analogous to spody-core tvb/). These
+# are ad-hoc tools used during development and not part of the shipped
+# product.
+tools/
