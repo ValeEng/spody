@@ -1,12 +1,14 @@
-# SpOdy input file -- GLONASS R03 23.5-hour validation.
+# SpOdy input file -- GLONASS R03 7-day validation.
 #
 # Propagates GLONASS slot 03 from its first broadcast epoch in the
-# IGS RINEX-NAV file for 2024-01-21, for the 23.5 h window covered
-# by that file's R03 records. Compare against the bundled reference
-# binary glonass_r03_2024_01_21_ref.bin (also written by
-#   spody convert glonass <input.rnx> ... R03
-# from the same source RINEX) to measure SpOdy's force-model accuracy
-# on a real-world GNSS orbit.
+# IGS RINEX-NAV file for 2024-01-21, for the 167.5 h window covered
+# by 7 consecutive daily nav files (2024-01-21 .. 2024-01-27).
+# Compare against the bundled reference binary
+# glonass_r03_2024_01_21_7d_ref.bin (also written by
+#   spody convert glonass <day1.rnx> <day2.rnx> ... <day7.rnx>
+#                         glonass_r03_2024_01_21_7d_ref.bin R03 ...
+# from the 7 source RINEX files) to measure SpOdy's force-model
+# accuracy over a week of real-world GNSS orbit.
 #
 # Why GLONASS rather than GPS for this benchmark: GLONASS broadcast
 # nav messages carry position AND velocity in PZ-90 every ~30 min,
@@ -18,40 +20,50 @@
 # series. Residuals are then dominated by force-model error (what we
 # want to measure), not by initial-condition artefact.
 #
-# IGS source file (gitignored, redownload via the URL below):
-#   examples/glonass_r03_validation/BRDC00WRD_R_20240210000_01D_RN.rnx
-# RINEX 3.05 GLONASS nav, 2024-01-21, ~1248 messages across 24 GLONASS
-# satellites every ~30 minutes.
-# Download:
-#   https://igs.bkg.bund.de/root_ftp/IGS/BRDC/2024/021/BRDC00WRD_R_20240210000_01D_RN.rnx.gz
-# Then regenerate the reference binary:
+# IGS source files (all gitignored, redownload via the URL below):
+#   examples/glonass_r03_validation/BRDC00WRD_R_2024{021..027}0000_01D_RN.rnx
+# RINEX 3.05 GLONASS nav, 24 GLONASS satellites every ~30 minutes.
+# Download (loop over DOY 021..027):
+#   https://igs.bkg.bund.de/root_ftp/IGS/BRDC/2024/<DDD>/BRDC00WRD_R_2024<DDD>0000_01D_RN.rnx.gz
+# Then regenerate the 7-day reference binary:
 #   spody convert glonass examples/glonass_r03_validation/BRDC00WRD_R_20240210000_01D_RN.rnx \
-#                         examples/glonass_r03_validation/glonass_r03_2024_01_21_ref.bin R03 \
+#                         examples/glonass_r03_validation/BRDC00WRD_R_20240220000_01D_RN.rnx \
+#                         examples/glonass_r03_validation/BRDC00WRD_R_20240230000_01D_RN.rnx \
+#                         examples/glonass_r03_validation/BRDC00WRD_R_20240240000_01D_RN.rnx \
+#                         examples/glonass_r03_validation/BRDC00WRD_R_20240250000_01D_RN.rnx \
+#                         examples/glonass_r03_validation/BRDC00WRD_R_20240260000_01D_RN.rnx \
+#                         examples/glonass_r03_validation/BRDC00WRD_R_20240270000_01D_RN.rnx \
+#                         examples/glonass_r03_validation/glonass_r03_2024_01_21_7d_ref.bin R03 \
 #                         --eop data/eop/finals2000A.all \
 #                         --iau2006-dir data/iau2006
 #
 # All paths are relative to this TOML file.
 
 [simulation]
-name       = "glonass_r03_2024_01_21"
+name       = "glonass_r03_2024_01_21_7d"
 et_start_s = 7.59068169184001e+08    # TOC of first R03 broadcast (UTC + 69.184s)
-duration_s = 8.4600e+04              # 23.5 h (matches the 48-record reference)
+duration_s = 6.03000e+05             # 167.5 h (matches the 336-record reference, 7 daily files)
 
 [spacecraft]
 mass_kg = 1415.0                     # GLONASS-M nominal dry mass (Roscosmos factsheet)
 # SRP intentionally left out: at GLONASS altitude with srp=false the
-# residual against the broadcast is ~177 m RMS (24h), dominated by
+# residual against the broadcast is ~177 m RMS at 24h, dominated by
 # antenna thrust + un-modelled empirical accelerations + box-wing SRP
-# direction effects. A cannonball SRP with guessed (area, Cr) made
-# things worse (~200-280 m RMS) because the in-track sign happens to
-# coincide with the residual. Closing the residual to < 10 m requires
-# either a proper IGS BOX-WING SRP (Rodriguez-Solano 2014 optical
-# parameters, paywall) or ECOM5-style empirical accelerations.
+# direction effects. Over 7 days the residual is expected to grow
+# roughly secularly (dominant term is along-track due to mis-modelled
+# in-track perturbation) -- see the analysis-panel diff for the actual
+# RMS-vs-time curve. A cannonball SRP with guessed (area, Cr) made
+# things worse (~200-280 m RMS at 24h) because the in-track sign
+# happens to coincide with the residual. Closing the residual to < 10 m
+# requires either a proper IGS BOX-WING SRP (Rodriguez-Solano 2014
+# optical parameters, paywall) or ECOM5-style empirical accelerations.
 
 [initial_state]
 # Cartesian in the Earth-centred ICRF-aligned frame. Extracted from
-# glonass_r03_2024_01_21_ref.bin record 0 (broadcast r + v with the
+# glonass_r03_2024_01_21_7d_ref.bin record 0 (broadcast r + v with the
 # omega_earth x r correction already applied by spody convert glonass).
+# The first-record state is identical to the 24h baseline since day 1
+# of the 7-day reference IS the original single-day broadcast file.
 frame        = "central_inertial"
 position_km  = [-8552.101405666, 22904.249106065, 7434.346273165]
 velocity_kms = [-1.275631495,    -1.570732693,   3.387706378]
@@ -78,6 +90,6 @@ h_max_s  = 1800.0                    # matches GLONASS broadcast TOC spacing
 [output]
 mode       = "fixed"
 interval_s = 1800.0                  # one record per broadcast TOC (~30 min)
-csv_file   = "output/glonass_r03_propagated.csv"
-bin_file   = "output/glonass_r03_propagated.bin"
+csv_file   = "output/glonass_r03_7d_propagated.csv"
+bin_file   = "output/glonass_r03_7d_propagated.bin"
 output_dir = "output"

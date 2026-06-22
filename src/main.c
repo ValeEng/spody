@@ -28,7 +28,7 @@
  *   spody convert    ephemeris <dir> <de> <date1> [date2 ...]
  *   spody convert    harmonics_icgem <input.gfc> <output.tab> [--max-degree N]
  *   spody convert    sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
- *   spody convert    glonass <input.rnx> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
+ *   spody convert    glonass <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody info
  */
 #include <float.h>
@@ -925,20 +925,41 @@ static int cmd_convert(int argc, char **argv) {
     if (strcmp(argv[1], "glonass") == 0) {
         if (argc < 5) {
             fprintf(stderr,
-                "convert glonass: need <input.rnx> <output.bin> <sat_id> "
+                "convert glonass: need <input.rnx> [input.rnx ...] "
+                "<output.bin> <sat_id> "
                 "--eop <file> --iau2006-dir <dir>\n"
+                "  Multiple input RINEX files are concatenated into one\n"
+                "  reference binary with a continuous 0-anchored time axis;\n"
+                "  pass them in chronological order.\n"
                 "  e.g. spody convert glonass ./brdc.rnx \\\n"
                 "                            ./examples/glonass_r03.bin R03 \\\n"
                 "                            --eop ./data/eop/finals2000A.all \\\n"
                 "                            --iau2006-dir ./data/iau2006\n");
             return 1;
         }
-        const char *input_rnx   = argv[2];
-        const char *output_bin  = argv[3];
-        const char *sat_id      = argv[4];
+        /* Positional args run from argv[2] up to the first `--flag`
+         * (or end of argv). The last 2 positionals are <output.bin>
+         * and <sat_id>; everything before that is the input file
+         * list (>= 1 path). */
+        int pos_end = argc;
+        for (int i = 2; i < argc; ++i) {
+            if (argv[i][0] == '-' && argv[i][1] == '-') { pos_end = i; break; }
+        }
+        int n_positional = pos_end - 2;
+        if (n_positional < 3) {
+            fprintf(stderr,
+                "convert glonass: need at least <input.rnx> <output.bin> "
+                "<sat_id> as positional args (got %d)\n", n_positional);
+            return 1;
+        }
+        int n_inputs = n_positional - 2;
+        const char *const *input_rnx_paths =
+            (const char *const *)(argv + 2);
+        const char *output_bin = argv[2 + n_inputs];
+        const char *sat_id     = argv[2 + n_inputs + 1];
         const char *eop_file    = NULL;
         const char *iau2006_dir = NULL;
-        for (int i = 5; i < argc; ++i) {
+        for (int i = pos_end; i < argc; ++i) {
             if (strcmp(argv[i], "--eop") == 0 && i + 1 < argc) {
                 eop_file = argv[++i];
             } else if (strcmp(argv[i], "--iau2006-dir") == 0 && i + 1 < argc) {
@@ -954,10 +975,12 @@ static int cmd_convert(int argc, char **argv) {
                 "convert glonass: --eop and --iau2006-dir are required\n");
             return 1;
         }
-        spody_log_printf("spody convert glonass: %s -> %s (sat=%s)\n",
-            input_rnx, output_bin, sat_id);
-        int rc = spody_convert_glonass_to_state_icrf(input_rnx, output_bin,
-                                                     sat_id, eop_file, iau2006_dir);
+        spody_log_printf("spody convert glonass: %d file%s -> %s (sat=%s)\n",
+            n_inputs, n_inputs == 1 ? "" : "s", output_bin, sat_id);
+        int rc = spody_convert_glonass_to_state_icrf(n_inputs,
+                                                     input_rnx_paths,
+                                                     output_bin, sat_id,
+                                                     eop_file, iau2006_dir);
         if (rc != 0) {
             fprintf(stderr,
                 "convert glonass: spody_convert_glonass_to_state_icrf "
@@ -1037,8 +1060,9 @@ static void usage(const char *prog) {
         "                                          ICGEM .gfc -> GRGM-style .tab\n"
         "  convert    sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
         "                                          IGS .sp3 -> ICRF position bin\n"
-        "  convert    glonass <input.rnx> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
+        "  convert    glonass <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
         "                                          RINEX GLONASS nav -> ICRF state bin\n"
+        "                                          (multi-file: concatenated, time axis 0-anchored)\n"
         "  info                                    print version and capabilities\n"
         "  maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n"
         "                                          largest useful harmonics degree\n"
