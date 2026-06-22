@@ -117,7 +117,7 @@ class _AnimHandle:
     line_actor:       vtkActor
     full_poly:        vtkPolyData      # mapper input when trail is off (whole orbit)
     marker_actor:     vtkActor
-    silhouette_actor: vtkActor         # white outline kept in lockstep with the marker
+    silhouette_actor: vtkActor | None  # None for textured markers (e.g. Moon 3rd-body) -- the body's surface is self-identifying so a white outline would only halo it.
     color:            tuple[float, float, float] = (1.0, 0.85, 0.20)
 
 
@@ -504,6 +504,7 @@ class VtkCanvas(QWidget):
                                  line_width: float = 2.0,
                                  source_path: Path | None = None,
                                  marker_radius_km: float | None = None,
+                                 marker_texture_path: Path | None = None,
                                  is_decoration: bool = False) -> None:
         """Like `add_trajectory` but also registers an animation
         handle: a coloured sphere marker (sized to ~1% of the scene
@@ -563,19 +564,48 @@ class VtkCanvas(QWidget):
         else:
             diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
             marker_r = max(diag * 0.030, 8.0)
-        sphere = vtkSphereSource()
-        sphere.SetRadius(marker_r)
-        sphere.SetThetaResolution(24)
-        sphere.SetPhiResolution(16)
-        sphere.SetCenter(0.0, 0.0, 0.0)        # geometry centred; pose via SetPosition
-        m_mapper = vtkPolyDataMapper()
-        m_mapper.SetInputConnection(sphere.GetOutputPort())
+        # Textured marker (used for 3rd-body planets/Moon so they read
+        # as themselves even when rendered far away at real scale).
+        # Falls back to the flat-color glowing puck path on any image-
+        # read failure so we never lose the marker entirely.
+        texture_reader = (self._make_image_reader(marker_texture_path)
+                          if marker_texture_path is not None else None)
         marker = vtkActor()
-        marker.SetMapper(m_mapper)
-        marker.GetProperty().SetColor(*color)
-        marker.GetProperty().SetAmbient(1.0)
-        marker.GetProperty().SetDiffuse(0.0)
-        marker.GetProperty().LightingOff()
+        if texture_reader is not None:
+            # vtkTexturedSphereSource is always origin-centered (no
+            # SetCenter); the marker is moved via actor.SetPosition()
+            # like for the flat-colour path. Higher angular resolution
+            # here (vs the colored sphere) makes the texture's seams /
+            # poles look right when the camera zooms in.
+            sphere = vtkTexturedSphereSource()
+            sphere.SetRadius(marker_r)
+            sphere.SetThetaResolution(48)
+            sphere.SetPhiResolution(24)
+            m_mapper = vtkPolyDataMapper()
+            m_mapper.SetInputConnection(sphere.GetOutputPort())
+            marker.SetMapper(m_mapper)
+            texture = vtkTexture()
+            texture.SetInputConnection(texture_reader.GetOutputPort())
+            texture.InterpolateOn()
+            marker.SetTexture(texture)
+            # Same lighting recipe as add_central_body so the textured
+            # 3rd-body marker reads identically whether it's central
+            # (LRO Moon-scene) or distant (GLONASS Earth-scene).
+            marker.GetProperty().SetAmbient(0.50)
+            marker.GetProperty().SetDiffuse(0.55)
+        else:
+            sphere = vtkSphereSource()
+            sphere.SetRadius(marker_r)
+            sphere.SetThetaResolution(24)
+            sphere.SetPhiResolution(16)
+            sphere.SetCenter(0.0, 0.0, 0.0)    # geometry centred; pose via SetPosition
+            m_mapper = vtkPolyDataMapper()
+            m_mapper.SetInputConnection(sphere.GetOutputPort())
+            marker.SetMapper(m_mapper)
+            marker.GetProperty().SetColor(*color)
+            marker.GetProperty().SetAmbient(1.0)
+            marker.GetProperty().SetDiffuse(0.0)
+            marker.GetProperty().LightingOff()
         marker.SetPosition(*pts[0])            # park at start until first tick
         target_renderer.AddActor(marker)
 
@@ -586,22 +616,28 @@ class VtkCanvas(QWidget):
         # the marker against the Moon's grey surface AND against the
         # near-black background. The silhouette actor is moved in
         # lockstep with the sphere -- one SetPosition call per tick.
-        silhouette = vtkPolyDataSilhouette()
-        silhouette.SetInputConnection(sphere.GetOutputPort())
-        # Silhouette uses the TOP camera's POV; far renderer's camera
-        # is slaved to it so the contour is consistent regardless of
-        # which layer the actor lives on.
-        silhouette.SetCamera(self._renderer.GetActiveCamera())
-        silhouette.SetEnableFeatureAngle(0)
-        s_mapper = vtkPolyDataMapper()
-        s_mapper.SetInputConnection(silhouette.GetOutputPort())
-        silhouette_actor = vtkActor()
-        silhouette_actor.SetMapper(s_mapper)
-        silhouette_actor.GetProperty().SetColor(1.0, 1.0, 1.0)
-        silhouette_actor.GetProperty().SetLineWidth(2.5)
-        silhouette_actor.GetProperty().LightingOff()
-        silhouette_actor.SetPosition(*pts[0])
-        target_renderer.AddActor(silhouette_actor)
+        #
+        # Skipped for textured markers (the Moon/planet body texture
+        # is self-identifying and a hard white edge would only look
+        # like an undesired halo at distance).
+        silhouette_actor = None
+        if texture_reader is None:
+            silhouette = vtkPolyDataSilhouette()
+            silhouette.SetInputConnection(sphere.GetOutputPort())
+            # Silhouette uses the TOP camera's POV; far renderer's camera
+            # is slaved to it so the contour is consistent regardless of
+            # which layer the actor lives on.
+            silhouette.SetCamera(self._renderer.GetActiveCamera())
+            silhouette.SetEnableFeatureAngle(0)
+            s_mapper = vtkPolyDataMapper()
+            s_mapper.SetInputConnection(silhouette.GetOutputPort())
+            silhouette_actor = vtkActor()
+            silhouette_actor.SetMapper(s_mapper)
+            silhouette_actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+            silhouette_actor.GetProperty().SetLineWidth(2.5)
+            silhouette_actor.GetProperty().LightingOff()
+            silhouette_actor.SetPosition(*pts[0])
+            target_renderer.AddActor(silhouette_actor)
 
         if source_path is not None:
             self._trajectory_actors.append((line_actor, source_path))
@@ -830,7 +866,8 @@ class VtkCanvas(QWidget):
         for h in self._anim_handles:
             pos = self._interp_point(h, t_s)
             h.marker_actor.SetPosition(*pos)
-            h.silhouette_actor.SetPosition(*pos)
+            if h.silhouette_actor is not None:
+                h.silhouette_actor.SetPosition(*pos)
             if self._trail_enabled:
                 self._refresh_trail_poly(h, t_s, tip_point=pos)
         for a in self._anim_arrows:

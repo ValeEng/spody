@@ -1678,11 +1678,25 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
         pts_display = _power_compress_positions(
             pts_icrf, ref_radius_km=ctx.central_body.radius_km) \
             if _DIST_EXPONENT < 0.9999 else pts_icrf
+        # Look up the wizard-managed texture asset for this body, if
+        # the user has downloaded it. When present the 3rd-body marker
+        # is drawn as a textured sphere instead of the flat-color
+        # glowing puck -- so e.g. the Moon stays recognisable in the
+        # Earth-centric scene even at its true ~384,000 km distance.
+        # paths.data_dir() is the same QSettings-backed lookup the
+        # wizard uses, so this stays in sync with the user's choice.
+        from . import assets, paths
+        try:
+            marker_texture_path = assets.central_body_texture_path(
+                paths.data_dir(), name)
+        except Exception:
+            marker_texture_path = None
         canvas.add_animated_trajectory(
             pts_display, np.asarray(times_s, dtype=float),
             color=color, line_width=1.2,
             marker_radius_km=_body_marker_radius_km(
                 name, ref_radius_km=ctx.central_body.radius_km),
+            marker_texture_path=marker_texture_path,
             is_decoration=True,
         )
         # 2) Fixed-length direction arrow anchored at the origin so

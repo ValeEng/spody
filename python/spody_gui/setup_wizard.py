@@ -802,7 +802,8 @@ class _AssetRow(QWidget):
             self._icon.setText("✓")  # check mark
             self._icon.setStyleSheet("color: #1a7f37; font-weight: bold;")
             mb = p.stat().st_size / (1024 * 1024)
-            self._size.setText(f"({mb:.1f} MB on disk)")
+            extra = self._asset_specific_info(p)
+            self._size.setText(f"({mb:.1f} MB on disk{extra})")
             self._btn.setText("Re-download")
             if self.asset.kind == "derived":
                 self._btn.setText("(derived)")
@@ -820,6 +821,38 @@ class _AssetRow(QWidget):
         # Always re-enable so the user can retry; only derived stays disabled.
         if self.asset.kind == "raw":
             self._btn.setEnabled(True)
+
+    def _asset_specific_info(self, p: Path) -> str:
+        """Asset-category-aware tail text appended to the size badge.
+        For finals2000A.all (`category == "eop"`) we parse the file
+        with spopy.MappedEOP and surface the Bulletin B horizon (last
+        observed MJD) and the prediction horizon (last predicted MJD)
+        as informational text. For any other asset returns "".
+
+        No colour coding: both Bulletin B and the prediction window
+        lag real time by construction (B by ~30 days, A predictions
+        run ~12 months forward) so a colour rule keyed on either
+        would flag every fresh download as "stale". The actually-
+        actionable freshness check is the startup HEAD probe in
+        MainWindow._maybe_warn_eop_stale, which compares the local
+        mtime against the server's Last-Modified.
+        """
+        if self.asset.category != "eop":
+            return ""
+        try:
+            from spopy import MappedEOP
+            eop = MappedEOP(p)
+        except (OSError, ValueError, ImportError):
+            return "; UNREADABLE"
+        from datetime import date, timedelta
+        mjd_epoch = date(1858, 11, 17)
+        try:
+            obs_date  = mjd_epoch + timedelta(days=int(eop.mjd_last_observed))
+            pred_date = mjd_epoch + timedelta(days=int(eop.mjd_last_predicted))
+        except (OverflowError, ValueError):
+            return ""
+        return (f"; Bulletin B through {obs_date.isoformat()}, "
+                f"predicted through {pred_date.isoformat()}")
 
     # ------------------------------------------------------------------
     # Download lifecycle

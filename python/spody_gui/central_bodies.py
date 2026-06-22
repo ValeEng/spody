@@ -175,8 +175,11 @@ def _moon_orientation(et: float, eph) -> np.ndarray:
 # Lazy-loaded EOP handle. None on first call (triggers load); a
 # spopy.MappedEOP after a successful load; the literal False sentinel
 # means "tried and failed, do not retry" (no EOP file under the
-# wizard data dir, or unreadable file).
+# wizard data dir, or unreadable file). Cached alongside the file's
+# mtime so a wizard re-download in the same session invalidates the
+# cache automatically.
 _earth_eop_cache: object = None
+_earth_eop_mtime: float = 0.0
 
 
 def _earth_orientation(et: float, eph) -> np.ndarray:
@@ -191,21 +194,30 @@ def _earth_orientation(et: float, eph) -> np.ndarray:
     Returns the identity matrix (and disables further attempts) when
     the wizard's `<data_dir>/eop/finals2000A.all` is unreachable, so
     the 3D scene degrades to a non-rotating Earth instead of crashing.
+
+    Cache invalidation: on every call we cheaply stat the EOP file and
+    reload the table if the mtime has advanced. That lets a wizard
+    re-download in the same GUI session refresh the rotation
+    without restarting the app.
     """
-    global _earth_eop_cache
-    if _earth_eop_cache is False:
+    global _earth_eop_cache, _earth_eop_mtime
+    from . import paths
+    eop_path = paths.data_dir() / "eop" / "finals2000A.all"
+    try:
+        mtime = eop_path.stat().st_mtime
+    except OSError:
+        _earth_eop_cache = False
+        _earth_eop_mtime = 0.0
         return np.eye(3)
-    if _earth_eop_cache is None:
+    # File present, but cache may be stale or never built.
+    if _earth_eop_cache is None or _earth_eop_cache is False or mtime != _earth_eop_mtime:
         try:
             from spopy import MappedEOP
-            from . import paths
-            eop_path = paths.data_dir() / "eop" / "finals2000A.all"
-            if not eop_path.is_file():
-                _earth_eop_cache = False
-                return np.eye(3)
             _earth_eop_cache = MappedEOP(eop_path)
+            _earth_eop_mtime = mtime
         except (OSError, ValueError, ImportError):
             _earth_eop_cache = False
+            _earth_eop_mtime = 0.0
             return np.eye(3)
 
     from spopy import icrf_to_itrs

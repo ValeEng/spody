@@ -118,6 +118,13 @@ class MainWindow(QMainWindow):
         # if any required data file is missing. Done via a 0-ms single
         # shot so the main window is visible underneath the modal.
         QTimer.singleShot(0, self._maybe_pop_setup_wizard)
+        # Separately: if the data is complete but the IERS EOP file is
+        # stale (Bulletin A weekly, Bulletin B monthly), offer a
+        # one-click re-download. Earth-centered propagation falls back
+        # to predictions past the observed horizon -- still works but
+        # noticeably less accurate, so a heads-up at launch is worth
+        # the one extra dialog.
+        QTimer.singleShot(0, self._maybe_warn_eop_stale)
 
     # ------------------------------------------------------------------
     # Menus
@@ -469,6 +476,94 @@ class MainWindow(QMainWindow):
             f"Data dir: {root}\n\n"
             "Opening the Setup wizard.")
         self._open_setup_wizard()
+
+    def _maybe_warn_eop_stale(self) -> None:
+        """One-shot startup gate: HEAD the IERS finals2000A.all URL and
+        compare the server's Last-Modified with our local file's mtime.
+        If the server has a fresher version we missed (i.e. IERS pushed
+        a Bulletin A update since the user last downloaded), offer a
+        one-click re-download.
+
+        The URL comes from `assets.EOP_FILE.url` (the same field the
+        wizard exposes for editing) -- never hard-coded here. Skipped
+        silently when:
+          - the file isn't downloaded yet (the wizard-pop covers that),
+          - the HEAD request fails (offline, firewall, IERS outage),
+          - the server is not newer than our local copy.
+
+        Note: this REPLACES an earlier check that fired on the file's
+        `mjd_last_observed` age, which was misleading because Bulletin B
+        always lags ~30 days behind real time regardless of how fresh
+        the file actually is -- the dialog popped after every download.
+        """
+        root = self._store.data_dir()
+        eop_path = root / "eop" / "finals2000A.all"
+        if not eop_path.is_file():
+            return
+
+        url = assets.EOP_FILE.url
+        try:
+            import urllib.request
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                server_lm_str = resp.headers.get("Last-Modified")
+                server_size_str = resp.headers.get("Content-Length")
+        except Exception:
+            # Offline / DNS failure / firewall: silently skip, the user
+            # can still re-download manually from the wizard.
+            return
+        if not server_lm_str:
+            return
+
+        from datetime import datetime, timezone
+        from email.utils import parsedate_to_datetime
+        try:
+            server_lm = parsedate_to_datetime(server_lm_str)
+        except (TypeError, ValueError):
+            return
+        if server_lm.tzinfo is None:
+            server_lm = server_lm.replace(tzinfo=timezone.utc)
+
+        local_mtime = datetime.fromtimestamp(
+            eop_path.stat().st_mtime, tz=timezone.utc)
+        local_size = eop_path.stat().st_size
+        try:
+            server_size = int(server_size_str) if server_size_str else None
+        except ValueError:
+            server_size = None
+
+        # Up-to-date iff the server has not modified the file since we
+        # downloaded AND the byte count still matches. The size check
+        # is belt-and-suspenders: IERS finals2000A.all is append-only,
+        # so any new daily record changes the length.
+        if server_lm <= local_mtime and (
+                server_size is None or server_size == local_size):
+            return
+
+        choice = QMessageBox.question(
+            self, "IERS EOP update available",
+            "A newer IERS finals2000A.all is available on the server.\n\n"
+            f"  server : {server_lm.strftime('%Y-%m-%d %H:%M UTC')}"
+            f"  ({server_size or '?'} B)\n"
+            f"  local  : {local_mtime.strftime('%Y-%m-%d %H:%M UTC')}"
+            f"  ({local_size} B)\n\n"
+            f"Source: {url}\n\n"
+            "Download the latest now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        # Open the wizard AND immediately trigger the EOP row's
+        # download. The wizard remains modal; the download progresses
+        # in its row's progress bar while the user watches.
+        dlg = SetupWizard(self._store, self)
+        row = dlg._rows.get("eop/finals2000A.all")
+        if row is not None:
+            row.start_download()
+        dlg.exec()
+        if dlg.was_changed():
+            self._form.refresh_asset_combos()
 
     def _require_data_ready(self, action_label: str) -> bool:
         """Thin wrapper around the shared `require_data_ready` helper
