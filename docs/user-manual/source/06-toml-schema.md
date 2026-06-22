@@ -117,17 +117,22 @@ Forces the propagator integrates against. Required.
 
 | Key                  | Type            | Default | Range | Description |
 |----------------------|-----------------|---------|-------|-------------|
-| `central_body`       | string          | &mdash; | `Moon` | Central body of the propagation. Only `Moon` is supported in this release. |
-| `harmonics_file`     | string (path)   | &mdash; | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for the recommended GRGM1200B model). In the form this row is a **dropdown of harmonics files the wizard has downloaded**, filtered by `central_body` (Moon-only today; Earth / Mars models would only appear when their central body is selected). A **Browse...** button next to the combo adds an out-of-data-dir file as a one-off `(custom)` entry, so legacy TOMLs pointing at e.g. `external/spody-core/raw_data/...` keep round-tripping. Relative paths resolve against the TOML's directory. |
-| `harmonics_degree`   | int             | &mdash; | `[2, 1200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. See *Choosing a harmonics degree* below for guidance. |
+| `central_body`       | string          | &mdash; | `Moon`, `Earth` | Central body of the propagation. Two bodies are supported in this release. The choice drives the gravity-model coefficient set, the body-fixed rotation provider (lunar PA libration angles from DE440 for Moon, IAU 2006/2010 + IERS EOP for Earth), and the list of valid `third_bodies`. |
+| `harmonics_file`     | string (path)   | &mdash; | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for GRGM1200B / Moon; `eigen-6c4.tab` for EIGEN-6C4 / Earth, produced by the wizard from the upstream `.gfc`). In the form this row is a **dropdown of harmonics files the wizard has downloaded**, filtered by `central_body`. A **Browse...** button next to the combo adds an out-of-data-dir file as a one-off `(custom)` entry, so legacy TOMLs pointing at e.g. `external/spody-core/raw_data/...` keep round-tripping. Relative paths resolve against the TOML's directory. |
+| `harmonics_degree`   | int             | &mdash; | `[2, 2200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. The effective upper bound is whatever the chosen `harmonics_file` declares (1200 for GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); the `2200` cap is the absolute schema ceiling. See *Choosing a harmonics degree* below for guidance. |
+| `eop_file`           | string (path)   | &mdash; (Earth only) | &ndash; | Path to the IERS Earth-orientation file (`finals2000A.all` from the IERS Rapid Service). Required when `central_body = "Earth"`, omitted otherwise. The form exposes this row as a wizard-populated dropdown that only appears when Earth is selected. |
+| `iau2006_dir`        | string (path)   | &mdash; (Earth only) | &ndash; | Path to the directory containing the IAU 2006 X / Y / s+XY/2 conventions tables (`tab5.2a.txt`, `tab5.2b.txt`, `tab5.2d.txt`). Required when `central_body = "Earth"`. Wizard-managed; same conditional form row as `eop_file`. |
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
 | `srp`                | bool            | `false` | &ndash; | Enable cannonball SRP. When `true` a `[spacecraft.srp]` block must be present (in Spacecraft mode) or `am_srp` must be set in `[debris]` (in Debris mode). |
 
 ### Choosing a harmonics degree
 
-A rough guide for runs with the Moon as the central body, based on
-empirical scaling of the GRGM1200B model and the cost of the
-spherical-harmonic evaluation (which scales as O(N&sup2;)):
+The right degree depends on the central body, the altitude, and the
+duration you want to integrate. Two starter tables follow, both
+based on empirical scaling against external references; the cost
+of the harmonic evaluation itself scales as O(N&sup2;).
+
+**Moon (GRGM1200B):**
 
 | N    | Use case                                                        |
 |------|-----------------------------------------------------------------|
@@ -139,6 +144,20 @@ spherical-harmonic evaluation (which scales as O(N&sup2;)):
 Higher N values are accepted (up to the model's nominal 1200) but
 do not visibly improve accuracy for the example scenarios shipped
 with SpOdy.
+
+**Earth (EIGEN-6C4):**
+
+| N    | Use case                                                        |
+|------|-----------------------------------------------------------------|
+| 30 &ndash; 50 | quick sanity propagation, sub-percent of N=70 cost |
+| 70   | standard for GNSS-altitude propagation (GLONASS, GPS at &sim;20-25,000 km); matches IGS reprocessing conventions |
+| 120 &ndash; 200 | LEO-altitude work; the EIGEN-6C4 high-degree terms become observable below &sim;1000 km |
+| 2190 | full EIGEN-6C4 expansion; only relevant for surface gravity or very-low-LEO long-arc work |
+
+At GNSS altitudes the harmonics contribution is already tiny
+compared to the central two-body term, so degree 70 is comfortably
+above the noise floor of the rest of the force model (luni-solar
+third-body gravity, SRP) for most use cases.
 
 ## `[ephemeris]`
 

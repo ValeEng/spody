@@ -1,11 +1,11 @@
 # Introduction
 
 SpOdy is a desktop application for propagating spacecraft and debris
-orbits around the Moon. You give it a mission scenario described in a
-plain-text file &mdash; central body, initial state, force model,
-integrator settings &mdash; and it produces a trajectory you can plot,
-compare against a reference, or sweep across thousands of variant cases
-in a batch run.
+orbits around the Moon or Earth. You give it a mission scenario
+described in a plain-text file &mdash; central body, initial state,
+force model, integrator settings &mdash; and it produces a trajectory
+you can plot, compare against a reference, or sweep across thousands
+of variant cases in a batch run.
 
 The application is shipped as a single self-contained folder. There is
 **no installer**, **no Python environment to configure**, and **no

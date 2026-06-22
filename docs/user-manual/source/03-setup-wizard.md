@@ -1,16 +1,18 @@
 # The setup wizard
 
-A fresh SpOdy bundle cannot run a propagation. Two large data
-files &mdash; a planetary ephemeris and a lunar gravity-model
-&mdash; are needed before the first integration step, and neither
-is shipped inside the archive (they are externally maintained,
+A fresh SpOdy bundle cannot run a propagation. Several large data
+files &mdash; a planetary ephemeris, a gravity-model coefficient
+set, and (for Earth-centred runs) the IERS Earth-orientation
+tables &mdash; are needed before the first integration step, and
+none is shipped inside the archive (they are externally maintained,
 publicly distributed, and together comprise hundreds of megabytes
 that change rarely). The setup wizard is the dialog that downloads
 those files into the bundle's `data/` folder, then converts the raw
-ephemeris into the internal binary format the engine expects. You
-run it once at first launch and never think about it again, unless
-you choose later to widen the ephemeris coverage or upgrade to a
-different gravity model.
+ephemeris and gravity coefficients into the internal binary formats
+the engine expects. You run it once at first launch and never think
+about it again, unless you choose later to widen the ephemeris
+coverage, upgrade to a different gravity model, or refresh the
+Earth-orientation tables with a newer IERS bulletin.
 
 ## When the wizard appears
 
@@ -57,16 +59,31 @@ servers and absolutely needs to run a propagation:
   3.2;
 - the GRGM1200B lunar harmonic-gravity coefficients (the `.tab`
   file with the spherical-harmonic coefficients and a small `.lbl`
-  metadata sidecar from the PDS Geosciences Node).
+  metadata sidecar from the PDS Geosciences Node);
+- the EIGEN-6C4 Earth gravity-model `.gfc` file (ICGEM format,
+  ~178 MB) used when `central_body = "Earth"`;
+- the IERS Earth-orientation files (`finals2000A.all` from the IERS
+  Rapid Service plus the three IAU 2006 X/Y/s+XY/2 series tables
+  `tab5.2{a,b,d}.txt`) needed by the engine's `R_ICRF↔ITRS`
+  rotation. All of these are Earth-specific.
 
 **Derived assets** are files SpOdy produces from raw ones on your
 machine:
 
 - `de440.spody`, the internal binary format the engine expects.
   Built once from the downloaded DE440 ASCII chunks by invoking the
-  `spody.exe convert ephemeris` subcommand under the hood. The
-  conversion runs **automatically** as soon as the raw inputs are
-  complete; you never click a button for it.
+  `spody.exe convert ephemeris` subcommand under the hood;
+- `eigen-6c4.tab`, the GRGM-style coefficient table the engine reads
+  for Earth harmonics, converted from `EIGEN-6C4.gfc` by the
+  `spody.exe convert harmonics_icgem` subcommand. The resulting
+  `.tab` is ~252 MB on disk (2.4 M coefficient rows up to degree
+  2190).
+
+Both derived assets are produced **automatically** as soon as the
+raw inputs are complete; you never click a button for them. The
+wizard streams the converter's progress (chunk id for DE440,
+running `n = D / D_max` for the harmonics converter) into the
+**Conversion (auto)** status line at the bottom of the dialog.
 
 **Optional raw assets** are files SpOdy can use to enrich the
 experience but does not require to run:
@@ -74,19 +91,32 @@ experience but does not require to run:
 - the NASA SVS LROC color Moon texture (2K equirectangular TIFF,
   ~3 MB). When present, the Analysis tab renders the 3D Moon and
   the impact lat/lon backgrounds with the actual lunar surface;
-  when absent, the views fall back to a flat-grey sphere. Asked
-  for on demand by clicking **Download** on its card &mdash; the
-  *Download all missing* button intentionally leaves it alone so
-  a fresh install does not pay the download cost unless the user
-  wants the texture.
+  when absent, the views fall back to a flat-grey sphere;
+- the NASA Visible Earth "Blue Marble" December 2004 texture
+  (equirectangular JPEG, ~3 MB). Same role for Earth-centred
+  scenes: when present, the 3D viewer renders Earth with the
+  actual continents and oceans; when absent, the central-body
+  sphere stays flat-grey. When the Moon appears as a *third
+  body* in an Earth-centred scene, this is also the texture
+  that paints its body-fixed marker so the Moon is still
+  recognisable at its true ~384,000 km distance.
+
+The two textures are asked for on demand by clicking **Download**
+on their respective cards &mdash; the *Download all missing*
+button intentionally leaves them alone so a fresh install does
+not pay the download cost unless the user wants the textures.
 
 Every asset carries internal metadata identifying its **central
-body** (Moon today; Earth / Mars / &hellip; in future releases) and
-its **category** (`harmonics`, `ephemeris`, `texture`, &hellip;).
-The TOML form's dropdowns in `[force_model].harmonics_file` and
-`[ephemeris].file` use that metadata to show only the assets that
-apply to the currently-selected `central_body` &mdash; the user
-never has to type a path by hand.
+body** (`Moon`, `Earth`, or body-agnostic for the DE440
+ephemeris) and its **category** (`harmonics`, `ephemeris`,
+`texture`, `eop`, `iau2006`, &hellip;). The TOML form's
+dropdowns in `[force_model].harmonics_file`, `[force_model]
+.eop_file`, `[force_model].iau2006_dir` and `[ephemeris].file`
+use that metadata to show only the assets that apply to the
+currently-selected `central_body` &mdash; the user never has to
+type a path by hand. The Earth-only rows (`eop_file`,
+`iau2006_dir`) appear in the form only when
+`central_body = "Earth"`.
 
 ## Choosing an ephemeris coverage profile
 
@@ -143,7 +173,11 @@ verified work at the time of the release:
 
 - JPL's FTP-over-HTTPS server for the DE440 ASCII chunks;
 - the PDS Geosciences Node at Washington University for the
-  GRGM1200B `.tab` and `.lbl` files.
+  GRGM1200B `.tab` and `.lbl` files;
+- GFZ Potsdam's ICGEM service for the EIGEN-6C4 `.gfc` Earth
+  gravity coefficients;
+- the IERS Rapid Service / Prediction Centre for `finals2000A.all`
+  and the IAU 2006 X/Y/s+XY/2 conventions tables.
 
 Both servers are stable, public, and well-maintained, but URLs do
 move over time. The **editable URL field** on each card lets you
@@ -157,12 +191,16 @@ release ships with the corrected default.
 
 ## Conversion to the internal format
 
+Two derived assets need a conversion step. The wizard runs both
+automatically, sharing the **Conversion (auto)** status line at
+the bottom of the dialog.
+
+### `de440.spody` (planetary ephemeris)
+
 Once the wizard sees that every required *raw* DE440 file is
 present and the derived `de440.spody` is either missing or older
 than the most recent raw chunk, it triggers the conversion
-automatically. You will see the **Conversion (auto)** status line
-at the bottom of the wizard switch through three states in
-sequence:
+automatically. The status line cycles through three states:
 
 1. *waiting on raw DE440 (&hellip;)* &mdash; while downloads are still in
    flight;
@@ -175,6 +213,52 @@ profile and a few tens of seconds for the *Full pack*. It uses the
 `spody.exe convert ephemeris` subcommand under the hood; see
 chapter 12 if you want to run the same conversion manually from a
 shell.
+
+### `eigen-6c4.tab` (Earth harmonics)
+
+When the EIGEN-6C4 `.gfc` is downloaded, the wizard auto-runs the
+ICGEM&rarr;tab converter the same way:
+
+1. *waiting on raw EIGEN-6C4 (&hellip;)* &mdash; while the download
+   is in flight;
+2. *converting harmonics&hellip; n = 215 / 2190* &mdash; progress
+   ticks per 100 degrees of the spherical-harmonic series;
+3. *eigen-6c4.tab ready (252 MB)* &mdash; success.
+
+Because the raw `.gfc` is 178 MB and the converter walks the full
+2190-degree series row by row, this conversion takes a couple of
+minutes on a typical laptop. It uses
+`spody.exe convert harmonics_icgem` under the hood (chapter 12).
+
+The two conversions run sequentially when both DE440 and EIGEN-6C4
+are downloaded at the same time; the status line carries the
+currently-active conversion's progress.
+
+## Earth-orientation freshness check
+
+`finals2000A.all` is rebuilt by IERS every Thursday. Old copies
+still work for past dates, but the *predicted* portion (covering
+the next ~365 days from the file's vintage) drifts; for runs whose
+epoch is more than a few weeks past your local copy's vintage, the
+predicted UT1-UTC and polar-motion values are no longer the best
+estimates IERS can offer.
+
+On every launch SpOdy issues a single lightweight HTTP HEAD
+request to the upstream `finals2000A.all` URL and compares the
+server's `Last-Modified` header against the local file's mtime
+(and the `Content-Length` against the local file's size). If the
+server's copy is newer, a non-blocking pop-up appears:
+
+> The IERS finals2000A.all on disk is older than the version
+> upstream. Open the setup wizard to refresh it?
+
+Clicking **Open setup wizard** triggers the EOP card's download.
+The freshness check itself is silent on success and on transient
+network failure (no connectivity at launch is not an error). The
+GUI does not refresh the in-memory rotation provider mid-session
+either &mdash; it stat()s the file on every rotation call, so a
+fresh download from the open wizard takes effect on the next 3D
+plot redraw without restarting the app.
 
 ## When everything is green
 

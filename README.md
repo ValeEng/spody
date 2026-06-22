@@ -107,8 +107,8 @@ Smoke test:
 
 ```bash
 $ ./build/spody info
-SpOdy app  : 0.1.2-beta
-spody-core : 1.0.0  (git <sha>, built <timestamp>)
+SpOdy app  : 0.1.3-beta
+spody-core : 1.2.0  (git <sha>, built <timestamp>)
 ```
 
 ---

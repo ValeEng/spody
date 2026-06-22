@@ -7,10 +7,10 @@ set of frames, all spelt out here.
 ## The central-body inertial frame
 
 The propagation frame is the **central body's inertial frame**,
-which the schema spells `central_inertial`. For a Moon-centred
-propagation (the only central body supported in this release):
+which the schema spells `central_inertial`. For both supported
+central bodies (Moon and Earth):
 
-- **Origin** at the centre of the Moon.
+- **Origin** at the centre of the central body.
 - **Axes** aligned with the ICRF (International Celestial
   Reference Frame), which is the modern realisation of the J2000
   inertial axes. In practice the X axis points toward the dynamical
@@ -18,8 +18,8 @@ propagation (the only central body supported in this release):
   pole of Earth, and Y completes the right-handed triad.
 - **Right-handed.**
 - **No rotation** with respect to the distant background of
-  galaxies; the Moon orbits, librates, and rotates *inside* this
-  frame.
+  galaxies; the central body orbits, librates / rotates *inside*
+  this frame.
 
 All TOML inputs (`initial_state.position_km`, `velocity_kms`) and
 all binary outputs are in this frame. The engine does not perform
@@ -47,27 +47,25 @@ evaluate body-fixed gravity harmonics at each step.
 > chapter 7 ("Rotating-frame batch input (RIC / LVLH)") for the
 > workflow.
 
-## The body-fixed frame (Moon Principal Axes)
+## The body-fixed frames
 
 Internally the engine evaluates the spherical-harmonic gravity
-expansion in the **Moon's Principal Axes (PA) body-fixed frame**,
-which is the frame the GRGM1200B coefficient set is expressed in.
-The rotation from inertial to body-fixed is built at every step
-from the planetary ephemeris using the lunar libration angles
-that DE440 carries in its slot 12:
+expansion in the **central body's body-fixed frame**, which is
+the frame the coefficient set is expressed in. The rotation from
+inertial to body-fixed is rebuilt at every step from the right
+source for the active central body.
+
+### Moon: Principal Axes (PA)
+
+For Moon-centred runs the body-fixed frame is the **lunar
+Principal Axes (PA)** frame, which is the frame the GRGM1200B
+coefficient set is expressed in. The rotation is built from the
+lunar libration angles that DE440 carries in its slot 12:
 
     C_ICRF→PA = Rz(psi) · Rx(theta) · Rz(phi)
 
 with `(phi, theta, psi)` the 3-1-3 Euler angles of the lunar
 mantle at the requested ET. The convention is `r_PA = C · r_ICRF`.
-
-For the **propagation itself** users do not see this frame: the
-inputs and outputs stay in the inertial frame, and the
-body-fixed conversion happens transparently inside the harmonics
-evaluation. You do **not** need to worry about libration angles,
-principal-axis vs mean-Earth axes, or sidereal-time alignment in
-your inputs. The conversion is exact for every step using the
-same source data NASA uses for the GRGM1200B model.
 
 The PA frame **does become visible** in the Analysis tab's
 *impact* views (chapter 9): the impact lat/lon map (both
@@ -80,6 +78,51 @@ Python through the bundled `spopy` package
 `spopy.icrf_to_moon_pa`), which is a numpy-only re-implementation
 of the spody-core C helpers (bit-identical, validated at the time
 of landing).
+
+### Earth: International Terrestrial Reference System (ITRS)
+
+For Earth-centred runs the body-fixed frame is the
+**International Terrestrial Reference System (ITRS)**, the
+co-rotating Earth-fixed frame realised by the ITRF datums (for
+practical purposes, ITRF2014 / 2020). The rotation from inertial
+to body-fixed follows the **IAU 2006/2000A_R06** Earth-orientation
+conventions plus the IERS Earth-Orientation Parameters (EOP):
+
+    R_GCRS→ITRS = W(t) · R3(+ERA(t)) · Q(t)
+
+where `Q(t)` is the celestial-to-intermediate frame matrix
+assembled from the IAU 2006 X, Y, s+XY/2 series (the
+`tab5.2{a,b,d}.txt` files the wizard downloads), `ERA(t)` is the
+Earth Rotation Angle driven by UT1 (which IERS publishes as
+`UT1 - UTC` in `finals2000A.all`), and `W(t)` is the polar-motion
+matrix built from the (`xp`, `yp`) angles in the same EOP file.
+The chain is exact at the SOFA / ERFA precision floor (sub-mas).
+
+The wizard manages the two raw data sets (`finals2000A.all` plus
+the IAU 2006 series tables); chapter 3 covers the
+startup-freshness check that nudges you to refresh
+`finals2000A.all` after IERS publishes a new bulletin.
+
+The same rotation pipeline is exposed in pure Python through the
+bundled `spopy` package (`spopy.MappedEOP` for the IERS table
+reader plus `spopy.icrf_to_itrs(et, eop)` for the rotation
+itself). The Python implementation wraps `pyerfa` and matches the
+C engine at machine epsilon.
+
+### Common to both bodies
+
+For the **propagation itself** users do not see the body-fixed
+frame: the inputs and outputs stay in the inertial frame, and the
+body-fixed conversion happens transparently inside the harmonics
+evaluation. You do **not** need to worry about libration angles,
+principal-axis vs mean-Earth axes, sidereal time, or polar motion
+in your inputs.
+
+The active body-fixed triad is also drawn in the **3D orbit** plot
+(chapter 9) and animated along with the trajectory: PA libration
+for the Moon, IAU 2006 + EOP rotation for the Earth, so the
+textured body and the triad stay locked to a consistent
+orientation at every animation frame.
 
 ## The RIC frame (RIC = Radial / In-track / Cross-track)
 
@@ -143,30 +186,46 @@ those tools can be fed into SpOdy without a manual sign flip.
 ## Classical orbital elements
 
 The classical Keplerian elements are reported in the **central-
-body inertial frame**, with the central body's gravitational
-parameter `mu` baked in. For the Moon today, `mu = 4902.800066
-km^3/s^2`. This number lives in the GUI source code as
-`MU_MOON_KM3_S2` and is the same value used in the C engine for
-the two-body reference acceleration.
+body inertial frame**, with the active central body's
+gravitational parameter `mu` baked in:
+
+| Central body | `mu` (km&sup3;/s&sup2;)        | Source     |
+|--------------|---------------------------------|------------|
+| Moon         | 4902.800066                     | GRGM1200B  |
+| Earth        | 398600.4415                     | EIGEN-6C4  |
+
+Both constants live alongside the central-body radii in
+`spody_const.h` (single source of truth, shared between the C
+engine and the Python GUI), and are the same values used by the
+two-body reference acceleration at every step.
 
 ### Reference plane
 
 Inclination, RAAN, and the argument of periapsis are reported
 relative to the **inertial XY plane** (the ICRF XY plane,
-projected at the Moon's centre). This is *not* the Moon's
-equatorial plane: the lunar pole is tilted ~5.1&deg; from the
-ecliptic normal, and the ICRF Z axis aligns with Earth's mean pole,
-so the lunar equator is tilted ~24&deg; from the ICRF XY plane.
+projected at the central body's centre). This is the ICRF
+equator, *not* the central body's equator.
 
-A consequence: a near-polar lunar orbit (which is "polar" with
-respect to the Moon's body-fixed pole) appears at `i ≈ 85–115°`
-in SpOdy's elements, not at exactly 90°, because the reference
-plane is the ICRF and not the lunar equator.
+- For **Moon-centred** runs the lunar pole is tilted ~5.1&deg;
+  from the ecliptic normal, so the lunar equator is tilted
+  ~24&deg; from the ICRF XY plane. A near-polar lunar orbit
+  (which is "polar" with respect to the Moon's body-fixed pole)
+  appears at `i ≈ 85–115°` in SpOdy's elements, not at exactly
+  90°, because the reference plane is the ICRF and not the
+  lunar equator.
+- For **Earth-centred** runs the difference is much smaller:
+  the J2000 mean equatorial plane *is* (by definition) the
+  ICRF XY plane up to the &sim;arcsec-level precession /
+  nutation that the rotation pipeline handles separately. A
+  near-polar Earth orbit sits very close to `i = 90°` in
+  SpOdy's elements, drifting only by tens of milliarcseconds
+  per year from precession.
 
 This is the conventional choice and matches the SPICE convention
-when querying the LRO ephemeris in J2000. If you specifically need
-elements relative to the Moon's equator, post-process the inertial
-state vectors externally; SpOdy does not currently offer this view.
+when querying the LRO or GLONASS ephemerides in J2000. If you
+specifically need elements relative to the central body's
+equator, post-process the inertial state vectors externally;
+SpOdy does not currently offer this view.
 
 ### Quadrant resolution
 

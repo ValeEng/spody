@@ -97,7 +97,9 @@ of v is adequate at the precision the diff plot needs.
 
 ## Reading the magnitudes
 
-Concrete numbers for the example scenario shipped with SpOdy:
+Concrete numbers for two of the validation scenarios shipped with
+SpOdy: a Moon-centred Apollo-era propagation and an Earth-centred
+GNSS broadcast comparison.
 
 ### LRO 6-day, N=80 harmonics, vs SPICE LRO reference
 
@@ -132,6 +134,45 @@ Raising `harmonics_degree` to 150 reduces the in-track drift
 proportionally; raising it beyond 200 yields diminishing returns
 because the GRGM1200B coefficients become weakly observed at high
 degrees and adding terms can slightly increase the residual.
+
+### GLONASS R03 7-day, N=70 harmonics, vs IGS broadcast
+
+The Earth-centred counterpart is the GLONASS slot 03 broadcast-
+nav comparison shipped in `examples/glonass_r03_validation/`. SpOdy
+propagates from the first 2024-01-21 broadcast TOC for 167.5 hours
+and is diffed against a reference binary built from 7 consecutive
+daily RINEX-NAV files (`spody convert glonass <day1.rnx> &hellip;
+<day7.rnx> &hellip;`; chapter 12). With `srp = false`,
+`harmonics_degree = 70`, and the Moon + Sun as third bodies:
+
+| Day | `|Δr|` RMS | `|Δr|` max |
+|-----|------------|------------|
+| 1   | 176 m      | 385 m      |
+| 2   | 367 m      | 869 m      |
+| 3   | 577 m      | 1.4 km     |
+| 4   | 803 m      | 2.1 km     |
+| 5   | 1026 m     | 2.7 km     |
+| 6   | 1232 m     | 3.2 km     |
+| 7   | 1425 m     | 3.7 km     |
+
+The RMS grows roughly linearly at ~200 m / day. The signature is
+a near-secular in-track residual, the canonical fingerprint of
+the un-modelled in-track perturbation forces at GNSS altitude
+(box-wing SRP, antenna thrust, empirical ECOM-style
+accelerations). Adding a cannonball SRP with guessed Cr / area
+makes things worse on this particular spacecraft because the
+in-track sign happens to coincide with the residual; closing the
+budget to sub-km over a week needs either the proper IGS BOX-WING
+SRP model (Rodriguez-Solano 2014) or empirical ECOM5
+accelerations, both of which sit outside SpOdy's current
+force-model menu.
+
+Independent of the SRP question, the example is the canonical
+sanity check that the Earth-orientation pipeline (IAU 2006 +
+IERS EOP) is wired correctly: day-1 RMS regresses against the
+broadcast at the 177 m level set by the broadcast nav's own OD
+precision, which is the floor reachable with a pure force-model
+propagation (no per-arc empirical fits).
 
 ## Combining diff plots through the tile dashboard
 

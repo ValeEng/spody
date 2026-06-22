@@ -57,14 +57,18 @@ widget on the right.
   **Browse...** button that pops a file dialog and writes the
   chosen path back into the edit.
 - **Paths to wizard-managed assets** (`force_model.harmonics_file`,
+  `force_model.eop_file`, `force_model.iau2006_dir`,
   `ephemeris.file`): a **dropdown** of files the Setup wizard
   has downloaded into the data dir, filtered by category and (for
-  harmonics) by `central_body`. A **Browse...** next to the
-  dropdown adds an out-of-data-dir file as a one-off `(custom)`
-  entry, so a TOML pointing at e.g.
+  harmonics, EOP, IAU 2006) by `central_body`. A **Browse...**
+  next to the dropdown adds an out-of-data-dir file as a one-off
+  `(custom)` entry, so a TOML pointing at e.g.
   `external/spody-core/raw_data/GRGM1200B/...` still round-trips.
   The dropdown refreshes automatically when the wizard finishes a
-  new download or when `central_body` changes.
+  new download or when `central_body` changes. The Earth-only
+  rows (`eop_file`, `iau2006_dir`) appear only when `central_body
+  = "Earth"`; switching back to Moon hides them and drops them
+  from the emitted TOML.
 - **Epoch (`simulation.et_start_s`)** &mdash; a dual-cell row: the
   ET value on the left, a UTC ISO 8601 cell on the right, two
   arrow buttons between them. **&rarr;** converts ET to UTC,
@@ -97,11 +101,12 @@ form does not block invalid input &mdash; you can continue editing
 
 The range checks the form runs are local: they catch values that
 are physically impossible (negative masses, zero rel-tol) or
-violate a documented bound (harmonics degree above 1200). Cross-
-field consistency (e.g. `h_init_s` between `h_min_s` and `h_max_s`)
-is *not* checked by the form &mdash; that is the engine's job, and
-**Validate** is the right button to press once the per-field
-indicators look clean.
+violate a documented bound (harmonics degree above 2200, the
+absolute schema ceiling that accommodates the EIGEN-6C4 / EGM2008
+Earth coefficient sets). Cross-field consistency (e.g. `h_init_s`
+between `h_min_s` and `h_max_s`) is *not* checked by the form
+&mdash; that is the engine's job, and **Validate** is the right
+button to press once the per-field indicators look clean.
 
 ## The XOR object switch
 

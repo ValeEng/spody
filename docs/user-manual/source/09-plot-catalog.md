@@ -83,13 +83,33 @@ inclination directly.
 
 **Overlay-safe.** Yes.
 
-#### 3D orbit + Moon
+#### 3D orbit + central body
 
 The trajectory rendered as a polyline in a 3D scene with the
-central body sphere at the origin. The sphere is textured with
-the equirectangular image configured in **Settings &rsaquo; Paths
-&rsaquo; Moon texture** (or rendered grey if no texture is
-configured).
+central body sphere at the origin. The sphere is textured with the
+equirectangular image configured in **Settings &rsaquo; Paths**
+for the active central body (Moon texture for `central_body =
+"Moon"`, Blue Marble texture for `central_body = "Earth"`); when
+the texture is absent the sphere falls back to flat grey.
+
+The scene also draws **two reference-frame triads** from the
+central body's centre (introduced in v0.1.2-beta for the Moon and
+generalised in v0.1.3-beta to track the active central body):
+
+- **Body-fixed triad** (bright RGB, &sim;2.1 body radii long)
+  with billboard labels `X_pa / Y_pa / Z_pa` for the Moon
+  (Principal Axes) or `X_itrf / Y_itrf / Z_itrf` for the Earth
+  (ITRS). For Earth the triad **rotates in real time** along the
+  animated trajectory: at every animation frame the engine's
+  `R_ICRF→ITRS` rotation is recomputed (IAU 2006/2000A_R06 +
+  the IERS EOP table) and applied to the basis vectors, so the
+  triad and the textured continents stay locked to the same
+  Earth orientation. For the Moon the same animation step applies
+  the libration-driven `R_ICRF→PA` rotation from DE440.
+- **ICRF triad** (muted RGB, &sim;1.8 body radii long, opacity
+  0.25) with labels `X_icrf / Y_icrf / Z_icrf`, fixed in scene
+  coordinates. Useful as a static reference against the rotating
+  body-fixed triad.
 
 **Interactions.**
 
@@ -106,6 +126,12 @@ epoch (TDB seconds past J2000) into the field and click
 toward the Sun at that epoch. The epoch field auto-fills with the
 currently-loaded TOML's `simulation.et_start_s` so it usually
 contains a sensible value already.
+
+When the **Moon appears as a third body** in an Earth-centred
+scene (`third_bodies = ["Moon", ...]`), its marker is rendered as
+a textured sphere using the wizard-managed Moon texture (rather
+than a flat-grey dot), so the Moon stays recognisable at its true
+&sim;384,000 km distance.
 
 **Overlay-safe.** Yes (the overlay variant adds N trajectories in
 turbo colours plus a legend).
@@ -287,10 +313,12 @@ LRO regression (~9k samples at 1-minute cadence) gets &asymp;60
 bins and a short smoke test still produces a readable histogram.
 
 A small box in the bottom-right corner of the figure reports the
-**median**, **p95** and **max** of the distribution. These three
-numbers are the standard summary for a regression budget when the
-underlying error distribution is **not normal** (which is the
-usual case for SPICE-vs-SpOdy `|Δr|`).
+**RMS**, **median**, **p95** and **max** of the distribution. The
+RMS is `sqrt(mean(|Δr|^2))`, the canonical single-number summary
+in orbit-determination and conjunction work; the percentiles are
+the standard summary when the underlying error distribution is
+**not normal** (which is the usual case for SPICE-vs-SpOdy
+`|Δr|`).
 
 #### |Δr| empirical CDF
 
@@ -303,13 +331,15 @@ to find the value such that 95% / 99% / 99.9% of samples are
 below it, scan the y axis at 0.95 / 0.99 / 0.999.
 
 A box in the bottom-right corner of the figure reports the
-**median**, **p95**, **p99**, **p99.9** and **max**. These are
-the **distribution-free percentile budgets** &mdash; the right
-answer regardless of whether the underlying distribution is
-normal, log-normal, multi-modal, or anything else. The standard
-"`mean &plusmn; 2σ`" 95% interval only works if the distribution
-is normal; the empirical p95 read off the CDF works in every
-case, which is the point of this plot for regression work.
+**RMS**, **median**, **p95**, **p99**, **p99.9** and **max**.
+These (minus the RMS) are the **distribution-free percentile
+budgets** &mdash; the right answer regardless of whether the
+underlying distribution is normal, log-normal, multi-modal, or
+anything else. The standard "`mean &plusmn; 2σ`" 95% interval
+only works if the distribution is normal; the empirical p95 read
+off the CDF works in every case, which is the point of this plot
+for regression work. The RMS sits alongside the percentiles
+because OD and conjunction budgets traditionally quote it.
 
 ## Accelerations plots (`SPDYACC_`)
 

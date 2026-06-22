@@ -50,16 +50,16 @@ docstring is for code-reading humans only.
 1. **Update the version constants** in the four files above; commit:
 
    ```sh
-   git commit -am "release: bump to v0.1.1-beta"
+   git commit -am "release: bump to v0.1.3-beta"
    ```
 
 2. **Tag the commit** with an annotated tag matching the same
    version:
 
    ```sh
-   git tag -a v0.1.1-beta -m "v0.1.1-beta: first public alpha"
+   git tag -a v0.1.3-beta -m "v0.1.3-beta: <one-line release headline>"
    git push origin main
-   git push origin v0.1.1-beta
+   git push origin v0.1.3-beta
    ```
 
 3. **Wait for CI** &mdash; the `release` workflow fires on the tag
@@ -72,9 +72,9 @@ docstring is for code-reading humans only.
    six assets attached:
 
    ```
-   spody-gui-v0.1.1-beta-win64.zip          + .sha256
-   spody-gui-v0.1.1-beta-linux-x86_64.tar.gz + .sha256
-   spody-gui-v0.1.1-beta-macos-arm64.zip    + .sha256
+   spody-gui-v0.1.3-beta-win64.zip          + .sha256
+   spody-gui-v0.1.3-beta-linux-x86_64.tar.gz + .sha256
+   spody-gui-v0.1.3-beta-macos-arm64.zip    + .sha256
    ```
 
 5. **Polish the release notes**. The draft has GitHub's
@@ -85,7 +85,7 @@ docstring is for code-reading humans only.
 6. **Click Publish release**. The badge flips to **pre-release** for
    `-alpha` / `-beta` / `-rc` tags or **Latest** for a stable tag.
    The release page becomes the canonical download URL:
-   `github.com/<owner>/<repo>/releases/tag/v0.1.1-beta`.
+   `github.com/<owner>/<repo>/releases/tag/v0.1.3-beta`.
 
 ## What the workflow builds
 
@@ -135,10 +135,10 @@ If a release fails partway through (e.g. the macOS runner had a
 transient brew error), delete the tag and recreate it:
 
 ```sh
-git push --delete origin v0.1.1-beta
-git tag -d v0.1.1-beta
-git tag -a v0.1.1-beta -m "..."
-git push origin v0.1.1-beta
+git push --delete origin v0.1.3-beta
+git tag -d v0.1.3-beta
+git tag -a v0.1.3-beta -m "..."
+git push origin v0.1.3-beta
 ```
 
 The workflow's `concurrency` group cancels any in-flight run for

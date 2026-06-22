@@ -4,6 +4,106 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
+## v0.1.3-beta &mdash; 2026-06-22
+
+The Phase 2 release. Earth joins the Moon as a supported central
+body end-to-end (engine + GUI + validation example + manual). Two
+new converter sub-commands extend the validation workflow to GNSS
+ground-truth comparisons (IGS SP3 precise orbits and RINEX-NAV
+broadcast). Bundled `spody-core` library bumped to **1.2.0** to
+reflect the API and binary-format changes (see *Changed* below).
+
+### Added
+
+- **Earth as a supported `central_body`.** `force_model
+  .central_body = "Earth"` selects an Earth-centred propagation
+  with IAU 2006/2000A_R06 + IERS EOP for the inertial-to-ITRS
+  rotation (driven by `R_GCRS->ITRS = W * R3(+ERA) * Q`, evaluated
+  at every harmonics step). The schema gains two Earth-only
+  required fields, `force_model.eop_file` (path to
+  `finals2000A.all`) and `force_model.iau2006_dir` (path to the
+  directory containing `tab5.2{a,b,d}.txt`).
+- **Wizard manages the Earth data set.** Four new asset cards:
+  the EIGEN-6C4 `.gfc` Earth gravity-model file, the IERS EOP
+  `finals2000A.all`, the IAU 2006 X/Y/s+XY/2 conventions tables,
+  and the NASA Blue Marble texture. The `.gfc` is auto-converted
+  to GRGM-style `eigen-6c4.tab` via `spody convert
+  harmonics_icgem` the same way DE440 ASCII chunks are turned
+  into `de440.spody`. Per-100-degree progress is streamed into
+  the wizard's status line.
+- **EOP startup freshness check.** Every launch issues one
+  HTTP HEAD request to the upstream `finals2000A.all` URL and
+  compares the server `Last-Modified` + `Content-Length` against
+  the local file's mtime + size. If the server's copy is newer, a
+  non-blocking pop-up offers to open the wizard. Silent on
+  success and on transient network failure.
+- **`spody convert harmonics_icgem`** &mdash; CLI sub-command that
+  converts an ICGEM `.gfc` file to the GRGM-style `.tab` format
+  the engine reads. Optional `--max-degree N` truncates the
+  output. Used by the wizard for EIGEN-6C4; usable manually for
+  any other ICGEM model (EGM2008, etc.).
+- **`spody convert sp3`** &mdash; CLI sub-command that converts
+  one satellite's track from an IGS SP3 precise-orbit file into a
+  SpOdy `SPDYOUT_` reference binary in the central-body inertial
+  frame, applying `R_ITRS->ICRF(t)` per record. Used by the new
+  `examples/gps_g11_validation/` example.
+- **`spody convert glonass`** &mdash; CLI sub-command that
+  converts one or more RINEX-NAV files (GLONASS broadcast) into a
+  single `SPDYOUT_` reference binary with continuous 0-anchored
+  time axis. Multi-file input concatenates daily nav files into a
+  week-or-more-long reference; calling with one file reproduces
+  the single-file behaviour bit-for-bit. Used by the new
+  `examples/glonass_r03_validation/` example (7 daily RINEX files,
+  167.5 h reference).
+- **3D rotating ITRF triad and Earth animation.** The 3D orbit
+  plot animates the active central body's body-fixed rotation in
+  real time: IAU 2006 + EOP for Earth (textured globe and ITRF
+  triad both rotate in lock-step), DE440 libration for the Moon
+  (already shipped in v0.1.2-beta). The textured Moon now
+  appears as the **third-body marker** in Earth-centred scenes
+  too, so it stays recognisable at its true &sim;384,000 km
+  distance.
+- **Pure-Python Earth-orientation in `spopy`** &mdash; new
+  modules `spopy.MappedEOP` (IERS finals2000A.all parser) and
+  `spopy.icrf_to_itrs(et, eop)` (rotation), wrapping `pyerfa` and
+  matching the C engine at machine epsilon. Mirrors the existing
+  `spopy.lunar_libration_angles` / `spopy.icrf_to_moon_pa` pair.
+- **GNSS validation example shipped** &mdash; `examples/
+  glonass_r03_validation/` propagates GLONASS slot 03 for 167.5 h
+  from its first 2024-01-21 broadcast TOC. Day-by-day RMS against
+  the broadcast (`srp=false`, `N=70`, Moon+Sun third-bodies):
+  176 -> 367 -> 577 -> 803 -> 1026 -> 1232 -> 1425 m. Day 1
+  matches the 177 m broadcast-OD floor; the secular growth is
+  the unmodelled in-track perturbation forces signature.
+
+### Changed
+
+- **`harmonics_degree` schema range bumped from `[2, 1200]` to
+  `[2, 2200]`** to accommodate the EIGEN-6C4 / EGM2008 Earth
+  coefficient sets (degree 2190). The effective upper bound at
+  run time stays the degree declared in the chosen
+  `harmonics_file`.
+- **`|Δr| distribution` and `|Δr| CDF` stats boxes** now report
+  **RMS** alongside the percentile budgets. The RMS is the
+  canonical single-number summary in OD / conjunction work; it
+  complements the distribution-free percentiles that already
+  cover non-normal error distributions.
+- **GLONASS / SP3 reference binaries are now time-0-anchored.**
+  The time column of every record is `et_record - et_first`,
+  matching the propagator's emit-trajectory convention so a diff
+  against a propagation lines up sample-by-sample at `t = 0`.
+
+### Fixed
+
+- **`spody_bf_rotation_earth` prototype now visible to gcc /
+  clang.** A missing forward `typedef` of `ForceModelContext` in
+  `spody_earth_orientation.h` caused gcc / clang to construct a
+  fresh function-local struct type from the parameter list,
+  rejecting the implementation as a prototype mismatch. The
+  Windows MSVC build was lenient and the bug only surfaced as a
+  Linux / macOS CI failure on every commit since v0.1.2-beta.
+  Forward typedef in the header fixes it.
+
 ## v0.1.2-beta &mdash; 2026-06-12
 
 One day after v0.1.1-beta, mostly bug-fix + UX polish driven by
