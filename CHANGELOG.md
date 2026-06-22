@@ -43,10 +43,14 @@ reflect the API and binary-format changes (see *Changed* below).
   output. Used by the wizard for EIGEN-6C4; usable manually for
   any other ICGEM model (EGM2008, etc.).
 - **`spody convert sp3`** &mdash; CLI sub-command that converts
-  one satellite's track from an IGS SP3 precise-orbit file into a
-  SpOdy `SPDYOUT_` reference binary in the central-body inertial
-  frame, applying `R_ITRS->ICRF(t)` per record. Used by the new
-  `examples/gps_g11_validation/` example.
+  one or more IGS SP3 precise-orbit files into a SpOdy `SPDYOUT_`
+  reference binary in the central-body inertial frame, applying
+  `R_ITRS->ICRF(t)` per record. **Multi-file mode** concatenates
+  daily SP3 files into a week-or-more-long cm-precision reference;
+  single-file calls are bit-for-bit identical to the previous
+  behaviour. Used by `examples/gps_g11_validation/` (GPS-only IGS
+  Final products) and `examples/glonass_r03_validation/` (CODE
+  MGEX multi-GNSS for GLONASS R03).
 - **`spody convert glonass`** &mdash; CLI sub-command that
   converts one or more RINEX-NAV files (GLONASS broadcast) into a
   single `SPDYOUT_` reference binary with continuous 0-anchored
@@ -55,6 +59,21 @@ reflect the API and binary-format changes (see *Changed* below).
   the single-file behaviour bit-for-bit. Used by the new
   `examples/glonass_r03_validation/` example (7 daily RINEX files,
   167.5 h reference).
+- **`spody convert gps`** &mdash; CLI sub-command that converts
+  one or more RINEX-NAV GPS files into a single `SPDYOUT_`
+  reference binary. Unlike GLONASS broadcast (which carries
+  `(r, v)` directly), GPS broadcast carries Kepler-with-corrections
+  elements per record, so the converter propagates each record to
+  its own TOC per IS-GPS-200 sect. 20.3.3.4.3 (positions) +
+  Remondi 2004 (analytic velocity derivatives) to extract `(r, v)`
+  at broadcast-OD precision (`~few m / few cm/s`). Multi-file from
+  the start, same 0-anchored time convention as `sp3` / `glonass`.
+  Used by `examples/gps_g11_validation/` to bootstrap the initial
+  state, replacing the previous 4th-order Lagrange forward
+  derivative on SP3 positions (which gave the SP3 secant rather
+  than the true Keplerian tangent &mdash; `|v0|` was ~3.57 km/s vs
+  the correct ~3.87 km/s, a 7-8% bootstrap artefact that swamped
+  the residual at `t = 0`).
 - **3D rotating ITRF triad and Earth animation.** The 3D orbit
   plot animates the active central body's body-fixed rotation in
   real time: IAU 2006 + EOP for Earth (textured globe and ITRF
@@ -68,13 +87,28 @@ reflect the API and binary-format changes (see *Changed* below).
   `spopy.icrf_to_itrs(et, eop)` (rotation), wrapping `pyerfa` and
   matching the C engine at machine epsilon. Mirrors the existing
   `spopy.lunar_libration_angles` / `spopy.icrf_to_moon_pa` pair.
-- **GNSS validation example shipped** &mdash; `examples/
-  glonass_r03_validation/` propagates GLONASS slot 03 for 167.5 h
-  from its first 2024-01-21 broadcast TOC. Day-by-day RMS against
-  the broadcast (`srp=false`, `N=70`, Moon+Sun third-bodies):
-  176 -> 367 -> 577 -> 803 -> 1026 -> 1232 -> 1425 m. Day 1
-  matches the 177 m broadcast-OD floor; the secular growth is
-  the unmodelled in-track perturbation forces signature.
+- **Two GNSS validation examples shipped**:
+  - `examples/glonass_r03_validation/` &mdash; propagates GLONASS
+    slot 03 for 167.5 h from its first 2024-01-21 broadcast TOC.
+    Day-by-day RMS vs broadcast (`srp=false`, `N=70`, Moon+Sun):
+    176 -> 367 -> 577 -> 803 -> 1026 -> 1232 -> 1425 m. Day-1 RMS
+    matches the 177 m broadcast-OD floor; the secular growth is
+    the unmodelled in-track perturbation forces signature.
+  - `examples/gps_g11_validation/` &mdash; propagates GPS PRN 11
+    for 167.75 h with **broadcast IC** (via the new `convert gps`
+    Kepler-with-corrections) and **cm-precision SP3 ground
+    truth**. Day-by-day RMS: 46 -> 128 -> 212 -> 300 -> 390 ->
+    484 -> 581 m. Day-1 RMS is &sim;4&times; smaller than the
+    GLONASS baseline because (a) the broadcast IC is clean
+    (`|Δr|` at `t = 0` = 2.3 m vs the previous 5-point Lagrange
+    bootstrap's 7-8% velocity artefact, which translated to
+    &gt; 120 m at `t = 0`), and (b) the SP3 reference is cm-level
+    truth, whereas the GLONASS broadcast reference carries a
+    &sim;258 m broadcast-OD floor of its own (independently
+    verified by diffing the GLONASS broadcast directly against the
+    CODE MGEX multi-GNSS SP3). See chapter 11 for the
+    multi-reference comparison and the broadcast-OD floor
+    derivation.
 
 ### Changed
 

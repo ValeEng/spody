@@ -111,13 +111,14 @@ CPU count.
 
 ## `spody convert`
 
-The umbrella command for data-file conversions. Four sub-commands
+The umbrella command for data-file conversions. Five sub-commands
 are implemented today: planetary ephemeris (`ephemeris`), ICGEM
 spherical-harmonic gravity coefficients (`harmonics_icgem`), IGS
-SP3 precise orbits (`sp3`), and RINEX-NAV GLONASS broadcast
-(`glonass`). The first two are the conversions the setup wizard
-triggers automatically; the last two produce reference binaries
-used in the diff-validation workflow (chapter 11).
+SP3 precise orbits (`sp3`), RINEX-NAV GLONASS broadcast (`glonass`),
+and RINEX-NAV GPS broadcast (`gps`). The first two are the
+conversions the setup wizard triggers automatically; the last
+three produce reference binaries used in the diff-validation
+workflow (chapter 11).
 
 ### `spody convert ephemeris`
 
@@ -201,38 +202,52 @@ spody.exe convert harmonics_icgem .\data\EIGEN-6C4\EIGEN-6C4.gfc `
 ### `spody convert sp3`
 
 ```
-spody.exe convert sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
+spody.exe convert sp3 <input.sp3> [input.sp3 ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
 ```
 
-Converts one satellite's track from an IGS SP3 precise-orbit file
-into a SpOdy `SPDYOUT_` reference binary in the central-body
-inertial frame. SP3 records carry ITRS position only (no
-velocity); the converter applies `R_ITRS→ICRF(t)` per record using
-the EOP + IAU 2006 tables, writes position with zero velocity,
-and emits one record per SP3 epoch.
+Converts one satellite's track from one or more IGS SP3 precise-
+orbit files into a SpOdy `SPDYOUT_` reference binary in the
+central-body inertial frame. SP3 records carry ITRS position only
+(no velocity); the converter applies `R_ITRS→ICRF(t)` per record
+using the EOP + IAU 2006 tables, writes position with zero
+velocity, and emits one record per SP3 epoch.
+
+**Multi-file mode**: IGS final products ship one SP3 file per UTC
+day, so a week-long cm-precision reference is 7 daily files passed
+in chronological order. The converter concatenates them into one
+binary with a continuous 0-anchored time axis; single-file calls
+behave bit-for-bit identically to before.
 
 Arguments:
 
-- `<input.sp3>` &mdash; an IGS SP3-c / SP3-d file (the multi-GNSS
-  IGS Final products are typical).
-- `<output.bin>` &mdash; destination `SPDYOUT_` binary.
-- `<sat_id>` &mdash; the 3-character SP3 satellite id (`G11` for
-  GPS PRN 11, `R03` for GLONASS slot 03, `E14` for Galileo
-  PRN 14, &hellip;).
+- `<input.sp3> [input.sp3 ...]` &mdash; one or more IGS SP3-c /
+  SP3-d files in chronological order. For the GPS-only IGS Final
+  products (`IGS0OPSFIN_*_ORB.SP3` on BKG) only `G<NN>` ids are
+  resolvable; for multi-GNSS reference (G + R + E + C + J) use a
+  multi-GNSS analysis-centre product such as CODE's
+  `COD0MGXFIN_*_ORB.SP3` (mirrored at `ftp.aiub.unibe.ch/CODE_MGEX/`).
+- `<output.bin>` &mdash; destination `SPDYOUT_` binary (always the
+  *second-to-last* positional argument).
+- `<sat_id>` &mdash; 3-character SP3 satellite id (`G11`, `R03`,
+  `E14`, &hellip;); always the *last* positional argument.
 - `--eop <file>` &mdash; path to `finals2000A.all`.
 - `--iau2006-dir <dir>` &mdash; path to the directory containing
   `tab5.2{a,b,d}.txt`.
 
 The time column of the emitted binary is **0-anchored** at the
-first record (`t_record - t_first`), matching the propagator's
-convention so a diff against a propagation lines up sample-by-
-sample at `t = 0`.
+first record across all inputs (`t_record - t_first_overall`),
+matching the propagator's convention so a diff against a
+propagation lines up sample-by-sample at `t = 0`.
 
-**Example.** Used by the bundled `gps_g11_validation` example:
+**Example.** Used by the bundled `gps_g11_validation` example to
+build the 7-day SP3 reference:
 
 ```powershell
-spody.exe convert sp3 .\examples\gps_g11_validation\IGS0OPSFIN_*.SP3 `
-                      .\examples\gps_g11_validation\gps_g11_2024_01_21_ref.bin `
+spody.exe convert sp3 .\examples\gps_g11_validation\IGS0OPSFIN_20240210000_01D_15M_ORB.SP3 `
+                      .\examples\gps_g11_validation\IGS0OPSFIN_20240220000_01D_15M_ORB.SP3 `
+                      ... `
+                      .\examples\gps_g11_validation\IGS0OPSFIN_20240270000_01D_15M_ORB.SP3 `
+                      .\examples\gps_g11_validation\gps_g11_2024_01_21_7d_sp3_ref.bin `
                       G11 `
                       --eop .\data\eop\finals2000A.all `
                       --iau2006-dir .\data\iau2006
@@ -295,7 +310,66 @@ Each file contributes its own per-file summary line on stderr
 (`-> 48 records (sat=R03, &hellip;)`), followed by an aggregate
 line covering the whole 7-day track.
 
-**Exit codes** (sp3 and glonass).
+### `spody convert gps`
+
+```
+spody.exe convert gps <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
+```
+
+Converts one GPS satellite's broadcast nav track from one or more
+RINEX-NAV files into a SpOdy `SPDYOUT_` reference binary in the
+Earth-centred ICRF frame. Unlike GLONASS broadcast (which carries
+`(r, v, a_lunisolar)` directly in PZ-90), GPS broadcast carries a
+*Kepler-with-corrections* element set per record (`sqrt_A, e, i0,
+Omega0, omega, M0` + `Delta_n, OmegaDot, iDot` + harmonic
+corrections `Cuc/Cus/Crc/Crs/Cic/Cis`). The converter propagates
+each record to its own TOC per IS-GPS-200 sect. 20.3.3.4.3
+(positions) + Remondi 2004 (analytic velocity derivatives), giving
+`(r, v)` at broadcast-OD precision (`~few m / few cm/s`).
+
+This is the recommended **initial-state bootstrap** for any
+SP3-based GPS validation: replaces the 4th-order Lagrange forward
+derivative of 5 SP3 positions, which gave the SP3 secant rather
+than the true Keplerian tangent (`|v0|` came out 7-8% off, swamping
+the propagation residual at `t = 0`). With broadcast IC the day-1
+RMS measures force-model error, not bootstrap artefact.
+
+Like `convert glonass` and `convert sp3`, multi-file inputs are
+concatenated into one binary with a continuous 0-anchored time
+axis.
+
+Arguments:
+
+- `<input.rnx> [input.rnx ...]` &mdash; one or more RINEX 3.x
+  GPS-or-mixed nav files in chronological order (BKG hosts a
+  GPS-only `_GN.rnx` variant; the multi-GNSS `_MN.rnx` file also
+  works).
+- `<output.bin>` &mdash; destination `SPDYOUT_` binary (always the
+  *second-to-last* positional argument).
+- `<sat_id>` &mdash; the 3-character GPS PRN, e.g. `G11`
+  (always the *last* positional argument).
+- `--eop <file>` &mdash; path to `finals2000A.all`.
+- `--iau2006-dir <dir>` &mdash; path to the directory containing
+  `tab5.2{a,b,d}.txt`.
+
+**Example.** Used by the bundled `gps_g11_validation` example to
+build the 7-day broadcast IC file:
+
+```powershell
+spody.exe convert gps `
+    .\examples\gps_g11_validation\BRDC00WRD_R_20240210000_01D_GN.rnx `
+    ... `
+    .\examples\gps_g11_validation\BRDC00WRD_R_20240270000_01D_GN.rnx `
+    .\examples\gps_g11_validation\gps_g11_2024_01_21_7d_brdc.bin `
+    G11 `
+    --eop .\data\eop\finals2000A.all `
+    --iau2006-dir .\data\iau2006
+```
+
+Each file contributes its own per-file summary line on stderr,
+followed by an aggregate line covering the whole track.
+
+**Exit codes** (sp3, glonass, gps).
 
 - `0` &mdash; conversion succeeded (or wrote zero records with a
   WARNING when the requested `<sat_id>` was absent across all

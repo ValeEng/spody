@@ -174,6 +174,67 @@ broadcast at the 177 m level set by the broadcast nav's own OD
 precision, which is the floor reachable with a pure force-model
 propagation (no per-arc empirical fits).
 
+### GPS PRN 11 7-day, N=70 harmonics, vs IGS Final SP3
+
+The GPS counterpart in `examples/gps_g11_validation/` is built on a
+**cleaner two-format reference scheme** &mdash; broadcast nav for the
+initial state, IGS Final SP3 for the per-sample truth. The
+broadcast bootstrap gives `(r, v)` at broadcast-OD precision
+(`~few m / few cm/s`) via the new `spody convert gps` Kepler-with-
+corrections propagator (IS-GPS-200 + Remondi 2004; chapter 12),
+replacing the previous 5-point Lagrange forward derivative on SP3
+positions that gave the SP3 secant rather than the true Keplerian
+tangent (`|v0| ~3.57 km/s` vs the correct `~3.87 km/s`, a 7-8%
+artefact that swamped the residual at `t = 0`).
+
+With `srp = false`, `harmonics_degree = 70`, Moon + Sun third
+bodies, and the cm-precision IGS Final SP3 as ground truth:
+
+| Day | `|Δr|` RMS | `|Δr|` max |
+|-----|------------|------------|
+| 1   | 46 m       | 91 m       |
+| 2   | 128 m      | 316 m      |
+| 3   | 212 m      | 552 m      |
+| 4   | 300 m      | 800 m      |
+| 5   | 390 m      | 1.1 km     |
+| 6   | 484 m      | 1.3 km     |
+| 7   | 581 m      | 1.6 km     |
+
+`|Δr|` at `t = 0` is **2.3 m** &mdash; the broadcast-vs-SP3-OD
+floor, NOT a force-model error. The linear &sim;80 m / day growth
+is the same in-track signature as GLONASS, but with a 3-4&times;
+smaller day-1 baseline because both endpoints of the diff
+(the IC and the truth) are clean.
+
+### Multi-reference comparison: GPS vs GLONASS broadcast OD
+
+The two GNSS examples allow a useful cross-check: diff the same
+propagation against **both** the broadcast nav reference AND a
+multi-GNSS SP3 reference (e.g. the CODE MGEX `COD0MGXFIN_*.SP3`
+files, which include G + R + E + C). Three numbers fall out:
+
+* `prop vs broadcast` &mdash; the legacy reference, easy to build
+  but only ~few m of truth precision;
+* `prop vs SP3` &mdash; the cm-level truth, but introduces a
+  multi-format alignment chore (see *Time-grid alignment* above);
+* `broadcast vs SP3` &mdash; the truth-floor of the broadcast
+  itself, exposed for free as a side effect of the comparison.
+
+For 2024-01-21:
+
+| Constellation | prop vs brdc (d1) | prop vs SP3 (d1) | broadcast-OD floor |
+|---------------|-------------------|------------------|--------------------|
+| GPS G11       | 47 m              | 46 m             | ~2 m               |
+| GLONASS R03   | 176 m             | 317 m            | ~258 m             |
+
+GPS broadcast is &sim;100&times; tighter than GLONASS broadcast,
+which is why a GPS example built on a broadcast-only reference
+already measures the propagator's force-model error cleanly.
+For GLONASS the SP3 reference is needed to push past the 258 m
+broadcast-OD floor &mdash; or the force-model residual must be
+recovered indirectly by composing `prop_vs_brdc &approx;
+sqrt(prop_vs_SP3^2 - brdc_vs_SP3^2)`.
+
 ## Combining diff plots through the tile dashboard
 
 A useful pattern for the validation workflow is to tile the four
