@@ -311,6 +311,53 @@ def required_assets(coverage_value: str | None = None) -> tuple[Asset, ...]:
     return tuple(out)
 
 
+def asset_groups(coverage_value: str | None = None
+                 ) -> tuple[tuple[str, str, tuple[Asset, ...]], ...]:
+    """Return the asset list partitioned into UI sections, in the
+    order the wizard should render them. Each entry is a triple
+    `(title, subtitle, assets)`:
+
+    * `title`    -- short bold heading shown on the wizard's group box;
+    * `subtitle` -- one-line gray description shown right under it;
+    * `assets`   -- the cards that belong to this group.
+
+    The grouping mirrors the user's decision tree: required core data
+    first (DE440 + GRGM1200B Moon gravity, mandatory for any
+    propagation), Earth-specific data next (optional, only needed
+    when central_body = "Earth"), textures last (always optional,
+    pure UX polish for the 3D scene)."""
+    cov = coverage_value if coverage_value is not None else coverage()
+    chunks = DE440_CHUNKS_FULL if cov == "full" else DE440_CHUNKS_MODERN
+
+    ephemeris: list[Asset] = [DE440_HEADER]
+    ephemeris.extend(_chunk_asset(c) for c in chunks)
+    ephemeris.append(DE440_SPODY)
+
+    return (
+        ("Planetary ephemeris (required)",
+         "JPL DE440 ASCII chunks + the derived `.spody` binary the "
+         "engine reads at run time.",
+         tuple(ephemeris)),
+        ("Moon gravity (required)",
+         "GRGM1200B spherical-harmonic coefficients for Moon-centred "
+         "propagations.",
+         (GRGM1200B_TAB, GRGM1200B_LBL)),
+        ("Earth gravity (optional, Earth runs only)",
+         "EIGEN-6C4 ICGEM `.gfc` + the derived GRGM-style `.tab` the "
+         "engine reads when `central_body = \"Earth\"`.",
+         (EIGEN_6C4_GFC, EIGEN_6C4_TAB)),
+        ("Earth orientation (optional, Earth runs only)",
+         "IERS finals2000A.all (UT1, polar motion) + the IAU 2006 X / Y / "
+         "s+XY/2 conventions tables (`tab5.2{a,b,d}.txt`).",
+         (EOP_FILE, IAU2006_TAB_X, IAU2006_TAB_Y, IAU2006_TAB_SXY)),
+        ("Textures (optional)",
+         "Body-fixed photographic textures used by the 3D Analysis scene "
+         "and the impact lat/lon backgrounds. SpOdy renders flat-grey "
+         "fallbacks when they are absent.",
+         (MOON_TEXTURE, EARTH_TEXTURE)),
+    )
+
+
 def _chunk_asset(date_id: str) -> Asset:
     """One ascpXXXXX.440 chunk as an Asset descriptor."""
     return Asset(

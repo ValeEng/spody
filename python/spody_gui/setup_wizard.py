@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -209,15 +210,23 @@ class SetupWizard(QDialog):
         outer.addLayout(cov_row)
 
         intro = QLabel(
-            "Spody needs an external planetary ephemeris (JPL DE440) and a "
-            "lunar harmonic-gravity model (GRGM1200B). The wizard downloads "
-            "the raw files into the data dir, then converts the DE440 ASCII "
-            "chunks into spody's binary format (`de440.spody`) automatically.\n\n"
-            "URLs below are editable: if a download fails, fix the URL and "
-            "try again. The wizard does not store overrides -- once we know "
-            "the right link we'll bake it into the next release."
+            "SpOdy needs several externally-maintained data files. The "
+            "wizard groups them by purpose below: the top two sections "
+            "(planetary ephemeris and Moon gravity) are required for any "
+            "propagation; the Earth and texture sections are optional and "
+            "only needed when their corresponding feature is exercised "
+            "(<i>central_body = \"Earth\"</i> for the Earth ones; the "
+            "3D analysis scene for the textures). Each card downloads its "
+            "raw input; the wizard then auto-runs <code>spody convert</code> "
+            "for the derived files (<code>de440.spody</code> from DE440 "
+            "ASCII chunks, <code>eigen-6c4.tab</code> from the EIGEN-6C4 "
+            ".gfc).<br><br>"
+            "URLs are editable: if a download fails, fix the URL in the "
+            "card and try again. Overrides are session-only; once a new "
+            "link is proven we bake it into the next release."
         )
         intro.setWordWrap(True)
+        intro.setTextFormat(Qt.TextFormat.RichText)
         intro.setStyleSheet("color: gray;")
         outer.addWidget(intro)
 
@@ -266,7 +275,16 @@ class SetupWizard(QDialog):
     def _rebuild_rows(self) -> None:
         """Tear down the current asset rows and rebuild from the
         current coverage profile. Called on init and whenever the
-        coverage radio changes."""
+        coverage radio changes.
+
+        Rows are organised into purpose-driven sections via
+        `assets.asset_groups()` -- each section is a QGroupBox with
+        a one-line subtitle, so the user can scan straight to "Earth
+        gravity" or "Textures" without reading every card. The
+        underlying `_AssetRow` widgets are still indexed in
+        `self._rows` by `relpath` so the rest of the wizard (status
+        refresh, download-all, conversion progress) does not care
+        about the visual grouping."""
         # Pop everything but the trailing stretch.
         while self._rows_lay.count() > 1:
             item = self._rows_lay.takeAt(0)
@@ -275,12 +293,22 @@ class SetupWizard(QDialog):
                 w.deleteLater()
         self._rows.clear()
 
-        for a in assets.required_assets():
-            row = _AssetRow(a, self._nam, self._store, self)
-            row.downloaded.connect(self._on_asset_arrived)
-            self._rows[a.relpath] = row
-            # Insert before the stretch (index = count - 1).
-            self._rows_lay.insertWidget(self._rows_lay.count() - 1, row)
+        for title, subtitle, group_assets in assets.asset_groups():
+            box = QGroupBox(title)
+            box_lay = QVBoxLayout(box)
+            box_lay.setContentsMargins(8, 6, 8, 6)
+            box_lay.setSpacing(4)
+            if subtitle:
+                sub = QLabel(subtitle)
+                sub.setWordWrap(True)
+                sub.setStyleSheet("color: gray; padding-bottom: 4px;")
+                box_lay.addWidget(sub)
+            for a in group_assets:
+                row = _AssetRow(a, self._nam, self._store, self)
+                row.downloaded.connect(self._on_asset_arrived)
+                self._rows[a.relpath] = row
+                box_lay.addWidget(row)
+            self._rows_lay.insertWidget(self._rows_lay.count() - 1, box)
 
     def _on_coverage_changed(self, _checked: bool) -> None:
         """Radio toggled. Persist + rebuild rows + refresh status."""
