@@ -27,8 +27,9 @@
  *   spody validate   <input.toml>
  *   spody convert    ephemeris <dir> <de> <date1> [date2 ...]
  *   spody convert    harmonics_icgem <input.gfc> <output.tab> [--max-degree N]
- *   spody convert    sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
+ *   spody convert    sp3 <input.sp3> [input.sp3 ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody convert    glonass <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
+ *   spody convert    gps     <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody info
  */
 #include <float.h>
@@ -991,24 +992,112 @@ static int cmd_convert(int argc, char **argv) {
         return 0;
     }
 
+    /* ---- gps ----------------------------------------------------- */
+    if (strcmp(argv[1], "gps") == 0) {
+        if (argc < 5) {
+            fprintf(stderr,
+                "convert gps: need <input.rnx> [input.rnx ...] "
+                "<output.bin> <sat_id> "
+                "--eop <file> --iau2006-dir <dir>\n"
+                "  Multiple input RINEX-NAV files are concatenated into\n"
+                "  one reference binary with a continuous 0-anchored time\n"
+                "  axis; pass them in chronological order.\n"
+                "  Each broadcast record is propagated to its own TOC via\n"
+                "  IS-GPS-200 Kepler-with-corrections (positions) +\n"
+                "  Remondi 2004 (velocities), giving (r, v) at \n"
+                "  broadcast-OD precision (~few m, ~few cm/s) instead of\n"
+                "  the SP3 finite-difference secant.\n"
+                "  e.g. spody convert gps ./brdc.rnx \\\n"
+                "                         ./examples/gps_g11.bin G11 \\\n"
+                "                         --eop ./data/eop/finals2000A.all \\\n"
+                "                         --iau2006-dir ./data/iau2006\n");
+            return 1;
+        }
+        int pos_end = argc;
+        for (int i = 2; i < argc; ++i) {
+            if (argv[i][0] == '-' && argv[i][1] == '-') { pos_end = i; break; }
+        }
+        int n_positional = pos_end - 2;
+        if (n_positional < 3) {
+            fprintf(stderr,
+                "convert gps: need at least <input.rnx> <output.bin> "
+                "<sat_id> as positional args (got %d)\n", n_positional);
+            return 1;
+        }
+        int n_inputs = n_positional - 2;
+        const char *const *input_rnx_paths =
+            (const char *const *)(argv + 2);
+        const char *output_bin = argv[2 + n_inputs];
+        const char *sat_id     = argv[2 + n_inputs + 1];
+        const char *eop_file    = NULL;
+        const char *iau2006_dir = NULL;
+        for (int i = pos_end; i < argc; ++i) {
+            if (strcmp(argv[i], "--eop") == 0 && i + 1 < argc) {
+                eop_file = argv[++i];
+            } else if (strcmp(argv[i], "--iau2006-dir") == 0 && i + 1 < argc) {
+                iau2006_dir = argv[++i];
+            } else {
+                fprintf(stderr,
+                    "convert gps: unrecognised arg '%s'\n", argv[i]);
+                return 1;
+            }
+        }
+        if (!eop_file || !iau2006_dir) {
+            fprintf(stderr,
+                "convert gps: --eop and --iau2006-dir are required\n");
+            return 1;
+        }
+        spody_log_printf("spody convert gps: %d file%s -> %s (sat=%s)\n",
+            n_inputs, n_inputs == 1 ? "" : "s", output_bin, sat_id);
+        int rc = spody_convert_gps_to_state_icrf(n_inputs,
+                                                 input_rnx_paths,
+                                                 output_bin, sat_id,
+                                                 eop_file, iau2006_dir);
+        if (rc != 0) {
+            fprintf(stderr,
+                "convert gps: spody_convert_gps_to_state_icrf "
+                "returned %d\n", rc);
+            return 1;
+        }
+        spody_log_printf("OK -- wrote %s\n", output_bin);
+        return 0;
+    }
+
     /* ---- sp3 ----------------------------------------------------- */
     if (strcmp(argv[1], "sp3") == 0) {
         if (argc < 5) {
             fprintf(stderr,
-                "convert sp3: need <input.sp3> <output.bin> <sat_id> "
+                "convert sp3: need <input.sp3> [input.sp3 ...] "
+                "<output.bin> <sat_id> "
                 "--eop <file> --iau2006-dir <dir>\n"
+                "  Multiple SP3 files are concatenated into one reference\n"
+                "  binary with a continuous 0-anchored time axis; pass them\n"
+                "  in chronological order.\n"
                 "  e.g. spody convert sp3 ./IGS/igu23001.sp3 \\\n"
                 "                         ./examples/gps_g11.bin G11 \\\n"
                 "                         --eop ./data/eop/finals2000A.all \\\n"
                 "                         --iau2006-dir ./data/iau2006\n");
             return 1;
         }
-        const char *input_sp3   = argv[2];
-        const char *output_bin  = argv[3];
-        const char *sat_id      = argv[4];
+        int pos_end = argc;
+        for (int i = 2; i < argc; ++i) {
+            if (argv[i][0] == '-' && argv[i][1] == '-') { pos_end = i; break; }
+        }
+        int n_positional = pos_end - 2;
+        if (n_positional < 3) {
+            fprintf(stderr,
+                "convert sp3: need at least <input.sp3> <output.bin> "
+                "<sat_id> as positional args (got %d)\n", n_positional);
+            return 1;
+        }
+        int n_inputs = n_positional - 2;
+        const char *const *input_sp3_paths =
+            (const char *const *)(argv + 2);
+        const char *output_bin = argv[2 + n_inputs];
+        const char *sat_id     = argv[2 + n_inputs + 1];
         const char *eop_file    = NULL;
         const char *iau2006_dir = NULL;
-        for (int i = 5; i < argc; ++i) {
+        for (int i = pos_end; i < argc; ++i) {
             if (strcmp(argv[i], "--eop") == 0 && i + 1 < argc) {
                 eop_file = argv[++i];
             } else if (strcmp(argv[i], "--iau2006-dir") == 0 && i + 1 < argc) {
@@ -1024,10 +1113,12 @@ static int cmd_convert(int argc, char **argv) {
                 "convert sp3: --eop and --iau2006-dir are required\n");
             return 1;
         }
-        spody_log_printf("spody convert sp3: %s -> %s (sat=%s)\n",
-            input_sp3, output_bin, sat_id);
-        int rc = spody_convert_sp3_to_state_icrf(input_sp3, output_bin,
-                                                 sat_id, eop_file, iau2006_dir);
+        spody_log_printf("spody convert sp3: %d file%s -> %s (sat=%s)\n",
+            n_inputs, n_inputs == 1 ? "" : "s", output_bin, sat_id);
+        int rc = spody_convert_sp3_to_state_icrf(n_inputs,
+                                                 input_sp3_paths,
+                                                 output_bin, sat_id,
+                                                 eop_file, iau2006_dir);
         if (rc != 0) {
             fprintf(stderr,
                 "convert sp3: spody_convert_sp3_to_state_icrf "
@@ -1040,7 +1131,7 @@ static int cmd_convert(int argc, char **argv) {
 
     fprintf(stderr,
         "convert: unknown subform '%s' (expected 'ephemeris', "
-        "'harmonics_icgem', 'sp3', or 'glonass')\n", argv[1]);
+        "'harmonics_icgem', 'sp3', 'glonass', or 'gps')\n", argv[1]);
     return 1;
 }
 
@@ -1058,11 +1149,15 @@ static void usage(const char *prog) {
         "                                          DE ASCII -> de<X>.spody\n"
         "  convert    harmonics_icgem <input.gfc> <output.tab> [--max-degree N]\n"
         "                                          ICGEM .gfc -> GRGM-style .tab\n"
-        "  convert    sp3 <input.sp3> <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
+        "  convert    sp3 <input.sp3> [input.sp3 ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
         "                                          IGS .sp3 -> ICRF position bin\n"
+        "                                          (multi-file: concatenated, time axis 0-anchored)\n"
         "  convert    glonass <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
         "                                          RINEX GLONASS nav -> ICRF state bin\n"
         "                                          (multi-file: concatenated, time axis 0-anchored)\n"
+        "  convert    gps     <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
+        "                                          RINEX GPS nav -> ICRF state bin\n"
+        "                                          (IS-GPS-200 Kepler propagation; multi-file concatenated)\n"
         "  info                                    print version and capabilities\n"
         "  maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n"
         "                                          largest useful harmonics degree\n"

@@ -1,56 +1,82 @@
-# SpOdy input file -- GPS PRN G11 24-hour validation.
+# SpOdy input file -- GPS PRN G11 7-day validation.
 #
-# Propagates GPS PRN 11 (NORAD 39741 / SVN 71) from its first epoch in
-# the IGS final precise-orbit file for 2024-01-21, for the full 24 h
-# window covered by that file. Compare against the bundled reference
-# binary gps_g11_2024_01_21_ref.bin (also written by
-#   spody convert sp3 <input.sp3> ... G11
-# from the same source SP3) to measure SpOdy's force-model accuracy on
-# a real-world GNSS orbit.
+# Propagates GPS PRN 11 (NORAD 39741 / SVN 71) from its first
+# broadcast TOC on 2024-01-21, for the 7-day window covered by 7
+# consecutive daily IGS SP3 precise-orbit files (2024-01-21..27).
+# Compare against the bundled reference binary
+# gps_g11_2024_01_21_7d_sp3_ref.bin (written by
+#   spody convert sp3 <day1.sp3> <day2.sp3> ... <day7.sp3>
+#                     gps_g11_2024_01_21_7d_sp3_ref.bin G11 ...
+# from the 7 source SP3 files) to measure SpOdy's force-model
+# accuracy over a week of real-world GNSS orbit at cm-level truth.
 #
-# IGS source file (gitignored, redownload via the URL below for re-runs):
-#   examples/gps_g11_validation/IGS0OPSFIN_20240210000_01D_15M_ORB.SP3
-# GPS week 2298, day-of-week 0 (2024-01-21), ITRF positions every 15 min.
-# Download:
-#   https://igs.bkg.bund.de/root_ftp/IGS/products/2298/IGS0OPSFIN_20240210000_01D_15M_ORB.SP3.gz
-# Then regenerate the reference binary:
+# The initial state is broadcast-OD-precision (~few m, ~few cm/s),
+# extracted via the new `spody convert gps` Kepler-with-corrections
+# propagation (IS-GPS-200 sect. 20.3.3.4.3 positions + Remondi 2004
+# velocities). Replaces the previous 4th-order Lagrange forward
+# derivative of 5 SP3 positions, which gave the SP3 secant rather
+# than the true Keplerian tangent (|v0| came out ~3.57 km/s vs the
+# correct ~3.87 km/s -- a 7-8% bootstrap artefact that dominated the
+# residual at t = 0). With broadcast IC the day-1 residual reflects
+# the force-model error, not the IC error.
+#
+# IGS source files (all gitignored, redownload via the URLs below):
+#   examples/gps_g11_validation/IGS0OPSFIN_2024{021..027}0000_01D_15M_ORB.SP3
+#   examples/gps_g11_validation/BRDC00WRD_R_2024{021..027}0000_01D_GN.rnx
+# GPS week 2298 covers DOY 021..027 = 2024-01-21..27. SP3 = IGS Final
+# precise orbits, ITRF positions every 15 min; RINEX-NAV GPS-only
+# broadcast (one record per ~2 h).
+# Download (loop over DOY 021..027):
+#   https://igs.bkg.bund.de/root_ftp/IGS/products/2298/IGS0OPSFIN_2024<DDD>0000_01D_15M_ORB.SP3.gz
+#   https://igs.bkg.bund.de/root_ftp/IGS/BRDC/2024/<DDD>/BRDC00WRD_R_2024<DDD>0000_01D_GN.rnx.gz
+# Then regenerate the bundled reference binaries:
 #   spody convert sp3 examples/gps_g11_validation/IGS0OPSFIN_20240210000_01D_15M_ORB.SP3 \
-#                     examples/gps_g11_validation/gps_g11_2024_01_21_ref.bin G11 \
+#                     examples/gps_g11_validation/IGS0OPSFIN_20240220000_01D_15M_ORB.SP3 \
+#                     examples/gps_g11_validation/IGS0OPSFIN_20240230000_01D_15M_ORB.SP3 \
+#                     examples/gps_g11_validation/IGS0OPSFIN_20240240000_01D_15M_ORB.SP3 \
+#                     examples/gps_g11_validation/IGS0OPSFIN_20240250000_01D_15M_ORB.SP3 \
+#                     examples/gps_g11_validation/IGS0OPSFIN_20240260000_01D_15M_ORB.SP3 \
+#                     examples/gps_g11_validation/IGS0OPSFIN_20240270000_01D_15M_ORB.SP3 \
+#                     examples/gps_g11_validation/gps_g11_2024_01_21_7d_sp3_ref.bin G11 \
 #                     --eop data/eop/finals2000A.all \
 #                     --iau2006-dir data/iau2006
-#
-# Initial state was extracted from the FIRST epoch of the SP3 ICRF
-# binary. Velocity is a 5-point forward Lagrange derivative of the
-# first 5 SP3 positions (epochs separated by 900 s). This finite-
-# difference velocity matches the SP3 secant, not the true Keplerian
-# tangent: |v0| comes out ~3.57 km/s rather than the circular-orbit
-# 3.87 km/s. Validation residuals therefore include an initial-velocity
-# artefact that the P2.5c orbit-determination pass will minimise.
+#   spody convert gps examples/gps_g11_validation/BRDC00WRD_R_20240210000_01D_GN.rnx \
+#                     ... <day2..day7 .rnx> ... \
+#                     examples/gps_g11_validation/gps_g11_2024_01_21_7d_brdc.bin G11 \
+#                     --eop ... --iau2006-dir ...
 #
 # All paths are relative to this TOML file.
 
 [simulation]
-name       = "gps_g11_2024_01_21"
+name       = "gps_g11_2024_01_21_7d"
 et_start_s = 7.59067251183991e+08    # 2024-01-21 00:00:00 GPS = 00:00:51.184 TT
-duration_s = 8.5500e+04              # 23.75 h (95 sample intervals of 900 s)
+duration_s = 6.039e+05               # 167.75 h (matches the 672-record SP3 reference)
 
 [spacecraft]
 mass_kg = 1633.0                     # GPS Block IIF dry mass (Boeing factsheet)
-# SRP / drag are disabled; engine accuracy is dominated by gravity at GPS
-# altitude (~20,200 km), so we isolate that contribution in this baseline.
+# SRP / drag are disabled. At GPS altitude (~20,200 km) the missing
+# in-track perturbation (box-wing SRP + antenna thrust + un-modelled
+# empirical accelerations) is the dominant residual term over a week.
+# The same closure ceiling as GLONASS: getting sub-km over 7 days
+# requires IGS BOX-WING SRP (Rodriguez-Solano 2014 optical parameters,
+# paywall) or ECOM5 empirical accelerations -- both outside SpOdy's
+# current force-model menu.
 
 [initial_state]
 # Cartesian in the Earth-centred ICRF-aligned frame. Extracted from
-# gps_g11_2024_01_21_ref.bin record 0 (position) + 4th-order forward
-# Lagrange derivative over records 0..4 (velocity).
+# gps_g11_2024_01_21_7d_brdc.bin record 0 (the IS-GPS-200 Kepler
+# propagation of the first broadcast nav message at its own TOC).
+# This is the broadcast-precision state the GPS satellite was
+# transmitting at 2024-01-21 00:00 GPST, so the day-1 residual
+# against the SP3 truth has no initial-condition artefact.
 frame        = "central_inertial"
-position_km  = [-14680.682339076, 21945.546692795, -3092.411292524]
-velocity_kms = [    1.145437972,     1.215595948,    3.154837966]
+position_km  = [26369.319541540, 1270.708005072, -3120.358313261]
+velocity_kms = [    0.269061980,    2.230834330,    3.151614451]
 
 [force_model]
 central_body     = "Earth"
 harmonics_file   = "../../data/EIGEN-6C4/eigen-6c4.tab"
-harmonics_degree = 70                # standard for GPS-altitude propagation
+harmonics_degree = 70                # standard for GNSS-altitude propagation
 eop_file         = "../../data/eop/finals2000A.all"
 iau2006_dir      = "../../data/iau2006"
 third_bodies     = ["Moon", "Sun"]
@@ -68,7 +94,7 @@ h_max_s  = 900.0                     # matches SP3 sample interval
 
 [output]
 mode       = "fixed"
-interval_s = 900.0                   # one record per SP3 epoch
-csv_file   = "output/gps_g11_propagated.csv"
-bin_file   = "output/gps_g11_propagated.bin"
+interval_s = 900.0                   # one record per SP3 epoch (matches reference grid)
+csv_file   = "output/gps_g11_7d_propagated.csv"
+bin_file   = "output/gps_g11_7d_propagated.bin"
 output_dir = "output"
