@@ -389,7 +389,12 @@ class RerunPanel(QWidget):
     def _load_folder_impl(self, folder: Path) -> None:
         if not folder.is_dir():
             raise ValueError(f"not a directory: {folder}")
-        snap = folder / "input.toml"
+        # Modern snapshots are `<ts>_input.toml`; legacy runs use
+        # plain `input.toml`. Accept either so old re-run workflows
+        # keep working.
+        snap = folder / f"{folder.name}_input.toml"
+        if not snap.is_file():
+            snap = folder / "input.toml"
         if not snap.is_file():
             raise ValueError(
                 f"no input.toml in {folder}. Pick a per-run folder "

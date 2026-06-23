@@ -51,6 +51,98 @@ from .toml_form import TomlForm
 # How many entries to keep in the File > Recent menu.
 RECENT_FILES_MAX = 8
 
+# Folder names skipped during the working-dir TOML scan. Common
+# build / VCS / venv noise that has no business in the combo. Note
+# that `output/` is INTENTIONALLY NOT in this list: per-run snapshots
+# inside output folders are valid load targets so the user can re-run
+# them. The WIP-save mechanism in `_action_save` protects those
+# snapshots from accidental overwrite.
+_TOML_SCAN_SKIP_DIRS: frozenset[str] = frozenset({
+    "__pycache__", ".git", ".venv", "venv",
+    "build", "dist", "node_modules",
+})
+
+
+def _project_root_for_toml(toml_path: Path) -> Path:
+    """Walk up from `toml_path.parent` looking for the project root:
+    the closest ancestor that contains both an `output/` subdir and
+    at least one `.toml` file. Used to auto-adopt the working dir
+    when the user opens a TOML, so loading a snapshot deep inside
+    `output/<ts>/` still surfaces the sibling source + every other
+    scenario in the project root.
+
+    Falls back to `toml_path.parent` when no such ancestor exists
+    (e.g. a brand-new TOML with no run history yet)."""
+    for parent in (toml_path.parent, *toml_path.parent.parents):
+        try:
+            has_output = (parent / "output").is_dir()
+            has_toml = False
+            for p in parent.iterdir():
+                if p.is_file() and p.suffix.lower() == ".toml":
+                    has_toml = True
+                    break
+        except OSError:
+            continue
+        if has_output and has_toml:
+            return parent
+    return toml_path.parent
+
+
+def _path_is_under(path: Path, root: Path) -> bool:
+    """True iff `path` resolves to `root` or any descendant. Used to
+    decide whether opening / running a TOML should retarget the
+    working dir: only when the file lives OUTSIDE the current
+    working dir. Files already inside leave the working dir alone
+    so the user's broader scope (e.g. an `examples/` browse covering
+    many scenarios) doesn't silently shrink to a single sub-folder."""
+    try:
+        resolved_path = path.resolve()
+        resolved_root = root.resolve()
+    except OSError:
+        return False
+    try:
+        resolved_path.relative_to(resolved_root)
+        return True
+    except ValueError:
+        return False
+
+
+# --- WIP TOML helpers -------------------------------------------------
+# A TOML is "runnata" iff its parent folder contains at least one .bin
+# file -- snapshots live next to their output bins, so the .bin sibling
+# test pins down both "the snapshot itself" and "any source TOML the
+# engine has already produced a run for, in a layout that puts outputs
+# next to the input". Saving a runnata TOML would clobber a file the
+# user (or an earlier run) is depending on; we divert to a WIP file
+# instead.
+#
+# WIPs use a `.wip.toml` suffix so they're easy to spot in directory
+# listings and in the TOML combo. Always overwritable.
+
+def _toml_is_runnata(toml_path: Path) -> bool:
+    parent = toml_path.parent
+    try:
+        for p in parent.iterdir():
+            if p.is_file() and p.suffix.lower() == ".bin":
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _is_wip_toml(toml_path: Path) -> bool:
+    return (toml_path.suffix.lower() == ".toml"
+            and toml_path.stem.endswith(".wip"))
+
+
+def _wip_path_for(toml_path: Path) -> Path:
+    """The WIP filename next to `toml_path`. Single WIP per source
+    file; subsequent saves overwrite the same WIP."""
+    stem = toml_path.stem
+    if stem.endswith(".wip"):
+        return toml_path
+    return toml_path.with_name(f"{stem}.wip.toml")
+
 
 class MainWindow(QMainWindow):
     """Single-window UI. Run tab: structured TOML form on the left,
@@ -185,6 +277,11 @@ class MainWindow(QMainWindow):
         self._dir_edit.setReadOnly(True)
         self._dir_edit.setPlaceholderText(
             "(no working dir -- pick a folder or open a TOML)")
+        # Greedy stretch so the full path stays readable; the top bar
+        # is on its own row above the tabs so a wide field here does
+        # NOT compete with the TOML combo or the form column. Tooltip
+        # also carries the path so users can hover for the canonical
+        # form regardless of the line edit's display state.
         lay.addWidget(self._dir_edit, 1)
         btn_browse = QPushButton("Browse...")
         btn_browse.clicked.connect(self._action_browse_working_dir)
@@ -236,23 +333,32 @@ class MainWindow(QMainWindow):
 
     def _set_working_dir(self, path: Path | None) -> None:
         """Single point of truth for changing the shared working dir.
-        Updates the top-bar field, rescans the TOML combo, and pushes
-        the same dir into the Analysis tab so its file tree mirrors
-        whatever Form sees."""
+        Updates the top-bar field (truncated for display, full path
+        in tooltip), rescans the TOML combo, and pushes the same dir
+        into the Analysis tab so its file tree mirrors whatever the
+        Form sees."""
         self._working_dir = Path(path) if path is not None else None
-        self._dir_edit.setText(str(self._working_dir)
-                                if self._working_dir else "")
+        text = str(self._working_dir) if self._working_dir else ""
+        self._dir_edit.setText(text)
+        # Cursor at the END so when the path is longer than the
+        # display, the last component (the most informative tail) is
+        # visible without scrolling.
+        self._dir_edit.setCursorPosition(len(text))
+        self._dir_edit.setToolTip(text)
         self._refresh_toml_combo()
         self._analysis.set_working_dir(self._working_dir)
 
     def _refresh_toml_combo(self) -> None:
         """Populate the TOML combo with the *.toml files under the
-        current working dir. Walks 2 levels deep so the canonical
-        `examples/<scenario>/input.toml` layout is covered without
-        crawling huge trees. The currently-loaded form path stays
-        selected (or auto-selected when present in the list); items
-        outside the working dir show up as a `(external)` label so
-        the user is not confused by an apparent absence.
+        current working dir, scanning all subdirectories. Snapshots
+        inside `output/<ts>/` are listed too so the user can re-load
+        them and re-run; the WIP-save mechanism keeps them safe from
+        accidental overwrite. Subtrees in `_TOML_SCAN_SKIP_DIRS`
+        (build / venv / VCS noise) are pruned. The currently-loaded
+        form path stays selected (or auto-selected when present in
+        the list); items outside the working dir show up as a
+        `(external)` label so the user is not confused by an apparent
+        absence.
 
         Always seeds a `-- pick a TOML to load --` placeholder at
         index 0 (data = None) so the visible selection never silently
@@ -266,39 +372,59 @@ class MainWindow(QMainWindow):
             entries: list[tuple[str, Path]] = []
             if self._working_dir is not None and self._working_dir.is_dir():
                 root = self._working_dir
-                # Depth-0 + depth-1 *.toml files, sorted by relative
-                # path. 2 levels is enough for the example layout
-                # without descending into output/<run>/input.toml
-                # snapshots (which the user shouldn't edit directly).
+                # Manual walk instead of rglob so we can prune entire
+                # subtrees by directory name (rglob still enters them
+                # before filtering -- expensive on huge build trees).
                 seen: list[Path] = []
-                try:
-                    for p in sorted(root.iterdir()):
-                        if p.is_file() and p.suffix.lower() == ".toml":
-                            seen.append(p)
-                    for sub in sorted(p for p in root.iterdir() if p.is_dir()):
-                        # Skip per-run output folders: they hold
-                        # immutable snapshots, not editable inputs.
-                        if sub.name == "output":
-                            continue
+                stack: list[Path] = [root]
+                while stack:
+                    cur = stack.pop()
+                    try:
+                        children = list(cur.iterdir())
+                    except OSError:
+                        continue
+                    for p in children:
                         try:
-                            for p in sorted(sub.iterdir()):
-                                if p.is_file() and p.suffix.lower() == ".toml":
-                                    seen.append(p)
+                            is_dir  = p.is_dir()
+                            is_file = p.is_file()
                         except OSError:
                             continue
-                except OSError:
-                    pass
+                        if is_dir:
+                            if p.name in _TOML_SCAN_SKIP_DIRS:
+                                continue
+                            stack.append(p)
+                        elif is_file and p.suffix.lower() == ".toml":
+                            seen.append(p)
+                seen.sort(key=lambda q: str(q.relative_to(root)).lower())
                 for p in seen:
-                    label = str(p.relative_to(root)).replace("\\", "/")
-                    entries.append((label, p))
+                    full_rel = str(p.relative_to(root)).replace("\\", "/")
+                    # Compact display: keep just `<parent>/<file>` (or
+                    # the bare filename when the TOML sits at the
+                    # working-dir root). Deep paths like
+                    # `output/<ts>/<ts>_input.toml` would otherwise
+                    # blow the combo wide and need their own scroll;
+                    # the full relative path stays one hover away via
+                    # the tooltip set on the combo item below.
+                    if p.parent == root:
+                        label = p.name
+                    else:
+                        label = f"{p.parent.name}/{p.name}"
+                    if _is_wip_toml(p):
+                        label = f"{label}  (draft)"
+                        full_rel = f"{full_rel}  (draft)"
+                    entries.append((label, p, full_rel))
             current = self._form.current_path()
             # If the loaded form path is outside the working dir, append
-            # it as a `(external)` entry so the combo still reflects the
-            # active file.
-            if current is not None and all(p != current for _, p in entries):
-                entries.append((f"{current.name}  (external)", current))
-            for label, p in entries:
+            # it as an `(external)` entry so the combo still reflects
+            # the active file.
+            if current is not None and all(p != current for _, p, _ in entries):
+                entries.append((f"{current.name}  (external)",
+                                 current, str(current)))
+            for label, p, tooltip in entries:
                 self._toml_combo.addItem(label, str(p))
+                self._toml_combo.setItemData(
+                    self._toml_combo.count() - 1, tooltip,
+                    Qt.ItemDataRole.ToolTipRole)
             # Match the active file when it appears in the list;
             # otherwise leave the placeholder visible.
             if current is not None:
@@ -436,6 +562,29 @@ class MainWindow(QMainWindow):
         current = self._form.current_path()
         if current is None:
             return self._action_save_as()
+        # WIP TOMLs (*.wip.toml) are always overwritable -- they ARE
+        # the editing target.
+        if _is_wip_toml(current):
+            return self._save_to(current)
+        # If the current TOML has output bins next to it (snapshot, or
+        # source TOML with runs in the same dir), saving would clobber
+        # something the user is depending on. Divert to a `.wip.toml`
+        # sidecar; the first divert pops a one-time info dialog so the
+        # user understands what just happened, subsequent saves are
+        # silent (the WIP exists now and we route straight to it).
+        if _toml_is_runnata(current):
+            wip = _wip_path_for(current)
+            first_divert = not wip.is_file()
+            if first_divert:
+                QMessageBox.information(
+                    self, "Save -> draft",
+                    f"'{current.name}' has output bins next to it -- it's "
+                    "either a snapshot or a source with associated runs. "
+                    "Overwriting it would invalidate those outputs.\n\n"
+                    f"Saving as draft:\n  {wip.name}\n\n"
+                    "Subsequent Save clicks on this draft will overwrite "
+                    "it silently. Use Save As if you want a different path.")
+            return self._save_to(wip)
         return self._save_to(current)
 
     def _action_save_as(self) -> bool:
@@ -456,20 +605,28 @@ class MainWindow(QMainWindow):
 
     def _on_form_loaded_or_saved(self, path: Path) -> None:
         """Shared post-IO sync: update Recent list, window title, the
-        top-bar working-dir (which propagates to the Analysis tab and
-        refreshes the TOML combo), and the Sun-arrow epoch hint.
-        Called by Open, Save, and the form's Generate button via
-        requestRunCheck."""
+        top-bar working-dir (when it needs to change), and the
+        Sun-arrow epoch hint. Called by Open and Save.
+
+        Working-dir rule:
+          * If the path is already INSIDE the current working dir,
+            leave it alone -- the user's broader scope (e.g. browsing
+            to `examples/`) must not silently shrink to a sub-folder
+            just because they opened one scenario from it.
+          * Otherwise, auto-adopt via `_project_root_for_toml`:
+            walking up the path to the closest ancestor that has
+            both `output/` and a TOML keeps the working dir at the
+            scenario root even when the user opens a deep snapshot
+            inside `output/<ts>/`.
+        Combo is refreshed in either branch so newly-arrived files
+        surface immediately."""
         self._store.add_recent_file(str(path), RECENT_FILES_MAX)
         self._refresh_recent_menu()
         self._refresh_title()
-        # If the opened/saved TOML is outside the current working dir,
-        # adopt its parent so the combo + analysis line up with it.
-        # When already inside, only refresh the combo (avoids spurious
-        # tree reloads in the Analysis tab on every Save).
         if (self._working_dir is None
-                or path.parent.resolve() != self._working_dir.resolve()):
-            self._set_working_dir(path.parent)
+                or not _path_is_under(path, self._working_dir)):
+            target = _project_root_for_toml(path)
+            self._set_working_dir(target)
         else:
             self._refresh_toml_combo()
         # Pre-fill the Sun-arrow epoch in the Analysis tab from the
@@ -523,7 +680,14 @@ class MainWindow(QMainWindow):
         self._terminal.append_line(
             f"$ {Path(spody_bin).name} {subcommand} {current.name}"
         )
-        self._runner.run(spody_bin, subcommand, current)
+        # CWD = scenario root, not the TOML's literal parent. Matters
+        # for snapshots / WIPs deep inside `output/<ts>/`: running them
+        # from their literal parent would resolve `output_dir = "output"`
+        # into another nested `output/<new-ts>/`, blowing the path
+        # length every iteration. The scenario root is the same place
+        # the original source TOML would launch from.
+        run_cwd = _project_root_for_toml(current)
+        self._runner.run(spody_bin, subcommand, current, cwd=run_cwd)
 
     def _action_stop(self) -> None:
         self._runner.stop()
@@ -570,19 +734,63 @@ class MainWindow(QMainWindow):
         # alongside whatever they wrote before launching it.
         if exit_code == 0:
             self._stamp_run_notes(self._runner.last_line())
-        # Refresh the Analysis tree so any new outputs from this run
-        # appear without the user having to hit Refresh manually. Go
-        # through _set_working_dir so the top-bar combo + analysis stay
-        # in lockstep even when the TOML lives outside the current
-        # working dir (rare, but happens e.g. after a Re-run).
+
+        # WIP cleanup + reload-of-origin. Only the WIP branch gets an
+        # auto-reload: a normal-source run leaves the form pointed at
+        # the source the user just edited (which is still on disk and
+        # current), so reloading would just be busywork. The combo
+        # refresh below picks up the new snapshot regardless so the
+        # user can open it from the dropdown when they want.
+        ran_path = self._form.current_path()
+        if exit_code == 0 and ran_path is not None and _is_wip_toml(ran_path):
+            # The WIP filename is `<origin_stem>.wip.toml`; the
+            # "starting file" is the source it was diverted from.
+            origin = ran_path.with_name(
+                ran_path.stem.removesuffix(".wip") + ".toml")
+            # Detach the form FIRST so any open handle the editor was
+            # holding is released before we try to delete. On Windows
+            # an open handle blocks unlink with PermissionError; the
+            # detach is cheap and avoids the race.
+            self._form.set_current_path(None)
+            self._form.clear_modified()
+            self._refresh_title()
+            # Now unlink the WIP. The previous run already snapshotted
+            # its content into the new run folder, so the on-disk
+            # draft is no longer needed. Surface failures into the
+            # terminal so a silent file-lock doesn't get hidden.
+            try:
+                ran_path.unlink()
+            except OSError as exc:
+                self._terminal.append_line(
+                    f"[WIP cleanup: could not unlink {ran_path.name}: {exc}]")
+            except FileNotFoundError:
+                pass
+            # Load the starting file when present. _open_path drives
+            # _on_form_loaded_or_saved which refreshes the working
+            # dir + combo + analysis -- so we can return early.
+            if origin.is_file():
+                self._open_path(origin)
+                return
+
+        # Refresh analysis + combo so the new run's outputs (the
+        # `output/<new-ts>/` folder + its `<new-ts>_input.toml`
+        # snapshot) appear immediately. Working dir is only retargeted
+        # when the form's TOML drifted OUTSIDE the current scope
+        # (rare: after a Re-run or when the source moved); inside the
+        # current scope we just rescan -- a run by itself must not
+        # narrow the working dir down to the scenario folder when the
+        # user had picked a wider one (e.g. `examples/`).
         current = self._form.current_path()
         if current is not None:
             if (self._working_dir is None
-                    or current.parent.resolve()
-                    != self._working_dir.resolve()):
-                self._set_working_dir(current.parent)
+                    or not _path_is_under(current, self._working_dir)):
+                target = _project_root_for_toml(current)
+                self._set_working_dir(target)
             else:
                 self._analysis.set_working_dir(self._working_dir)
+                self._refresh_toml_combo()
+        else:
+            self._refresh_toml_combo()
 
     def _stamp_run_notes(self, last_engine_line: str) -> None:
         """Append the engine's final stdout line to the notes block
@@ -627,7 +835,11 @@ class MainWindow(QMainWindow):
         if not subdirs:
             return
         snapshot_dir = max(subdirs, key=lambda p: p.stat().st_mtime)
-        snapshot = snapshot_dir / "input.toml"
+        # Modern snapshots are named `<ts>_input.toml`; legacy ones
+        # are plain `input.toml`. Try modern first, then fall back.
+        snapshot = snapshot_dir / f"{snapshot_dir.name}_input.toml"
+        if not snapshot.is_file():
+            snapshot = snapshot_dir / "input.toml"
         if not snapshot.is_file():
             return
         from .toml_io import read_toml, write_toml
@@ -683,13 +895,13 @@ class MainWindow(QMainWindow):
             self._form.refresh_asset_combos()
             current = self._form.current_path()
             if current is not None:
-                # Same lockstep policy as _on_run_finished: rebind the
-                # working dir only when the form's TOML drifted out of
-                # it; otherwise just re-scan the existing one.
+                # Same lockstep policy as _on_run_finished: only
+                # retarget the working dir when the form's TOML
+                # lives outside the current scope.
                 if (self._working_dir is None
-                        or current.parent.resolve()
-                        != self._working_dir.resolve()):
-                    self._set_working_dir(current.parent)
+                        or not _path_is_under(current, self._working_dir)):
+                    target = _project_root_for_toml(current)
+                    self._set_working_dir(target)
                 else:
                     self._analysis.set_working_dir(self._working_dir)
         return dlg

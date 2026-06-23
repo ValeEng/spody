@@ -891,13 +891,19 @@ class PlotContext:
 
 
 def _find_run_input_toml(events_path: Path) -> Path | None:
-    """Walk up from `events_path` looking for an `input.toml` snapshot.
+    """Walk up from `events_path` looking for the per-run input.toml
+    snapshot.
 
-    spody.exe drops one inside every run folder at launch (verbatim
-    copy of the TOML the user ran). Returns the first match found
-    walking ancestors; None if the file was opened from outside any
-    spody run folder (e.g. an external batch dropped in by hand)."""
+    spody.exe writes one inside every run folder at launch. Modern
+    runs name it `<ts>_input.toml` where `<ts>` is the parent
+    folder's own timestamp (so editors can't conflate it with the
+    sibling source `input.toml` up the tree); legacy runs (pre-
+    timestamp-prefix) use plain `input.toml`. Both layouts are
+    accepted so analysing old runs keeps working."""
     for parent in events_path.parents:
+        candidate = parent / f"{parent.name}_input.toml"
+        if candidate.is_file():
+            return candidate
         candidate = parent / "input.toml"
         if candidate.is_file():
             return candidate

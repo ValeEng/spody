@@ -2197,7 +2197,12 @@ class TomlForm(QWidget):
 
     def set_current_path(self, path: Path | None) -> None:
         self._current_path = path
-        self._path_label.setText(str(path) if path else "(no file)")
+        # Display: just the basename so a long absolute path doesn't
+        # stretch the form column wider than its splitter slot. The
+        # full path stays one hover away via the tooltip; the top-bar
+        # working-dir field already shows the parent dir for context.
+        self._path_label.setText(path.name if path else "(no file)")
+        self._path_label.setToolTip(str(path) if path else "")
         self._path_label.setStyleSheet("" if path else "color: gray;")
 
     # ==================================================================

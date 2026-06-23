@@ -47,10 +47,18 @@ class SpodyRunner(QObject):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    def run(self, spody_bin: str, subcommand: str, toml_path: Path) -> None:
+    def run(self, spody_bin: str, subcommand: str, toml_path: Path,
+            cwd: Path | None = None) -> None:
         """Launch `spody_bin <subcommand> <toml_path>` with the working
-        directory set to the TOML's parent (so relative paths inside the
-        TOML resolve the same way the CLI does)."""
+        directory set to `cwd` (when given) or to the TOML's parent.
+
+        The override matters for snapshots / WIP files that live deep
+        inside `output/<ts>/`: running them with CWD = `toml.parent`
+        would resolve their `output_dir = "output"` relative to that
+        deep folder, creating another nested `output/<new-ts>/` each
+        time and eventually hitting Windows' MAX_PATH. Passing the
+        scenario root as `cwd` keeps relative paths resolving the
+        same way they did for the original source TOML."""
         if self.is_running():
             self.error.emit("a spody process is already running")
             return
@@ -61,7 +69,8 @@ class SpodyRunner(QObject):
         self._end_time = 0.0
 
         self._proc = QProcess(self)
-        self._proc.setWorkingDirectory(str(toml_path.parent))
+        self._proc.setWorkingDirectory(str(cwd if cwd is not None
+                                            else toml_path.parent))
         # Merge stderr into stdout so a single signal handles both streams.
         self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self._proc.readyReadStandardOutput.connect(self._on_ready_read)
