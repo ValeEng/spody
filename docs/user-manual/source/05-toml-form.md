@@ -171,25 +171,55 @@ visible surface relevant:
   is selected. The parser rejects files that set both, so this
   prevents the most common XOR mistake before it happens.
 
-## Save versus Generate
+## Saving: the file gets written
 
-Two paths produce the same canonical TOML on disk:
-
-- the **File &rsaquo; Save** (and **Save As&hellip;**) menu items;
-- the **Generate** button at the top of the form.
-
-The difference is purely conceptual: **Save** reads as "I'm done
-editing", **Generate** reads as "give me the TOML so I can do
-something with it" (typically the **RUN** button immediately
-following). Functionally they go through the same emitter, produce
-byte-identical output, and update the same recent-files list.
+There is one path for writing the TOML to disk: the **Save** /
+**Save As&hellip;** buttons in the Run tab's TOML picker row (or
+the matching **File &rsaquo; Save / Save As&hellip;** menu items
+and their <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>
+Shift</kbd>+<kbd>S</kbd> shortcuts). Both **Save** and the **RUN**
+button write through the same canonical emitter so the result
+diffs cleanly between runs.
 
 The emitter is **schema-aware**: it knows the canonical order of
 sections and keys, formats floats with `repr()` precision, and
 emits inline tables for the entries inside `[batch.columns]` when
-they use delta mode. Two **Generate** clicks on the same form
-state produce byte-identical files, so the result diffs cleanly
-between runs.
+they use delta mode. Two **Save** clicks on the same form state
+produce byte-identical files.
+
+### The WIP draft mechanism
+
+When you click **Save** on a TOML whose folder already contains
+`.bin` output files &mdash; either a per-run snapshot inside
+`output/<ts>/` or a source TOML whose runs landed beside it &mdash;
+the form does NOT overwrite that file. Doing so would corrupt the
+on-disk record every existing run depends on (the snapshot
+documents what the engine actually ran; rewriting it makes the
+snapshot lie about its bins).
+
+Instead, Save diverts to a `<stem>.wip.toml` sidecar next to the
+original file. A one-time popup announces the divert ("Saving as
+draft &hellip;"); subsequent Save clicks on the same draft
+overwrite it silently (the WIP IS the editing target). WIPs are
+tagged `(draft)` in the TOML combo so they're easy to spot in
+mixed folders.
+
+If you genuinely want to overwrite the original (e.g. to update a
+template you've decided is no longer authoritative), use **Save
+As&hellip;**: that path always asks for the destination, never
+diverts, and writes wherever you point it.
+
+A successful **RUN** launched from a WIP cleans up automatically:
+
+1. The engine snapshots the WIP's content into the new run folder
+   as `output/<new-ts>/<new-ts>_input.toml` (the canonical record
+   of this run).
+2. The GUI unlinks the WIP from disk (no longer needed).
+3. The form is reloaded with the "starting file" the WIP was
+   derived from &mdash; the source file with the same name minus
+   the `.wip` infix.
+
+Failed runs leave the WIP alone so you can fix and retry.
 
 ## The live TOML preview
 
@@ -215,6 +245,27 @@ If you ever type something the emitter cannot serialise (very rare
 &mdash; only `ValueError` from an internal conversion would
 trigger it) the preview shows a single-line `# (form has invalid
 values: …)` placeholder until the next valid edit.
+
+## Switching the dynamics model
+
+The `simulation.dynamics_model` combo picks between
+`high_fidelity` (default; the full force-model propagator the rest
+of this manual is built around) and `cr3bp` (the Circular
+Restricted 3-Body Problem). Switching the combo reflows the form:
+
+- **`high_fidelity`** shows the **Object** (spacecraft / debris),
+  **force_model** and **ephemeris** sections.
+- **`cr3bp`** hides those three groups and reveals a single
+  **`[cr3bp]`** group with `primary_1` and `primary_2` combos
+  (today's only valid pair is Earth + Moon). HF-only output
+  toggles (the `accelerations_file` checkbox and the eclipse-event
+  entry) are greyed out with a tooltip explaining why.
+
+The frame combo in `[initial_state]` also filters per model:
+`central_inertial` for HF, `synodic_rotating` for CR3BP. The
+underlying CR3BP schema details &mdash; barycenter offsets,
+omega derivation, impact-event auto-wiring &mdash; live in
+chapter 6.
 
 ## Validating with the engine
 

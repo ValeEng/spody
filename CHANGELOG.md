@@ -4,6 +4,107 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
+## Unreleased
+
+Two large slices landed on top of v0.1.3-beta:
+
+1. **CR3BP** &mdash; the Circular Restricted 3-Body Problem joins the
+   high-fidelity propagator as a selectable dynamics model.
+2. **Run-folder hygiene + WIP TOML protection** &mdash; every file
+   the engine writes inside a per-run folder is now prefixed with
+   that folder's timestamp, and the GUI auto-diverts saves on
+   snapshots / runnata TOMLs to `.wip.toml` sidecars so the
+   on-disk record of each past run stays exactly as it was when
+   the engine produced it.
+
+### Added
+
+- **CR3BP dynamics model.** `simulation.dynamics_model = "cr3bp"`
+  switches the propagator to the synodic-rotating-frame
+  Circular Restricted 3-Body Problem. A new `[cr3bp]` block selects
+  the primary pair (today: `primary_1 = "Earth"`, `primary_2 = "Moon"`),
+  the integrator uses dimensional km / km/s, and impact events are
+  auto-wired on both primaries with their standard radii.
+  Validated against scipy DOP853 on an L1 Lyapunov: one-period
+  closure 30 microns / 1.6e-10 km/s, sample-by-sample agreement
+  21 microns over the orbit. The new frame `synodic_rotating`
+  is mutually exclusive with `central_inertial` per dynamics
+  model.
+- **CR3BP Analysis support.** The plot tree filters per
+  `dynamics_model`: HF-only views (impact lat/lon equirect /
+  Mollweide / heatmap / 3D-on-body, accel breakdown, eclipse)
+  are hidden in CR3BP; a new **Jacobi constant** plot under
+  the *CR3BP* category surfaces the integrator's conservation
+  diagnostic (5e-9 relative drift at the RKDP45 1e-13 floor).
+  Osculating orbital elements stay available with a primary
+  selector in the Scene options dialog: the synodic state is
+  shifted to one primary's frame and `omega x r_rel` is added to
+  the velocity so a, e, i, raan, aop, nu are computed in the
+  instantaneous inertial frame anchored on that primary.
+- **CR3BP 3D scene.** The synodic-frame view renders the two
+  primaries as fixed spheres at the cached barycenter-offset
+  positions, plus the spacecraft trajectory; the Scene options
+  dialog hides HF-only sections (third bodies, body-fixed triad,
+  scene-frame switch) for CR3BP runs.
+- **Timestamp-prefixed run-folder files.** Every file the engine
+  writes inside `output/<ts>/` now carries that folder's timestamp
+  as a prefix: snapshots become `<ts>_input.toml`, trajectories
+  `<ts>_<scenario>_state.bin`, etc. Editors and re-load workflows
+  cannot conflate a snapshot with the sibling source TOML up the
+  tree.
+- **Auto-create `output_dir` on first run.** The engine mkdir's
+  the parent `output_dir` (single level) before the timestamped
+  child &mdash; fresh checkouts no longer need a manual
+  `mkdir output/` before the first propagation lands.
+- **Unified load/save UX.** A always-visible top bar above the
+  tabs hosts the shared **Working dir** field + **Browse&hellip;**
+  button; both the Run tab's *.toml combo and the Analysis tab's
+  bin tree consume that one path. Inside the Run tab a dedicated
+  row above the form widget hosts the TOML combo (recursively
+  scanned from the working dir, *output* included so snapshots
+  appear) plus **Load TOML&hellip; / Save / Save As&hellip;** buttons.
+  The combo entries display compactly as `<parent>/<file>` with
+  the full relative path one hover away via tooltip; the working
+  directory auto-adopts the closest ancestor with both `output/`
+  and a TOML when a file is opened from outside the current scope
+  (so a deep snapshot pulls up the scenario folder, not the run
+  subdir).
+- **WIP draft TOML.** Saving a TOML whose folder already contains
+  `.bin` output (a snapshot, or a source TOML whose runs landed
+  beside it) diverts to a sibling `<stem>.wip.toml` sidecar &mdash;
+  the file every existing run depends on is preserved. A one-time
+  popup announces the divert; subsequent saves to the same WIP
+  are silent. WIPs are tagged `(draft)` in the TOML combo.
+  Successful runs launched from a WIP unlink the draft (its
+  content has just been snapshotted into the new run folder)
+  and auto-load the "starting file" the WIP was derived from.
+
+### Changed
+
+- **GUI run CWD.** Snapshots and WIP files live deep inside
+  `output/<ts>/`. Running them now uses the scenario root as
+  CWD (via the same project-root walk-up the working dir uses)
+  so the TOML's `output_dir = "output"` resolves to the scenario
+  folder's `output/` and not to ANOTHER nested
+  `output/<new-ts>/` &mdash; the latter would have hit Windows'
+  MAX_PATH within a handful of iterations.
+- **Form button strip.** The **Load&hellip;** and **Generate**
+  buttons are gone from the form's internal top row. Load is now
+  the top bar's **Load TOML&hellip;** button; Generate's job is
+  fully covered by the top bar's **Save / Save As** (write the
+  TOML + refresh recents / working dir / analysis tree).
+- **Analysis tab full-depth scan.** The Analysis file tree scans
+  `.bin` files fully recursively under the working dir (was
+  capped at 3 levels). Picking a working dir that hosts many
+  scenarios (e.g. `examples/`) surfaces every bin under it; only
+  build / VCS / venv noise is pruned (`__pycache__`, `.git`,
+  `.venv`, `venv`, `build`, `dist`, `node_modules`).
+- **Analysis local working-dir row removed.** The Analysis tab's
+  own *Working dir* field + *Change&hellip;* button are gone; the
+  shared top-bar field is the single source of truth. A small
+  **Refresh** button stays next to the file tree for manual
+  re-scans after dropping bins in by hand.
+
 ## v0.1.3-beta &mdash; 2026-06-22
 
 The Phase 2 release. Earth joins the Moon as a supported central

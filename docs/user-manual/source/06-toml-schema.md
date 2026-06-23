@@ -19,11 +19,12 @@ The conventions used in the tables below:
 
 Scenario name and time window. Required.
 
-| Key            | Type    | Default | Range  | Description |
-|----------------|---------|---------|--------|-------------|
-| `name`         | string  | &mdash; | &ndash; | Human-readable scenario name. Used as the prefix for batch case output names. |
-| `et_start_s`   | float   | &mdash; | &ndash; | Start epoch as TDB seconds past the J2000 epoch (2000-01-01 12:00:00 TT). Negative values are valid for pre-J2000 epochs. |
-| `duration_s`   | float   | &mdash; | `> 0`  | Propagation duration in seconds. Positive only (forward-time propagation). |
+| Key              | Type    | Default          | Range  | Description |
+|------------------|---------|------------------|--------|-------------|
+| `name`           | string  | &mdash;          | &ndash; | Human-readable scenario name. Used as the prefix for batch case output names. |
+| `dynamics_model` | string  | `"high_fidelity"`| `"high_fidelity"`, `"cr3bp"` | Selects the propagator. `high_fidelity` (default) drives the full force-model integrator the bulk of this manual describes; `cr3bp` switches to the Circular Restricted 3-Body Problem in the synodic rotating frame (see *The `[cr3bp]` section* below). |
+| `et_start_s`     | float   | &mdash; (HF only)| &ndash; | Start epoch as TDB seconds past the J2000 epoch (2000-01-01 12:00:00 TT). Negative values are valid for pre-J2000 epochs. Required in `high_fidelity` mode; ignored (and rejected if present) in `cr3bp` mode &mdash; the synodic frame is time-invariant. |
+| `duration_s`     | float   | &mdash;          | `> 0`  | Propagation duration in seconds. Positive only (forward-time propagation). |
 
 The `et_start_s` value is the same scale the planetary ephemeris
 uses internally. The form provides a UTC&nbsp;&hArr;&nbsp;ET
@@ -45,6 +46,45 @@ multi-day debris run does not need to be typed as `86400.0` or
 `604800.0`. The combo affects only the displayed number; emit and
 load round-trip the same float value. Auto-pick on load chooses
 the largest unit whose factor is &le; the loaded magnitude.
+
+### Sections required by `dynamics_model`
+
+The schema branches on `simulation.dynamics_model`:
+
+| `dynamics_model` | Required sections | Forbidden sections |
+|------------------|-------------------|--------------------|
+| `high_fidelity` (default) | `[simulation]`, exactly one of `[spacecraft]` / `[debris]`, `[initial_state]` with `frame = "central_inertial"`, `[force_model]`, `[ephemeris]`, `[integrator]`, `[output]` | `[cr3bp]` |
+| `cr3bp` | `[simulation]`, `[cr3bp]`, `[initial_state]` with `frame = "synodic_rotating"`, `[integrator]`, `[output]` | `[spacecraft]`, `[debris]`, `[force_model]`, `[ephemeris]`, `[events]` with `eclipse_threshold`, `[output].accelerations_file` |
+
+The validator rejects mismatches up front (HF without `et_start_s`,
+CR3BP with a `[force_model]` block, &hellip;) so a misclassified
+TOML never silently runs the wrong dynamics.
+
+## The `[cr3bp]` section
+
+Required when `dynamics_model = "cr3bp"`, forbidden otherwise.
+
+| Key         | Type   | Default | Range            | Description |
+|-------------|--------|---------|------------------|-------------|
+| `primary_1` | string | &mdash; | `"Earth"`        | Larger primary; sits at synodic x = `-(mu2 / mu_tot) * L`. |
+| `primary_2` | string | &mdash; | `"Moon"`         | Smaller primary; sits at synodic x = `+(mu1 / mu_tot) * L`. |
+
+The pair `(primary_1, primary_2)` selects a curated entry in the
+engine's `CR3BP_PAIRS` table that fixes `L` (the primary
+separation in km, from `spody_const.h` &mdash; today
+`EARTH_MOON_DISTANCE_KM = 384400`). The synodic angular velocity
+`omega = sqrt((mu1 + mu2) / L^3)` is derived at run start; both
+primaries' GM values come from the same central-body registry the
+HF propagator uses, so the constants stay consistent across
+dynamics models.
+
+State is in **dimensional km / km/s** in the synodic rotating
+frame: x along the line from primary 1 to primary 2 (positive
+toward primary 2), z along the rotation axis, y completes the
+right-handed triad. The frame rotates at `omega` in the inertial
+frame; the barycenter is at the synodic origin. Impact events on
+both primaries are auto-wired with their standard radii (no
+`[events]` block required for that).
 
 ## `[spacecraft]` *or* `[debris]`
 
@@ -100,7 +140,7 @@ Required.
 
 | Key             | Type            | Default | Range | Description |
 |-----------------|-----------------|---------|-------|-------------|
-| `frame`         | string          | &mdash; | `central_inertial` | Reference frame. Only `central_inertial` is supported in this release (the central body's J2000-aligned inertial frame; see chapter 10). |
+| `frame`         | string          | &mdash; | `central_inertial` (HF), `synodic_rotating` (CR3BP) | Reference frame. The two values are model-exclusive: `central_inertial` is valid only with `dynamics_model = "high_fidelity"` (the central body's J2000-aligned inertial frame &mdash; see chapter 10); `synodic_rotating` is valid only with `dynamics_model = "cr3bp"` (the synodic rotating frame of the primary pair). |
 | `position_km`   | array of 3 floats | &mdash; | &ndash; | `[x, y, z]` position in km in the chosen frame. |
 | `velocity_kms`  | array of 3 floats | &mdash; | &ndash; | `[vx, vy, vz]` velocity in km/s, same frame as `position_km`. |
 

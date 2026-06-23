@@ -11,24 +11,25 @@ lives in chapter 9.
 
 ## Layout
 
-The Analysis tab consists of four regions:
+The Analysis tab consists of three regions (the working dir lives
+in the application-wide top bar above the tabs &mdash; section 4.1
+of the main-window chapter &mdash; not in the tab itself):
 
-1. The **working directory** row at the top, with a path field, a
-   **Change...** button, and a **Refresh** button that rescans the
-   folder.
-2. The **left column**, a vertical splitter with two halves:
+1. The **left column**, a vertical splitter with two halves:
     - **upper half**: the file tree, with `+ Add external file...`
-      and `→ Overlay selected` buttons at the bottom;
+      + **⟳ Refresh** buttons at the bottom (Refresh re-scans the
+      working dir when you've dropped bins in by hand) and
+      `→ Overlay selected` below them;
     - **lower half**: the plot tree, with the `▦ Tile selected (N)`
       button at the bottom.
    The splitter bar between the two halves is draggable; pull it
    up to give the plot tree more room when many plots are visible,
    pull it down when you want more file rows.
-3. The **right column**, a vertical stack:
+2. The **right column**, a vertical stack:
     - a **tab bar** at the top with two tabs: **Plot** (the
       canvas) and **Table** (a spreadsheet view of the loaded
       file's records);
-    - inside the **Plot** tab: a **Sun-arrow row** that appears
+    - inside the **Plot** tab: an **animation bar** that appears
       only when the active plot is 3D (chapter 9 covers it),
       followed by the **canvas** (matplotlib for 2D plots, VTK
       for 3D);
@@ -37,7 +38,7 @@ The Analysis tab consists of four regions:
       section *The Table tab* below);
     - an **info label** at the bottom (shared between the two
       tabs), with the current file or operation summary.
-4. The **horizontal splitter** between left and right columns is
+3. The **horizontal splitter** between left and right columns is
    draggable too.
 
 Switching tabs on an already-loaded file is **free**: the loaded
@@ -51,24 +52,29 @@ The window-size and splitter positions are not yet persisted
 across launches in this release; default sizes apply on every
 launch.
 
-## The working directory
+## The shared working directory
 
-Almost everything in the Analysis tab is anchored to a *working
-directory* &mdash; a folder the application scans recursively (up
-to three levels deep) looking for `.bin` files. The file tree's
-**In folder** section is auto-populated from this scan.
+The Analysis tab does not own its own working dir &mdash; it
+consumes the **shared one** from the application top bar (see
+chapter 4, section 4.1). The file tree's **In folder** section
+auto-populates from a fully recursive scan of that path; build /
+VCS / venv folders (`__pycache__`, `.git`, `.venv`, `venv`,
+`build`, `dist`, `node_modules`) are pruned, but `output/` is
+intentionally included so the per-run snapshots and bins surface.
 
 The working directory updates **automatically** in two situations:
 
-- when you load a TOML in the Run tab (it points at the TOML's
-  parent folder, so the spody output ends up listed right next to
-  its input);
-- when a run completes (the Refresh-after-run mechanism re-scans
-  the folder so new files appear immediately).
+- when you load a TOML (the top bar's auto-adopt logic walks up
+  the loaded path's ancestors looking for a scenario root &mdash;
+  the closest folder that contains both an `output/` subdir and a
+  `.toml` &mdash; and the Analysis tab follows along);
+- when a run completes (the file tree rescans the same dir so
+  new files appear immediately).
 
-You can also set it manually with **Change...**, or refresh the
-current scan with the **⟳ Refresh** button after, for example,
-producing files outside of SpOdy.
+You can also set it manually via the global top bar's
+**Browse&hellip;**, or refresh the current scan with the
+**⟳ Refresh** button next to **+ Add external file...** &mdash;
+useful when you produce files outside of SpOdy.
 
 ## The file tree
 
@@ -81,7 +87,9 @@ The file tree has three top-level sections:
    every run becomes its own collapsible header (`run: 2026-06-
    09T120000Z`), most-recent first. Files that do not sit inside
    any run folder land in a final *loose files* group, collapsed
-   by default.
+   by default. File names inside a run folder carry the run's
+   timestamp as a prefix (e.g. `2026-06-09T120000Z_lro_state.bin`)
+   so they're unambiguous when copied or moved out of context.
 2. **External (N)** &mdash; explicit files you added via
    **+ Add external file...**. These remain in the list across
    working-directory changes, so you can keep a reference file
@@ -131,11 +139,13 @@ Three things to know about it:
    after picking a leaf. The plot fires on the click.
 2. **Ctrl-click extends** &mdash; the *Tile selected* button below
    the tree uses the multi-selection (chapter 9, section 9.4).
-3. **The Sun-arrow row appears only for 3D plots** &mdash; the row
+3. **The animation bar appears only for 3D plots** &mdash; the row
    immediately above the canvas hides itself when the active plot
-   is 2D, because the arrow has no meaning there. When a 3D plot
-   is selected the row reappears with its epoch field and **+ Sun
-   arrow** button.
+   is 2D, because there's nothing to animate there. When a 3D
+   plot is selected the bar reappears with play / scrub / speed
+   controls plus a **Scene&hellip;** button that opens the per-
+   scene options dialog (per-body visibility, triads, trail,
+   CR3BP primary selector for osculating elements).
 
 The plot tree is rebuilt every time you load a different *kind* of
 file (e.g. switching from a trajectory to an accelerations
