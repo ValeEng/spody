@@ -2686,20 +2686,13 @@ class AnalysisPanel(QWidget):
         self._path: Path | None = None
         self._loading_item = False   # guard against itemClicked re-entry
 
-        # Top row: working dir ---------------------------------------
-        self._dir_edit = QLineEdit()
-        self._dir_edit.setReadOnly(True)
-        self._dir_edit.setPlaceholderText("(no working dir -- run something or pick a folder)")
-        btn_change  = QPushButton("Change...")
-        btn_change.clicked.connect(self._on_change_dir)
-        btn_refresh = QPushButton("⟳ Refresh")
-        btn_refresh.clicked.connect(self._refresh_tree)
-
-        dir_row = QHBoxLayout()
-        dir_row.addWidget(QLabel("Working dir:"))
-        dir_row.addWidget(self._dir_edit, 1)
-        dir_row.addWidget(btn_change)
-        dir_row.addWidget(btn_refresh)
+        # Working-dir display: the dedicated row used to live here, but
+        # the working-dir field + Browse button now sit in the top bar
+        # owned by MainWindow (it's a single concept shared with the
+        # Form tab). `set_working_dir` remains the public hook the
+        # main window calls; a small Refresh button stays beside the
+        # file tree so the user can re-scan after dropping new bins
+        # in by hand.
 
         # Left pane: file tree + action buttons ----------------------
         # Multi-selection (Ctrl/Shift-click) feeds the overlay button;
@@ -2712,6 +2705,8 @@ class AnalysisPanel(QWidget):
 
         btn_add = QPushButton("+ Add external file...")
         btn_add.clicked.connect(self._on_add_external)
+        btn_refresh = QPushButton("⟳ Refresh")
+        btn_refresh.clicked.connect(self._refresh_tree)
         # Overlay button uses the active plot (set by the plot tree
         # below the splitter): produces a 2D overlay when a 2D plot is
         # active and a 3D overlay otherwise (subject to spec.overlay_fn).
@@ -2722,7 +2717,11 @@ class AnalysisPanel(QWidget):
         files_lay = QVBoxLayout(files_box)
         files_lay.setContentsMargins(0, 0, 0, 0)
         files_lay.addWidget(self._tree, 1)
-        files_lay.addWidget(btn_add)
+        add_row = QHBoxLayout()
+        add_row.setContentsMargins(0, 0, 0, 0)
+        add_row.addWidget(btn_add, 1)
+        add_row.addWidget(btn_refresh)
+        files_lay.addLayout(add_row)
         files_lay.addWidget(btn_overlay)
 
         # Plot tree (click-to-plot, grouped by category) lives in the
@@ -2916,7 +2915,6 @@ class AnalysisPanel(QWidget):
         splitter.setSizes([260, 1020])
 
         layout = QVBoxLayout(self)
-        layout.addLayout(dir_row)
         layout.addWidget(splitter, 1)
 
         self._refresh_tree()
@@ -2926,12 +2924,11 @@ class AnalysisPanel(QWidget):
     # ------------------------------------------------------------------
     def set_working_dir(self, path: Path | None) -> None:
         """Set the directory that the 'In folder' section scans. Called
-        by the main window after a Run finishes or a TOML is opened."""
-        if path is None:
-            self._working_dir = None
-        else:
-            self._working_dir = Path(path)
-        self._dir_edit.setText(str(self._working_dir) if self._working_dir else "")
+        by the main window whenever the shared top-bar working dir
+        changes (TOML opened/saved/Run finished/folder browsed).
+        The visible field for this path lives in the top bar -- the
+        panel only consumes it."""
+        self._working_dir = Path(path) if path is not None else None
         self._refresh_tree()
 
     def set_default_epoch(self, et_seconds: float | None) -> None:
@@ -3050,12 +3047,6 @@ class AnalysisPanel(QWidget):
     # ------------------------------------------------------------------
     # User actions
     # ------------------------------------------------------------------
-    def _on_change_dir(self) -> None:
-        start = str(self._working_dir) if self._working_dir else ""
-        path = QFileDialog.getExistingDirectory(self, "Working directory", start)
-        if path:
-            self.set_working_dir(Path(path))
-
     def _on_right_tab_changed(self, idx: int) -> None:
         """Switching to the Plot tab on an already-loaded file that has
         no current plot triggers the default render -- otherwise the

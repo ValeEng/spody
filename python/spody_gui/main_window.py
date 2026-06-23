@@ -19,12 +19,18 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSplitter,
     QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 import sys
@@ -57,18 +63,39 @@ class MainWindow(QMainWindow):
 
         self._store = SettingsStore()
 
+        # Working dir is a single shared concept across every tab: the
+        # Form tab lists *.toml under it and the Analysis tab scans
+        # *.bin under it. Opening any TOML auto-sets it to the TOML's
+        # parent so the rest of the UI follows along without manual
+        # synchronisation.
+        self._working_dir: Path | None = None
+
         # Central layout: top-level mode switch between Run (form +
         # terminal) and Analysis (file picker + plots). The two modes
         # are completely independent widgets; the menu bar stays shared
         # but Run-only actions are no-ops while the Analysis tab is up.
         self._form = TomlForm(self._store)
         self._terminal = TerminalView()
-        run_splitter = QSplitter(Qt.Orientation.Horizontal)
-        run_splitter.addWidget(self._form)
-        run_splitter.addWidget(self._terminal)
-        run_splitter.setStretchFactor(0, 1)
-        run_splitter.setStretchFactor(1, 1)
-        run_splitter.setSizes([640, 640])
+
+        # Form column: TOML picker row sits ABOVE the form widget so
+        # it visually belongs to the form (same width as the parameter
+        # area) and doesn't sprawl above the terminal. The row is
+        # built by MainWindow because it drives shared state (combo
+        # listings + Load/Save actions), but it physically lives
+        # alongside the form widgets the user is editing.
+        form_column = QWidget()
+        form_col_lay = QVBoxLayout(form_column)
+        form_col_lay.setContentsMargins(0, 0, 0, 0)
+        form_col_lay.setSpacing(4)
+        form_col_lay.addWidget(self._build_toml_row())
+        form_col_lay.addWidget(self._form, 1)
+
+        run_tab = QSplitter(Qt.Orientation.Horizontal)
+        run_tab.addWidget(form_column)
+        run_tab.addWidget(self._terminal)
+        run_tab.setStretchFactor(0, 1)
+        run_tab.setStretchFactor(1, 1)
+        run_tab.setSizes([640, 640])
 
         self._analysis = AnalysisPanel(self._store)
         self._rerun    = RerunPanel(self._store)
@@ -78,10 +105,24 @@ class MainWindow(QMainWindow):
         self._rerun.runRequested.connect(self._on_rerun_requested)
 
         self._tabs = QTabWidget()
-        self._tabs.addTab(run_splitter,    "Run")
+        self._tabs.addTab(run_tab,         "Run")
         self._tabs.addTab(self._analysis,  "Analysis")
         self._tabs.addTab(self._rerun,     "Re-run")
-        self.setCentralWidget(self._tabs)
+
+        # Top bar sits above the tabs and only carries the working-dir
+        # field + Browse -- that IS shared between Run (lists TOMLs)
+        # and Analysis (scans bins), so it deserves the global slot.
+        # The TOML picker + Load / Save / Save As live inside the Run
+        # tab (see `_build_toml_row`).
+        top_bar = self._build_top_bar()
+
+        central = QWidget()
+        central_lay = QVBoxLayout(central)
+        central_lay.setContentsMargins(6, 4, 6, 0)
+        central_lay.setSpacing(4)
+        central_lay.addWidget(top_bar)
+        central_lay.addWidget(self._tabs, 1)
+        self.setCentralWidget(central)
 
         # Runner: QProcess wrapper. Wired to the terminal and status bar.
         self._runner = SpodyRunner(self)
@@ -102,12 +143,12 @@ class MainWindow(QMainWindow):
         self._status_timer.timeout.connect(self._refresh_run_status)
 
         # Form tells us when its content has been edited (so we can
-        # mark the window title dirty), when a Generate write succeeded
-        # (so we refresh recents + Analysis working dir), and when the
-        # RUN button is clicked (so we share the save-before-run flow
-        # with the menu actions).
+        # mark the window title dirty) and when the RUN button is
+        # clicked (so we share the save-before-run flow with the menu
+        # actions). Post-IO sync (recents + working dir + analysis)
+        # is driven by Save / Save As going through _save_to ->
+        # _on_form_loaded_or_saved.
         self._form.modificationChanged.connect(self._refresh_title)
-        self._form.requestRunCheck.connect(self._on_form_generated)
         self._form.runRequested.connect(self._action_run)
 
         self._build_menus()
@@ -125,6 +166,179 @@ class MainWindow(QMainWindow):
         # noticeably less accurate, so a heads-up at launch is worth
         # the one extra dialog.
         QTimer.singleShot(0, self._maybe_warn_eop_stale)
+
+    # ------------------------------------------------------------------
+    # Top bar (working dir) + Run-tab TOML row (combo + Load/Save)
+    # ------------------------------------------------------------------
+    def _build_top_bar(self) -> QWidget:
+        """Always-visible strip above the tabs. Carries only the
+        working-dir field + Browse -- the one concept that BOTH the
+        Run tab (TOML listing) and the Analysis tab (bin scanning)
+        consume. TOML-specific controls live inside the Run tab,
+        built by `_build_toml_row`."""
+        bar = QWidget()
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        lay.addWidget(QLabel("Working dir:"))
+        self._dir_edit = QLineEdit()
+        self._dir_edit.setReadOnly(True)
+        self._dir_edit.setPlaceholderText(
+            "(no working dir -- pick a folder or open a TOML)")
+        lay.addWidget(self._dir_edit, 1)
+        btn_browse = QPushButton("Browse...")
+        btn_browse.clicked.connect(self._action_browse_working_dir)
+        lay.addWidget(btn_browse)
+
+        return bar
+
+    def _build_toml_row(self) -> QWidget:
+        """Top row inside the Run tab. Hosts the *.toml combo populated
+        from the working dir + Load / Save / Save As buttons. Lives
+        here (not in the global bar) because the Analysis tab does
+        not consume TOMLs -- it works on .bin output. The combo state
+        is still owned by MainWindow so all the open/save flows route
+        through the existing actions and stay synchronised with the
+        File menu."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        lay.addWidget(QLabel("TOML:"))
+        self._toml_combo = QComboBox()
+        self._toml_combo.setMinimumWidth(240)
+        self._toml_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents)
+        # `activated` (not `currentIndexChanged`) fires only on a real
+        # user click, AND it fires even when the user re-clicks the
+        # already-selected entry -- both are required so a freshly-
+        # populated combo lets the user load the visible item without
+        # first picking a different one.
+        self._toml_combo.activated.connect(self._on_toml_combo_activated)
+        lay.addWidget(self._toml_combo, 1)
+
+        # Load... duplicates the File menu's Open... but stays reachable
+        # from the row so the user does not need a menu trip for the
+        # most common action. Save / Save As likewise mirror Ctrl+S /
+        # Ctrl+Shift+S so the menu actions and the buttons stay
+        # synchronised.
+        btn_load = QPushButton("Load TOML...")
+        btn_load.clicked.connect(self._action_open)
+        btn_save = QPushButton("Save")
+        btn_save.clicked.connect(lambda: self._action_save())
+        btn_save_as = QPushButton("Save As...")
+        btn_save_as.clicked.connect(lambda: self._action_save_as())
+        lay.addWidget(btn_load)
+        lay.addWidget(btn_save)
+        lay.addWidget(btn_save_as)
+
+        return row
+
+    def _set_working_dir(self, path: Path | None) -> None:
+        """Single point of truth for changing the shared working dir.
+        Updates the top-bar field, rescans the TOML combo, and pushes
+        the same dir into the Analysis tab so its file tree mirrors
+        whatever Form sees."""
+        self._working_dir = Path(path) if path is not None else None
+        self._dir_edit.setText(str(self._working_dir)
+                                if self._working_dir else "")
+        self._refresh_toml_combo()
+        self._analysis.set_working_dir(self._working_dir)
+
+    def _refresh_toml_combo(self) -> None:
+        """Populate the TOML combo with the *.toml files under the
+        current working dir. Walks 2 levels deep so the canonical
+        `examples/<scenario>/input.toml` layout is covered without
+        crawling huge trees. The currently-loaded form path stays
+        selected (or auto-selected when present in the list); items
+        outside the working dir show up as a `(external)` label so
+        the user is not confused by an apparent absence.
+
+        Always seeds a `-- pick a TOML to load --` placeholder at
+        index 0 (data = None) so the visible selection never silently
+        implies a loaded file. Without it, the combo would default to
+        item 0 of the scan, falsely suggesting that TOML is active
+        when the form is still empty."""
+        self._toml_combo.blockSignals(True)
+        try:
+            self._toml_combo.clear()
+            self._toml_combo.addItem("-- pick a TOML to load --", None)
+            entries: list[tuple[str, Path]] = []
+            if self._working_dir is not None and self._working_dir.is_dir():
+                root = self._working_dir
+                # Depth-0 + depth-1 *.toml files, sorted by relative
+                # path. 2 levels is enough for the example layout
+                # without descending into output/<run>/input.toml
+                # snapshots (which the user shouldn't edit directly).
+                seen: list[Path] = []
+                try:
+                    for p in sorted(root.iterdir()):
+                        if p.is_file() and p.suffix.lower() == ".toml":
+                            seen.append(p)
+                    for sub in sorted(p for p in root.iterdir() if p.is_dir()):
+                        # Skip per-run output folders: they hold
+                        # immutable snapshots, not editable inputs.
+                        if sub.name == "output":
+                            continue
+                        try:
+                            for p in sorted(sub.iterdir()):
+                                if p.is_file() and p.suffix.lower() == ".toml":
+                                    seen.append(p)
+                        except OSError:
+                            continue
+                except OSError:
+                    pass
+                for p in seen:
+                    label = str(p.relative_to(root)).replace("\\", "/")
+                    entries.append((label, p))
+            current = self._form.current_path()
+            # If the loaded form path is outside the working dir, append
+            # it as a `(external)` entry so the combo still reflects the
+            # active file.
+            if current is not None and all(p != current for _, p in entries):
+                entries.append((f"{current.name}  (external)", current))
+            for label, p in entries:
+                self._toml_combo.addItem(label, str(p))
+            # Match the active file when it appears in the list;
+            # otherwise leave the placeholder visible.
+            if current is not None:
+                for i in range(self._toml_combo.count()):
+                    if self._toml_combo.itemData(i) == str(current):
+                        self._toml_combo.setCurrentIndex(i)
+                        break
+        finally:
+            self._toml_combo.blockSignals(False)
+
+    def _on_toml_combo_activated(self, idx: int) -> None:
+        """User clicked a combo entry. Loads the picked TOML through
+        the same gate File > Open uses (unsaved-edits prompt etc).
+        Index 0 is the `-- pick a TOML to load --` placeholder; data
+        is None there so we no-op. Re-clicking the already-loaded
+        entry is also a no-op (no point re-reading the same file)."""
+        if idx < 0:
+            return
+        data = self._toml_combo.itemData(idx)
+        if not data:
+            return
+        target = Path(data)
+        current = self._form.current_path()
+        if current is not None and target == current:
+            return
+        if not self._maybe_save():
+            # User cancelled -- snap the combo back to whatever the
+            # form actually has loaded so the UI stays consistent.
+            self._refresh_toml_combo()
+            return
+        self._open_path(target)
+
+    def _action_browse_working_dir(self) -> None:
+        start = (str(self._working_dir)
+                 if self._working_dir is not None else "")
+        path = QFileDialog.getExistingDirectory(
+            self, "Pick working directory", start)
+        if not path:
+            return
+        self._set_working_dir(Path(path))
 
     # ------------------------------------------------------------------
     # Menus
@@ -240,22 +454,24 @@ class MainWindow(QMainWindow):
         self._on_form_loaded_or_saved(path)
         return True
 
-    def _on_form_generated(self) -> None:
-        """The form's Generate TOML button finished writing. Sync the
-        rest of the UI (recents, title, analysis dir, sun-arrow epoch)
-        using the path the form now holds."""
-        path = self._form.current_path()
-        if path is not None:
-            self._on_form_loaded_or_saved(path)
-
     def _on_form_loaded_or_saved(self, path: Path) -> None:
         """Shared post-IO sync: update Recent list, window title, the
-        Analysis tab's working-dir + Sun-arrow epoch hint. Called by
-        Open, Save, and the form's Generate button via requestRunCheck."""
+        top-bar working-dir (which propagates to the Analysis tab and
+        refreshes the TOML combo), and the Sun-arrow epoch hint.
+        Called by Open, Save, and the form's Generate button via
+        requestRunCheck."""
         self._store.add_recent_file(str(path), RECENT_FILES_MAX)
         self._refresh_recent_menu()
         self._refresh_title()
-        self._analysis.set_working_dir(path.parent)
+        # If the opened/saved TOML is outside the current working dir,
+        # adopt its parent so the combo + analysis line up with it.
+        # When already inside, only refresh the combo (avoids spurious
+        # tree reloads in the Analysis tab on every Save).
+        if (self._working_dir is None
+                or path.parent.resolve() != self._working_dir.resolve()):
+            self._set_working_dir(path.parent)
+        else:
+            self._refresh_toml_combo()
         # Pre-fill the Sun-arrow epoch in the Analysis tab from the
         # loaded form, so the user does not have to retype the number.
         data = self._form.to_dict()
@@ -355,10 +571,18 @@ class MainWindow(QMainWindow):
         if exit_code == 0:
             self._stamp_run_notes(self._runner.last_line())
         # Refresh the Analysis tree so any new outputs from this run
-        # appear without the user having to hit Refresh manually.
+        # appear without the user having to hit Refresh manually. Go
+        # through _set_working_dir so the top-bar combo + analysis stay
+        # in lockstep even when the TOML lives outside the current
+        # working dir (rare, but happens e.g. after a Re-run).
         current = self._form.current_path()
         if current is not None:
-            self._analysis.set_working_dir(current.parent)
+            if (self._working_dir is None
+                    or current.parent.resolve()
+                    != self._working_dir.resolve()):
+                self._set_working_dir(current.parent)
+            else:
+                self._analysis.set_working_dir(self._working_dir)
 
     def _stamp_run_notes(self, last_engine_line: str) -> None:
         """Append the engine's final stdout line to the notes block
@@ -459,7 +683,15 @@ class MainWindow(QMainWindow):
             self._form.refresh_asset_combos()
             current = self._form.current_path()
             if current is not None:
-                self._analysis.set_working_dir(current.parent)
+                # Same lockstep policy as _on_run_finished: rebind the
+                # working dir only when the form's TOML drifted out of
+                # it; otherwise just re-scan the existing one.
+                if (self._working_dir is None
+                        or current.parent.resolve()
+                        != self._working_dir.resolve()):
+                    self._set_working_dir(current.parent)
+                else:
+                    self._analysis.set_working_dir(self._working_dir)
         return dlg
 
     def _maybe_pop_setup_wizard(self) -> None:

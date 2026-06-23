@@ -336,13 +336,12 @@ class TomlForm(QWidget):
       * `is_modified()` / `clear_modified()`
       * `current_path() -> Path | None`
       * Signal `modificationChanged(bool)`
-      * Signal `requestRunCheck()` -- emitted when the user presses
-        the bottom "Generate TOML" button; main window catches this
-        to refresh the Analysis working dir.
+      * Signal `runRequested(str)` -- emitted by the RUN button with
+        the subcommand the form thinks should run ("propagate" or
+        "batch"); MainWindow does the save-before-run gating.
     """
 
     modificationChanged = Signal(bool)
-    requestRunCheck     = Signal()       # emitted after a successful Generate
     runRequested        = Signal(str)    # subcommand to run ("propagate" / "batch")
 
     # Style sheets for the Validate badge -- tiny, kept inline so the
@@ -403,13 +402,16 @@ class TomlForm(QWidget):
 
         outer = QVBoxLayout(self)
 
-        # Top row: current file + Load / Generate / Validate / RUN
-        # plus a small badge to the right showing the last validate
-        # result (✓ OK / ✗ <error>) without going to the terminal.
+        # Top row: current file + Validate / RUN plus a small badge
+        # showing the last validate result (✓ OK / ✗ <error>) without
+        # going to the terminal. Load... and the old Generate button
+        # both moved out: Load lives in the global top bar (MainWindow);
+        # Generate's job is now done by the same top bar's Save / Save
+        # As, which write through `write_to` -> `_on_form_loaded_or_saved`
+        # the way Generate used to (recents update, working dir adopt,
+        # analysis tree refresh).
         self._path_label = QLabel("(no file)")
         self._path_label.setStyleSheet("color: gray;")
-        btn_load = QPushButton("Load...")
-        btn_gen  = QPushButton("Generate")
         btn_val  = QPushButton("Validate")
         btn_run  = QPushButton("RUN")
         btn_run.setStyleSheet(
@@ -418,8 +420,6 @@ class TomlForm(QWidget):
             "QPushButton:hover  { background-color: #3fb950; }"
             "QPushButton:pressed{ background-color: #238636; }"
         )
-        btn_load.clicked.connect(self._on_load_clicked)
-        btn_gen.clicked.connect(self._on_generate_clicked)
         btn_val.clicked.connect(self._on_validate_clicked)
         btn_run.clicked.connect(self._on_run_clicked)
 
@@ -428,8 +428,6 @@ class TomlForm(QWidget):
 
         top_row = QHBoxLayout()
         top_row.addWidget(self._path_label, 1)
-        top_row.addWidget(btn_load)
-        top_row.addWidget(btn_gen)
         top_row.addWidget(btn_val)
         top_row.addWidget(btn_run)
         outer.addLayout(top_row)
@@ -2747,26 +2745,6 @@ class TomlForm(QWidget):
     # ==================================================================
     # Bottom-bar handlers
     # ==================================================================
-    def _on_load_clicked(self) -> None:
-        start = str(self._current_path.parent) if self._current_path else ""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load TOML", start, "TOML files (*.toml);;All files (*)")
-        if path:
-            self.load_path(Path(path))
-
-    def _on_generate_clicked(self) -> None:
-        path = self._current_path
-        if path is None:
-            start = ""
-            path, _ = QFileDialog.getSaveFileName(
-                self, "Generate TOML", start,
-                "TOML files (*.toml);;All files (*)")
-            if not path:
-                return
-            path = Path(path)
-        if self.write_to(path):
-            self.requestRunCheck.emit()
-
     def _on_run_clicked(self) -> None:
         """Pick the right spody subcommand based on the form contents
         and ask MainWindow to launch it (save-before-run logic stays
