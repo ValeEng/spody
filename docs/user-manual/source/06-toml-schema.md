@@ -136,13 +136,24 @@ allowed; setting both is a validation error.
 ## `[initial_state]`
 
 Initial position and velocity vector of the propagated object.
-Required.
+Required. Two input flavours are supported via the optional `kind`
+key &mdash; **Cartesian** (default, the only choice before this
+release) and **Keplerian** (six classical elements + a reference
+body). The engine converts Keplerian input into the Cartesian state
+the integrator consumes; the rest of the pipeline (and the
+snapshot TOML on disk) is identical for both.
 
-| Key             | Type            | Default | Range | Description |
-|-----------------|-----------------|---------|-------|-------------|
-| `frame`         | string          | &mdash; | `central_inertial` (HF), `synodic_rotating` (CR3BP) | Reference frame. The two values are model-exclusive: `central_inertial` is valid only with `dynamics_model = "high_fidelity"` (the central body's J2000-aligned inertial frame &mdash; see chapter 10); `synodic_rotating` is valid only with `dynamics_model = "cr3bp"` (the synodic rotating frame of the primary pair). |
-| `position_km`   | array of 3 floats | &mdash; | &ndash; | `[x, y, z]` position in km in the chosen frame. |
-| `velocity_kms`  | array of 3 floats | &mdash; | &ndash; | `[vx, vy, vz]` velocity in km/s, same frame as `position_km`. |
+| Key            | Type            | Default       | Range | Description |
+|----------------|-----------------|---------------|-------|-------------|
+| `frame`        | string          | &mdash;       | `central_inertial` (HF), `synodic_rotating` (CR3BP) | Reference frame. Model-exclusive: `central_inertial` is valid only with `dynamics_model = "high_fidelity"`, `synodic_rotating` only with `cr3bp`. For Keplerian input under CR3BP the elements live in the reference primary's local inertial frame and the engine rotates / translates the resulting state into the synodic frame at `t = 0`; the value of `frame` still has to match the model. |
+| `kind`         | string          | `"cartesian"` | `"cartesian"`, `"keplerian"` | Which set of keys below is consumed. Omit for the legacy Cartesian path. |
+
+### `kind = "cartesian"` (default)
+
+| Key            | Type              | Default | Description |
+|----------------|-------------------|---------|-------------|
+| `position_km`  | array of 3 floats | &mdash; | `[x, y, z]` position in km in the chosen frame. |
+| `velocity_kms` | array of 3 floats | &mdash; | `[vx, vy, vz]` velocity in km/s, same frame as `position_km`. |
 
 The initial state must be self-consistent: an `|r|` smaller than
 the central body's mean radius will trigger an IMPACT event at
@@ -150,6 +161,37 @@ the first step. A `|v|` greater than the local escape velocity
 turns the simulation into a hyperbolic flyby, which the engine
 handles but is rarely what the user intended; double-check the
 magnitudes against your scenario.
+
+### `kind = "keplerian"`
+
+Six classical orbital elements + a reference body and an anomaly
+selector. The convention for the reference inertial frame matches
+the standard aerospace one: `inc = 0` means the orbit lies in the
+reference frame's *xy* plane, `raan = 0` puts the ascending node on
+the `+x` axis, `arg_periapsis = 0` puts periapsis at the ascending
+node.
+
+| Key                  | Type   | Range          | Description |
+|----------------------|--------|----------------|-------------|
+| `reference_body`     | string | `"central"`, `"primary_1"`, `"primary_2"` | Which body the elements reference. HF: defaults to `"central"`; the explicit value is also accepted, others are rejected. CR3BP: **required**, must be one of the primaries (no implicit default since both are physical). |
+| `semi_major_axis_km` | float  | `> 0`          | Semi-major axis in km. |
+| `eccentricity`       | float  | `[0, 1)`       | Eccentricity. Hyperbolic / parabolic orbits are not supported via Keplerian input (use the Cartesian path with the equivalent state). |
+| `inclination_deg`    | float  | `[0, 180]`     | Inclination, degrees. |
+| `raan_deg`           | float  | any            | Right ascension of the ascending node, degrees. |
+| `arg_periapsis_deg`  | float  | any            | Argument of periapsis, degrees. |
+| `anomaly_deg`        | float  | any            | Anomaly value at `t = 0`, degrees. |
+| `anomaly_type`       | string | `"true"`, `"mean"` | What `anomaly_deg` represents. Mean is converted to true via Kepler's equation before the state synthesis. |
+
+**CR3BP caveat.** Keplerian elements describe an instantaneously
+osculating Kepler orbit around the chosen primary. The CR3BP system
+is *not* a Kepler problem &mdash; the trajectory will not stay
+closed; the second primary's gravity perturbs it from the first
+step onward. This is exactly the same situation as a satellite
+inserted into a Lunar orbit feeling Earth's pull, and is normally
+the point of running a CR3BP scenario. The Keplerian input form is
+just a convenient way to specify the *initial* state; once the
+integration starts it is identical to a Cartesian IC carrying the
+same `(r, v)`.
 
 ## `[force_model]`
 

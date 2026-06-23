@@ -36,6 +36,9 @@
 
 #include "toml.h"
 #include "spody_const.h"
+#include "spody_forcemodels.h"   /* spody_inertial_to_cr3bp_synodic     */
+#include "spody_kepler.h"        /* keplerian -> Cartesian conversion   */
+#include "central_body.h"        /* spody_central_body_get for mu lookup */
 
 /* --------------------------------------------------------------------------
  * Path helpers
@@ -492,10 +495,203 @@ static int parse_initial_state(toml_table_t *root, InputConfig *cfg,
     if ((rc = req_string(t, "initial_state", "frame",
                          frame_name, sizeof frame_name, err))) return rc;
     if ((rc = parse_frame(frame_name, &cfg->initial_frame, err))) return rc;
-    if ((rc = req_vec3(t, "initial_state", "position_km",
-                       cfg->position_km, err))) return rc;
-    if ((rc = req_vec3(t, "initial_state", "velocity_kms",
-                       cfg->velocity_kms, err))) return rc;
+
+    /* `kind` defaults to "cartesian" so every TOML written before this
+     * slice keeps parsing unchanged. When present and == "keplerian"
+     * we pull the six classical elements + reference body + anomaly
+     * discriminator; spody_validate_input later resolves the right mu
+     * and populates position_km / velocity_kms. */
+    cfg->init_kind = SPODY_INIT_CARTESIAN;
+    {
+        char kind_name[32] = {0};
+        int  present       = 0;
+        if ((rc = opt_string(t, "kind", kind_name, sizeof kind_name,
+                             &present))) return rc;
+        if (present) {
+            if (strcmp(kind_name, "cartesian") == 0) {
+                cfg->init_kind = SPODY_INIT_CARTESIAN;
+            } else if (strcmp(kind_name, "keplerian") == 0) {
+                cfg->init_kind = SPODY_INIT_KEPLERIAN;
+            } else {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "initial_state.kind = '%s' is not supported "
+                        "(expected 'cartesian' or 'keplerian')", kind_name);
+                return SPODY_ERR_BAD_VALUE;
+            }
+        }
+    }
+
+    if (cfg->init_kind == SPODY_INIT_CARTESIAN) {
+        if ((rc = req_vec3(t, "initial_state", "position_km",
+                           cfg->position_km, err))) return rc;
+        if ((rc = req_vec3(t, "initial_state", "velocity_kms",
+                           cfg->velocity_kms, err))) return rc;
+        return SPODY_OK;
+    }
+
+    /* Keplerian path. The numeric ranges are checked in
+     * spody_validate_input alongside the mu / synodic conversion;
+     * here we only enforce that every required key is present. */
+    if ((rc = req_double(t, "initial_state", "semi_major_axis_km",
+                         &cfg->kep_sma_km, err))) return rc;
+    if ((rc = req_double(t, "initial_state", "eccentricity",
+                         &cfg->kep_ecc, err))) return rc;
+    if ((rc = req_double(t, "initial_state", "inclination_deg",
+                         &cfg->kep_inc_deg, err))) return rc;
+    if ((rc = req_double(t, "initial_state", "raan_deg",
+                         &cfg->kep_raan_deg, err))) return rc;
+    if ((rc = req_double(t, "initial_state", "arg_periapsis_deg",
+                         &cfg->kep_argp_deg, err))) return rc;
+    if ((rc = req_double(t, "initial_state", "anomaly_deg",
+                         &cfg->kep_anomaly_deg, err))) return rc;
+
+    char anom_name[16] = {0};
+    if ((rc = req_string(t, "initial_state", "anomaly_type",
+                         anom_name, sizeof anom_name, err))) return rc;
+    if (strcmp(anom_name, "true") == 0) {
+        cfg->kep_anomaly_kind = SPODY_ANOMALY_TRUE;
+    } else if (strcmp(anom_name, "mean") == 0) {
+        cfg->kep_anomaly_kind = SPODY_ANOMALY_MEAN;
+    } else {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "initial_state.anomaly_type = '%s' is not supported "
+                "(expected 'true' or 'mean')", anom_name);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    /* reference_body is optional for HF (defaults to "central"), required
+     * for CR3BP (must be primary_1 or primary_2). The cross-check against
+     * dynamics_model happens in the validator -- here we only parse. */
+    cfg->kep_ref_body = SPODY_REF_BODY_CENTRAL;
+    {
+        char rb_name[16] = {0};
+        int  present     = 0;
+        if ((rc = opt_string(t, "reference_body", rb_name, sizeof rb_name,
+                             &present))) return rc;
+        if (present) {
+            if (strcmp(rb_name, "central") == 0) {
+                cfg->kep_ref_body = SPODY_REF_BODY_CENTRAL;
+            } else if (strcmp(rb_name, "primary_1") == 0) {
+                cfg->kep_ref_body = SPODY_REF_BODY_PRIMARY_1;
+            } else if (strcmp(rb_name, "primary_2") == 0) {
+                cfg->kep_ref_body = SPODY_REF_BODY_PRIMARY_2;
+            } else {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "initial_state.reference_body = '%s' is not supported "
+                        "(expected 'central', 'primary_1', or 'primary_2')",
+                        rb_name);
+                return SPODY_ERR_BAD_VALUE;
+            }
+        }
+    }
+
+    /* position_km / velocity_kms get populated by the validator. Zero
+     * them here so a downstream code path that reads them before the
+     * conversion runs sees a deterministic value. */
+    cfg->position_km[0]  = cfg->position_km[1]  = cfg->position_km[2]  = 0.0;
+    cfg->velocity_kms[0] = cfg->velocity_kms[1] = cfg->velocity_kms[2] = 0.0;
+    return SPODY_OK;
+}
+
+/* Convert the parsed Keplerian elements into a Cartesian state in the
+ * configured `initial_frame`, writing position_km / velocity_kms in
+ * place. Called from spody_parse_toml after every section is parsed so
+ * the mu of the reference body is resolvable.
+ *
+ *   HF + reference_body = "central" (default)
+ *       -> mu = central body's GM; elements live in central_inertial;
+ *          straight kepler -> Cartesian.
+ *   CR3BP + reference_body = "primary_1" | "primary_2"
+ *       -> mu = cr3bp_mu1 | cr3bp_mu2; elements live in the primary's
+ *          local inertial frame; chain through spody_inertial_to_cr3bp_
+ *          synodic to land in the synodic frame the integrator expects. */
+static int finalize_keplerian_initial_state(InputConfig *cfg, SpodyError *err) {
+    if (cfg->kep_sma_km <= 0.0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "initial_state.semi_major_axis_km must be positive (got %.6g)",
+                cfg->kep_sma_km);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (cfg->kep_ecc < 0.0 || cfg->kep_ecc >= 1.0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "initial_state.eccentricity must be in [0, 1) (got %.6g); "
+                "hyperbolic and parabolic orbits are not supported via "
+                "Keplerian input", cfg->kep_ecc);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (cfg->kep_inc_deg < 0.0 || cfg->kep_inc_deg > 180.0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "initial_state.inclination_deg must be in [0, 180] (got %.6g)",
+                cfg->kep_inc_deg);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    /* Resolve mu and validate (reference_body, dynamics_model, frame)
+     * are consistent. */
+    double mu_ref = 0.0;
+    if (cfg->dynamics_model == SPODY_DYN_CR3BP) {
+        if (cfg->initial_frame != SPODY_FRAME_SYNODIC_ROTATING) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "initial_state.frame must be 'synodic_rotating' for "
+                    "Keplerian input under dynamics_model = 'cr3bp'");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->kep_ref_body == SPODY_REF_BODY_CENTRAL) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "initial_state.reference_body is required for Keplerian "
+                    "input under cr3bp (expected 'primary_1' or 'primary_2')");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        mu_ref = (cfg->kep_ref_body == SPODY_REF_BODY_PRIMARY_2)
+                 ? cfg->cr3bp_mu2 : cfg->cr3bp_mu1;
+    } else {  /* high_fidelity */
+        if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "initial_state.frame must be 'central_inertial' for "
+                    "Keplerian input under dynamics_model = 'high_fidelity'");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->kep_ref_body != SPODY_REF_BODY_CENTRAL) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "initial_state.reference_body must be 'central' (or "
+                    "omitted) for Keplerian input under high_fidelity; the "
+                    "central body is implicit");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        const SpodyCentralBodySpec *cb = spody_central_body_get(cfg->central_body);
+        if (!cb || cb->mu <= 0.0) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "could not resolve mu for central body (enum=%d)",
+                    (int)cfg->central_body);
+            return SPODY_ERR_INTERNAL;
+        }
+        mu_ref = cb->mu;
+    }
+
+    /* True anomaly (radians) -- handles either anomaly_type by routing
+     * mean through Kepler's equation first. */
+    double nu_rad = cfg->kep_anomaly_deg * DEG2RAD;
+    if (cfg->kep_anomaly_kind == SPODY_ANOMALY_MEAN) {
+        nu_rad = spody_kepler_mean_to_true_anom(nu_rad, cfg->kep_ecc);
+    }
+
+    double r_ref[3], v_ref[3];
+    spody_keplerian_to_cartesian(cfg->kep_sma_km, cfg->kep_ecc,
+                                 cfg->kep_inc_deg * DEG2RAD,
+                                 cfg->kep_raan_deg * DEG2RAD,
+                                 cfg->kep_argp_deg * DEG2RAD,
+                                 nu_rad, mu_ref, r_ref, v_ref);
+
+    if (cfg->dynamics_model == SPODY_DYN_CR3BP) {
+        int primary_idx = (cfg->kep_ref_body == SPODY_REF_BODY_PRIMARY_2) ? 2 : 1;
+        spody_inertial_to_cr3bp_synodic(r_ref, v_ref,
+                                        cfg->cr3bp_mu1, cfg->cr3bp_mu2,
+                                        cfg->cr3bp_L_km, primary_idx,
+                                        cfg->position_km, cfg->velocity_kms);
+    } else {
+        cfg->position_km[0]  = r_ref[0]; cfg->position_km[1]  = r_ref[1]; cfg->position_km[2]  = r_ref[2];
+        cfg->velocity_kms[0] = v_ref[0]; cfg->velocity_kms[1] = v_ref[1]; cfg->velocity_kms[2] = v_ref[2];
+    }
     return SPODY_OK;
 }
 
@@ -1324,6 +1520,16 @@ int spody_load_input(const char *toml_path, InputConfig *cfg, SpodyError *err) {
     if ((rc = parse_output       (root, toml_dir,  cfg, err))) goto out;
     if ((rc = parse_events       (root,            cfg, err))) goto out;
     if ((rc = parse_batch        (root, toml_dir,  cfg, err))) goto out;
+
+    /* All sections are now parsed; if the user picked Keplerian IC,
+     * resolve the reference mu (HF central body / CR3BP primary 1|2)
+     * and overwrite position_km / velocity_kms with the Cartesian
+     * equivalent. Done HERE rather than in spody_validate_input so the
+     * validator stays read-only and downstream consumers always see a
+     * Cartesian state. */
+    if (cfg->init_kind == SPODY_INIT_KEPLERIAN) {
+        if ((rc = finalize_keplerian_initial_state(cfg, err))) goto out;
+    }
 
 out:
     toml_free(root);

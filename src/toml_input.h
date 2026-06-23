@@ -58,6 +58,29 @@ typedef enum {
                                          * smaller primary */
 } SpodyFrame;
 
+/* How [initial_state] expresses the IC. Default is cartesian so every
+ * TOML written before this slice keeps parsing unchanged. */
+typedef enum {
+    SPODY_INIT_CARTESIAN = 0,
+    SPODY_INIT_KEPLERIAN = 1
+} SpodyInitKind;
+
+/* Reference body for keplerian elements. HF uses the central body
+ * implicitly (CENTRAL); CR3BP picks one of the two primaries. */
+typedef enum {
+    SPODY_REF_BODY_CENTRAL   = 0,
+    SPODY_REF_BODY_PRIMARY_1 = 1,
+    SPODY_REF_BODY_PRIMARY_2 = 2
+} SpodyRefBody;
+
+/* Which anomaly the user typed in `anomaly_deg`. The validator wraps
+ * mean -> true via spody_kepler_mean_to_true_anom before calling
+ * spody_keplerian_to_cartesian. */
+typedef enum {
+    SPODY_ANOMALY_TRUE = 0,
+    SPODY_ANOMALY_MEAN = 1
+} SpodyAnomalyKind;
+
 #define SPODY_MAX_THIRD_BODIES   8
 #define SPODY_MAX_BODY_NAME      16
 #define SPODY_MAX_SIM_NAME      128
@@ -159,10 +182,38 @@ typedef struct {
     double srp_area_m2;          /* valid iff has_srp_block; A/m numerically when debris_mode */
     double srp_cr;               /* valid iff has_srp_block              */
 
-    /* [initial_state] */
-    SpodyFrame initial_frame;
-    double     position_km[3];
-    double     velocity_kms[3];
+    /* [initial_state]
+     *
+     * Two input flavours are supported and the parser normalises both
+     * into the same (frame, position_km, velocity_kms) triple:
+     *
+     *   kind = "cartesian" (default, back-compat): the user gives the
+     *       position / velocity directly in the chosen frame.
+     *   kind = "keplerian": the user gives six classical orbital
+     *       elements + a reference body (central body for HF,
+     *       primary_1 / primary_2 for CR3BP); spody_validate_input
+     *       calls spody_keplerian_to_cartesian (and, for CR3BP,
+     *       spody_inertial_to_cr3bp_synodic) AFTER all sections are
+     *       parsed and populates position_km / velocity_kms so the
+     *       rest of the pipeline stays unchanged.
+     *
+     * When init_kind == SPODY_INIT_KEPLERIAN, the kep_* fields hold
+     * the as-parsed values (sma > 0 km, ecc in [0, 1), angles in
+     * degrees, anomaly in degrees with anomaly_kind discriminating
+     * true vs mean). When init_kind == SPODY_INIT_CARTESIAN they
+     * stay zero and are unused. */
+    SpodyFrame       initial_frame;
+    SpodyInitKind    init_kind;
+    double           position_km[3];     /* always populated post-validate */
+    double           velocity_kms[3];    /* always populated post-validate */
+    SpodyRefBody     kep_ref_body;       /* Keplerian only; ignored otherwise */
+    double           kep_sma_km;
+    double           kep_ecc;
+    double           kep_inc_deg;
+    double           kep_raan_deg;
+    double           kep_argp_deg;
+    double           kep_anomaly_deg;
+    SpodyAnomalyKind kep_anomaly_kind;
 
     /* [force_model] */
     SpodyCentralBody central_body;
