@@ -170,6 +170,13 @@ class PlotSpec:
     VTK, not matplotlib) and by tile mode (mixing projections in one
     figure would force per-subplot axis creation, not worth the
     complexity yet)."""
+    models:     tuple[str, ...] = ("high_fidelity", "cr3bp")
+    """Dynamics models this plot applies to. The plot tree filters
+    PLOTS by `ctx.dynamics_model in spec.models`, so a CR3BP-only
+    plot (Jacobi conservation) advertises `("cr3bp",)` and an HF-
+    only one (impact lat/lon on a body-fixed frame -- meaningless in
+    the synodic CR3BP frame) advertises `("high_fidelity",)`.
+    Default `("high_fidelity", "cr3bp")` means 'works for both'."""
 
 
 def _plot_traj_r(ax: Axes, d: np.ndarray) -> None:
@@ -212,17 +219,24 @@ def _plot_traj_projection(ax: Axes, d: np.ndarray, a: str, b: str) -> None:
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
 
 
-# Fallback gravitational parameter used by `_orbital_elements` when
+# Fallback gravitational parameter used by `_state_for_elements` when
 # no PlotContext is available (bare .bin loaded without a snapshot).
 # The constant lives in central_bodies (sourced from spody_const.h
 # at import time). For the normal context-aware path we read
-# ctx.central_body.mu_km3_s2 instead -- see `_mu_from_ctx`.
+# ctx.central_body.mu_km3_s2 instead.
 MU_MOON_KM3_S2 = _MOON_MU_KM3S2_FALLBACK
 
 
-def _orbital_elements(d: np.ndarray, mu: float = MU_MOON_KM3_S2
+def _orbital_elements(r: np.ndarray, v: np.ndarray, mu: float
                       ) -> dict[str, np.ndarray]:
     """Classical orbital elements from state vectors at every sample.
+
+    `r` (N, 3) km, `v` (N, 3) km/s, both expressed in the same inertial
+    frame; `mu` km^3/s^2 is the central body's GM. For HF runs the
+    caller passes the raw state vector and the run's central-body mu.
+    For CR3BP runs the caller passes state shifted into one primary's
+    frame and rotated to inertial (synodic `v` + omega x r_rel), with
+    that primary's mu -- see `_state_for_elements`.
 
     Returns a dict with the per-sample arrays:
         a    [km]     -- semi-major axis (vis-viva)
@@ -241,8 +255,6 @@ def _orbital_elements(d: np.ndarray, mu: float = MU_MOON_KM3_S2
     The thresholds are tight (1e-8) so any realistic propagated orbit
     is unaffected.
     """
-    r = np.stack((d["x"],  d["y"],  d["z"]),  axis=-1)         # (N, 3) km
-    v = np.stack((d["vx"], d["vy"], d["vz"]), axis=-1)         # (N, 3) km/s
     r_mag = np.linalg.norm(r, axis=-1)
     v_mag = np.linalg.norm(v, axis=-1)
 
@@ -305,56 +317,92 @@ def _orbital_elements(d: np.ndarray, mu: float = MU_MOON_KM3_S2
     }
 
 
-def _mu_from_ctx(ctx: "PlotContext | None") -> float:
-    """Pick the central-body GM for the orbital-elements solver.
-    Reads `ctx.central_body.mu_km3_s2` when ctx is available;
-    falls back to the Moon GM for legacy callers (bare .bin
-    loaded without a snapshot).  Wrong mu would visibly bias
-    `a` and skew `e`, hence the explicit ctx threading."""
-    if ctx is not None:
-        return ctx.central_body.mu_km3_s2
-    return MU_MOON_KM3_S2
+def _state_for_elements(d: np.ndarray, ctx: "PlotContext | None"
+                          ) -> tuple[np.ndarray, np.ndarray, float, str]:
+    """Build the (r, v, mu, label_suffix) tuple the orbital-elements
+    solver consumes for the loaded trajectory.
+
+    HF: raw state vector + central body's GM, no title suffix.
+
+    CR3BP: shift to the selected primary's fixed synodic position and
+    rotate the rotating-frame velocity into an inertial frame
+    expressed in the synodic basis. The synodic basis itself rotates
+    at `omega` about +z; computing elements in the snapshot of the
+    inertial frame that coincides with the synodic basis at time `t`
+    gives osculating-orbit elements -- magnitudes (`a`, `e`, `i`) are
+    basis-independent and read cleanly, while RAAN and AOP retrograde
+    at -omega per the rotating basis (label flags the relative
+    primary so the reader knows what's being plotted)."""
+    if (ctx is not None
+            and ctx.dynamics_model == "cr3bp"
+            and ctx.cr3bp_primaries):
+        idx = max(1, min(2, ctx.scene_options.cr3bp_elements_primary)) - 1
+        primary = ctx.cr3bp_primaries[idx]
+        p1, p2 = ctx.cr3bp_primaries
+        L_km    = abs(p2.position_km[0] - p1.position_km[0])
+        mu_tot  = p1.mu_km3_s2 + p2.mu_km3_s2
+        omega   = math.sqrt(mu_tot / (L_km ** 3))
+        px, py, pz = primary.position_km
+        rx = d["x"] - px
+        ry = d["y"] - py
+        rz = d["z"] - pz
+        # omega vector = (0, 0, omega); omega x r_rel = (-omega*ry, +omega*rx, 0).
+        vx_inertial = d["vx"] - omega * ry
+        vy_inertial = d["vy"] + omega * rx
+        vz_inertial = d["vz"]
+        r = np.stack((rx, ry, rz), axis=-1)
+        v = np.stack((vx_inertial, vy_inertial, vz_inertial), axis=-1)
+        return r, v, primary.mu_km3_s2, f"  (rel. to {primary.name})"
+    r = np.stack((d["x"],  d["y"],  d["z"]),  axis=-1)
+    v = np.stack((d["vx"], d["vy"], d["vz"]), axis=-1)
+    mu = ctx.central_body.mu_km3_s2 if ctx is not None else MU_MOON_KM3_S2
+    return r, v, mu, ""
 
 
 def _plot_traj_a(ax: Axes, d: np.ndarray,
                   ctx: "PlotContext | None" = None) -> None:
-    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
+    r, v, mu, suffix = _state_for_elements(d, ctx)
+    el = _orbital_elements(r, v, mu)
     ax.plot(d["t"], el["a"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("a [km]")
-    ax.set_title("Semi-major axis"); ax.grid(True, alpha=0.3)
+    ax.set_title(f"Semi-major axis{suffix}"); ax.grid(True, alpha=0.3)
 
 
 def _plot_traj_e(ax: Axes, d: np.ndarray,
                   ctx: "PlotContext | None" = None) -> None:
-    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
+    r, v, mu, suffix = _state_for_elements(d, ctx)
+    el = _orbital_elements(r, v, mu)
     ax.plot(d["t"], el["e"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("e [-]")
-    ax.set_title("Eccentricity"); ax.grid(True, alpha=0.3)
+    ax.set_title(f"Eccentricity{suffix}"); ax.grid(True, alpha=0.3)
 
 
 def _plot_traj_i(ax: Axes, d: np.ndarray,
                   ctx: "PlotContext | None" = None) -> None:
-    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
+    r, v, mu, suffix = _state_for_elements(d, ctx)
+    el = _orbital_elements(r, v, mu)
     ax.plot(d["t"], el["i"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("i [deg]")
-    ax.set_title("Inclination"); ax.grid(True, alpha=0.3)
+    ax.set_title(f"Inclination{suffix}"); ax.grid(True, alpha=0.3)
 
 
 def _plot_traj_raan(ax: Axes, d: np.ndarray,
                      ctx: "PlotContext | None" = None) -> None:
-    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
+    r, v, mu, suffix = _state_for_elements(d, ctx)
+    el = _orbital_elements(r, v, mu)
     ax.plot(d["t"], el["raan"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("Ω [deg]")
-    ax.set_title("RAAN (right ascension of ascending node)")
+    ax.set_title(f"RAAN (right ascension of ascending node){suffix}")
     ax.grid(True, alpha=0.3)
 
 
 def _plot_traj_aop(ax: Axes, d: np.ndarray,
                     ctx: "PlotContext | None" = None) -> None:
-    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
+    r, v, mu, suffix = _state_for_elements(d, ctx)
+    el = _orbital_elements(r, v, mu)
     ax.plot(d["t"], el["aop"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("ω [deg]")
-    ax.set_title("Argument of periapsis"); ax.grid(True, alpha=0.3)
+    ax.set_title(f"Argument of periapsis{suffix}"); ax.grid(True, alpha=0.3)
 
 
 def _plot_traj_nu(ax: Axes, d: np.ndarray,
@@ -362,10 +410,64 @@ def _plot_traj_nu(ax: Axes, d: np.ndarray,
     # Per-revolution saw-tooth is the correct shape for the wrapped
     # true anomaly. On long propagations this gets visually busy;
     # the user can zoom in on the toolbar.
-    el = _orbital_elements(d, mu=_mu_from_ctx(ctx))
+    r, v, mu, suffix = _state_for_elements(d, ctx)
+    el = _orbital_elements(r, v, mu)
     ax.plot(d["t"], el["nu"], lw=0.6)
     ax.set_xlabel("t [s]"); ax.set_ylabel("ν [deg]")
-    ax.set_title("True anomaly"); ax.grid(True, alpha=0.3)
+    ax.set_title(f"True anomaly{suffix}"); ax.grid(True, alpha=0.3)
+
+
+# ----------------------------------------------------------------------
+# CR3BP-specific plots
+# ----------------------------------------------------------------------
+def _cr3bp_jacobi(d: np.ndarray, primaries
+                   ) -> tuple[np.ndarray, float]:
+    """Compute the CR3BP Jacobi constant at every sample:
+
+        C = 2*Omega - |v|^2
+        Omega = omega^2 * (x^2 + y^2) / 2 + mu1/r1 + mu2/r2
+
+    where (x, y, z) and (vx, vy, vz) are synodic-frame state from `d`,
+    `mu_i` and primary positions come from `primaries` (tuple of two
+    `CR3BPPrimary`), and `omega = sqrt((mu1+mu2)/L^3)` with `L` the
+    primary separation. Returns `(C_array, C0)` so the caller can plot
+    `C - C0` for the conservation diagnostic and stash `C0` in the
+    title."""
+    p1, p2 = primaries
+    L_km   = abs(p2.position_km[0] - p1.position_km[0])
+    mu_tot = p1.mu_km3_s2 + p2.mu_km3_s2
+    omega  = math.sqrt(mu_tot / (L_km ** 3))
+    x, y, z    = d["x"], d["y"], d["z"]
+    vx, vy, vz = d["vx"], d["vy"], d["vz"]
+    r1 = np.sqrt((x - p1.position_km[0]) ** 2 + y * y + z * z)
+    r2 = np.sqrt((x - p2.position_km[0]) ** 2 + y * y + z * z)
+    Omega = 0.5 * (omega ** 2) * (x * x + y * y) \
+            + p1.mu_km3_s2 / r1 + p2.mu_km3_s2 / r2
+    v2 = vx * vx + vy * vy + vz * vz
+    C  = 2.0 * Omega - v2
+    return C, float(C[0])
+
+
+def _plot_cr3bp_jacobi(ax: Axes, d: np.ndarray,
+                        ctx: "PlotContext | None" = None) -> None:
+    """Jacobi-constant conservation diagnostic. Should stay flat to
+    integrator precision (~1e-12 relative on a well-behaved CR3BP
+    run); systematic drift means the RHS or step controller is
+    leaking energy. Plots `C(t) - C(0)` so the eye reads the deviation
+    directly; the absolute `C0` is reported in the title."""
+    if (ctx is None
+            or ctx.dynamics_model != "cr3bp"
+            or not ctx.cr3bp_primaries):
+        _ctx_missing_message(
+            ax, "Jacobi constant",
+            "Jacobi conservation is defined only for CR3BP runs.")
+        return
+    C, C0 = _cr3bp_jacobi(d, ctx.cr3bp_primaries)
+    dC = C - C0
+    ax.plot(d["t"], dC)
+    ax.set_xlabel("t [s]"); ax.set_ylabel("C(t) - C(t₀) [km²/s²]")
+    ax.set_title(f"Jacobi constant conservation  (C₀ = {C0:.9g} km²/s²)")
+    ax.grid(True, alpha=0.3)
 
 
 # ----------------------------------------------------------------------
@@ -2291,6 +2393,14 @@ PLOTS: dict[str, list[PlotSpec]] = {
         PlotSpec("True anomaly  ν",             "2d", _plot_traj_nu,
                  overlay_fn=_make_2d_overlay(_plot_traj_nu),
                  category="Orbital elements", mode="context"),
+        # ----- CR3BP --------------------------------------------------
+        # Jacobi-constant conservation is the rigorous CR3BP integrator
+        # check: should sit at ~1e-12 relative drift on a healthy run.
+        # Restricted to CR3BP runs only -- the underlying definition is
+        # specific to the synodic three-body system.
+        PlotSpec("Jacobi constant  C",          "2d", _plot_cr3bp_jacobi,
+                 category="CR3BP", mode="context",
+                 models=("cr3bp",)),
         # ----- Diff (pick 2 files) ------------------------------------
         # mode='diff' specs subtract B from A sample-by-sample. The
         # dispatcher requires exactly two files to be selected in the
@@ -2315,12 +2425,18 @@ PLOTS: dict[str, list[PlotSpec]] = {
                  category="Diff (pick 2 files)", mode="diff"),
     ],
     "accel": [
-        # Three entries -- flat at the root, no point grouping.
+        # CR3BP runs disable accelerations output (no force-model
+        # bookkeeping), so an accel file implies HF -- but the
+        # `models` tag is set explicitly for symmetry with the rest
+        # of the registry.
         PlotSpec("Total  |a_total|",            "2d", _plot_acc_total,
-                 overlay_fn=_make_2d_overlay(_plot_acc_total)),
-        PlotSpec("Per-force breakdown (log y)", "2d", _plot_acc_breakdown),
+                 overlay_fn=_make_2d_overlay(_plot_acc_total),
+                 models=("high_fidelity",)),
+        PlotSpec("Per-force breakdown (log y)", "2d", _plot_acc_breakdown,
+                 models=("high_fidelity",)),
         PlotSpec("Eclipse fraction",            "2d", _plot_acc_eclipse,
-                 overlay_fn=_make_2d_overlay(_plot_acc_eclipse)),
+                 overlay_fn=_make_2d_overlay(_plot_acc_eclipse),
+                 models=("high_fidelity",)),
     ],
     "events": [
         PlotSpec("Events timeline",             "2d", _plot_events_timeline),
@@ -2328,23 +2444,32 @@ PLOTS: dict[str, list[PlotSpec]] = {
     "events_batch": [
         # Timeline goes first so a fresh load always shows something
         # sensible even when the run-folder snapshot is missing
-        # (timeline + histogram are context-free; the four impact
-        # views below need input.toml).
+        # (timeline + histogram are context-free; the impact views
+        # below need input.toml). Timeline + histogram + survival
+        # work for any dynamics model (the impact predicate fires on
+        # both HF central-body and CR3BP primary radii). The lat/lon
+        # / heatmap / 3D-on-body views project onto a body-fixed
+        # frame, which is HF-specific -- in CR3BP the synodic primary
+        # has no comparable body-fixed surface coordinate.
         PlotSpec("Events timeline",             "2d", _plot_events_timeline),
         PlotSpec("Time-to-impact histogram",    "2d",
                  _plot_events_time_to_impact_hist),
         PlotSpec("Survival timeline per case",  "2d",
                  _plot_events_survival_timeline, mode="context"),
         PlotSpec("Impact lat/lon (equirect)",   "2d",
-                 _plot_events_impact_map,        mode="context"),
+                 _plot_events_impact_map,        mode="context",
+                 models=("high_fidelity",)),
         PlotSpec("Impact lat/lon (Mollweide)",  "2d",
                  _plot_events_impact_map_mollweide,
-                 mode="context", projection="mollweide"),
+                 mode="context", projection="mollweide",
+                 models=("high_fidelity",)),
         PlotSpec("Impact density heatmap",      "2d",
                  _plot_events_impact_density,
-                 mode="context", projection="mollweide"),
+                 mode="context", projection="mollweide",
+                 models=("high_fidelity",)),
         PlotSpec("Impact 3D on central body",   "3d",
-                 _plot_events_impact_3d,         mode="context"),
+                 _plot_events_impact_3d,         mode="context",
+                 models=("high_fidelity",)),
     ],
 }
 
@@ -3174,13 +3299,20 @@ class AnalysisPanel(QWidget):
         """Rebuild the right-pane tree for the given file kind. Specs
         with non-empty `category` get grouped under a bold folder; the
         rest live at root level. Registry order is preserved so the
-        groups stack in a stable order."""
+        groups stack in a stable order.
+
+        Specs whose `models` tuple does NOT include the loaded run's
+        `dynamics_model` are filtered out before grouping -- so an HF
+        run never sees the Jacobi plot and a CR3BP run never sees the
+        body-fixed impact lat/lon views."""
         self._plot_tree.clear()
         # Lazy import: avoid hardcoding a category-order list -- the
         # first time we encounter a category we create its folder, and
         # subsequent specs with the same string attach as children.
         folders: dict[str, QTreeWidgetItem] = {}
         for spec in PLOTS.get(kind, []):
+            if self._dynamics_model not in spec.models:
+                continue
             if not spec.category:
                 # Root-level leaf.
                 leaf = QTreeWidgetItem([spec.label])
@@ -3468,22 +3600,31 @@ class AnalysisPanel(QWidget):
         is currently viewing so the change shows up live without a
         manual Plot click. Trail state is a canvas-level flag that
         survives clear_scene; we push it BEFORE the re-render so the
-        newly-added trajectories inherit the correct mode."""
-        if self._stack.currentIndex() != 1:
-            return  # 2D active; nothing to re-render
-        # 1) Trail mode is a canvas flag, not a per-handle property.
-        # Push it now so the about-to-be-added handles see the right
-        # state inside add_animated_trajectory.
-        self._vtk.set_trail_enabled(self._scene_options.trail_enabled)
-        # 2) Preserve the playhead position across the re-plot. The
-        # rebuild fires set_time_range which would otherwise snap the
-        # animation back to t_min, wiping out wherever the user was
-        # scrubbed to when they opened the dialog.
-        saved_t = self._anim_bar.current_time()
+        newly-added trajectories inherit the correct mode.
+
+        Both 2D and 3D plots are re-rendered: 3D plots react to the
+        triad / third-body / trail toggles, and 2D orbital-element
+        plots react to the CR3BP primary-selector radio. Re-render is
+        cheap for 2D (single matplotlib redraw) and harmless when the
+        active spec doesn't actually consume the changed option."""
+        if self._active_spec is None:
+            return
+        is_3d = (self._stack.currentIndex() == 1)
+        if is_3d:
+            # Trail mode is a canvas flag, not a per-handle property.
+            # Push it now so the about-to-be-added handles see the right
+            # state inside add_animated_trajectory.
+            self._vtk.set_trail_enabled(self._scene_options.trail_enabled)
+            # Preserve the playhead position across the re-plot. The
+            # rebuild fires set_time_range which would otherwise snap
+            # the animation back to t_min, wiping out wherever the
+            # user was scrubbed to when they opened the dialog.
+            saved_t = self._anim_bar.current_time()
         self._plot_active()
-        rng = self._vtk.animation_time_range()
-        if rng is not None and rng[0] <= saved_t <= rng[1]:
-            self._anim_bar.set_time(saved_t)
+        if is_3d:
+            rng = self._vtk.animation_time_range()
+            if rng is not None and rng[0] <= saved_t <= rng[1]:
+                self._anim_bar.set_time(saved_t)
 
     def _resolve_central_body_from_snapshot(self) -> CentralBodySpec:
         """Read `force_model.central_body` from the loaded run's
@@ -3595,14 +3736,26 @@ class AnalysisPanel(QWidget):
         the Scene-options dialog so the per-body checkboxes match,
         and update the body-fixed triad label so it reads "PA + Moon
         libration" / "ITRF + Earth rotation" / ... per the resolved
-        central body. No-op when the dialog hasn't been opened yet
-        or the snapshot is missing."""
+        central body. Also reconfigures the dialog for the run's
+        dynamics model: CR3BP runs collapse HF-only groups and reveal
+        the primary-selector for the osculating orbital elements.
+        No-op when the dialog hasn't been opened yet or the snapshot
+        is missing."""
         if self._scene_dialog is None:
             return
         # Body-fixed triad label always reflects the resolved central
         # body, even before bodies are loaded.
         self._scene_dialog.set_body_frame_label(
             self._central_body.name, self._central_body.bf_frame_name)
+        # Dynamics-model switch: triggers HF/CR3BP group visibility
+        # inside the dialog. Done up here so CR3BP runs end up showing
+        # the primary radios even when no snapshot is available beyond
+        # the [cr3bp] section.
+        primary_names: tuple[str, str] | None = (
+            (self._cr3bp_primaries[0].name, self._cr3bp_primaries[1].name)
+            if self._cr3bp_primaries else None)
+        self._scene_dialog.set_dynamics_model(
+            self._dynamics_model, primary_names)
         if self._path is None:
             return
         info = _resolve_run_context(self._path)

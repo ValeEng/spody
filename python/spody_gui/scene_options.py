@@ -57,14 +57,23 @@ class SceneOptions:
     `scene_frame` is a placeholder for the future ICRF/PA toggle;
     today only "icrf" is actually implemented. The dialog disables
     the radio so users can't accidentally select an unimplemented
-    mode."""
-    show_trajectory:    bool = True
-    show_third_bodies:  bool = True
-    show_icrf_triad:    bool = True
-    show_pa_triad:      bool = True   # also drives Moon body libration
-    show_bodies:        set[str] = field(default_factory=set)
-    trail_enabled:      bool = False   # polyline clipped behind the marker
-    scene_frame:        str = "icrf"   # "icrf" | "pa" (pa = TODO)
+    mode.
+
+    `cr3bp_elements_primary` (1 or 2) selects which of the two CR3BP
+    primaries the osculating orbital-elements plots reference. The
+    synodic-frame state is shifted by the primary's fixed position
+    and the rotating-frame velocity is corrected by `omega x r_rel`
+    to recover an inertial-frame velocity in the synodic basis, then
+    Kepler's standard set is computed with that primary's `mu`.
+    Ignored in HF mode."""
+    show_trajectory:        bool = True
+    show_third_bodies:      bool = True
+    show_icrf_triad:        bool = True
+    show_pa_triad:          bool = True   # also drives Moon body libration
+    show_bodies:            set[str] = field(default_factory=set)
+    trail_enabled:          bool = False  # polyline clipped behind the marker
+    scene_frame:            str = "icrf"  # "icrf" | "pa" (pa = TODO)
+    cr3bp_elements_primary: int = 1       # 1 (bigger) or 2 (smaller)
 
 
 class SceneOptionsDialog(QDialog):
@@ -105,8 +114,8 @@ class SceneOptionsDialog(QDialog):
         root = QVBoxLayout(self)
 
         # --- Scene contents -----------------------------------------
-        gb_contents = QGroupBox("Scene contents")
-        lay_contents = QVBoxLayout(gb_contents)
+        self._gb_contents = QGroupBox("Scene contents")
+        lay_contents = QVBoxLayout(self._gb_contents)
         self._cb_trajectory = self._make_checkbox(
             "Spacecraft trajectory + marker",
             options.show_trajectory,
@@ -122,11 +131,11 @@ class SceneOptionsDialog(QDialog):
         lay_contents.addWidget(self._cb_trajectory)
         lay_contents.addWidget(self._cb_third_bodies)
         lay_contents.addWidget(self._cb_trail)
-        root.addWidget(gb_contents)
+        root.addWidget(self._gb_contents)
 
         # --- Reference frames ---------------------------------------
-        gb_frames = QGroupBox("Reference frames")
-        lay_frames = QVBoxLayout(gb_frames)
+        self._gb_frames = QGroupBox("Reference frames")
+        lay_frames = QVBoxLayout(self._gb_frames)
         self._cb_icrf = self._make_checkbox(
             "ICRF triad (inertial, muted)",
             options.show_icrf_triad,
@@ -141,7 +150,7 @@ class SceneOptionsDialog(QDialog):
             lambda v: self._set("show_pa_triad", v))
         lay_frames.addWidget(self._cb_icrf)
         lay_frames.addWidget(self._cb_pa)
-        root.addWidget(gb_frames)
+        root.addWidget(self._gb_frames)
 
         # --- Third bodies (dynamic) ---------------------------------
         self._gb_bodies = QGroupBox("Third bodies (from TOML)")
@@ -153,8 +162,8 @@ class SceneOptionsDialog(QDialog):
         root.addWidget(self._gb_bodies)
 
         # --- Scene frame (placeholder for the future ICRF/PA switch) -
-        gb_frame_switch = QGroupBox("Scene frame")
-        lay_fs = QHBoxLayout(gb_frame_switch)
+        self._gb_frame_switch = QGroupBox("Scene frame")
+        lay_fs = QHBoxLayout(self._gb_frame_switch)
         self._rb_icrf = QRadioButton("ICRF (inertial)")
         self._rb_pa   = QRadioButton("PA / body-fixed -- coming soon")
         self._rb_icrf.setChecked(options.scene_frame == "icrf")
@@ -166,7 +175,30 @@ class SceneOptionsDialog(QDialog):
         lay_fs.addWidget(self._rb_icrf)
         lay_fs.addWidget(self._rb_pa)
         lay_fs.addStretch(1)
-        root.addWidget(gb_frame_switch)
+        root.addWidget(self._gb_frame_switch)
+
+        # --- CR3BP options (hidden in HF mode) ----------------------
+        # Selector for which of the two synodic primaries the osculating
+        # orbital-elements plots reference. The labels are filled in by
+        # `set_dynamics_model` so the radios read the actual body names
+        # ("primary 1: Earth" / "primary 2: Moon") instead of generic
+        # placeholders.
+        self._gb_cr3bp = QGroupBox("CR3BP options")
+        lay_cr3bp = QVBoxLayout(self._gb_cr3bp)
+        lay_cr3bp.addWidget(QLabel(
+            "Orbital elements relative to:"))
+        self._rb_primary_1 = QRadioButton("primary 1")
+        self._rb_primary_2 = QRadioButton("primary 2")
+        self._rb_primary_1.setChecked(options.cr3bp_elements_primary == 1)
+        self._rb_primary_2.setChecked(options.cr3bp_elements_primary == 2)
+        primary_group = QButtonGroup(self)
+        primary_group.addButton(self._rb_primary_1, 1)
+        primary_group.addButton(self._rb_primary_2, 2)
+        primary_group.idToggled.connect(self._on_primary_changed)
+        lay_cr3bp.addWidget(self._rb_primary_1)
+        lay_cr3bp.addWidget(self._rb_primary_2)
+        root.addWidget(self._gb_cr3bp)
+        self._gb_cr3bp.setVisible(False)   # HF default; flipped on load
 
         # --- Close button (non-modal, no Apply needed; toggles are live) ---
         bottom = QHBoxLayout()
@@ -189,6 +221,33 @@ class SceneOptionsDialog(QDialog):
         self._cb_pa.setText(
             f"{frame_tag} triad + {body_name} rotation "
             f"(body-fixed, animated)")
+
+    def set_dynamics_model(self, model: str,
+                            primary_names: tuple[str, str] | None = None
+                            ) -> None:
+        """Show / hide groups based on the loaded run's dynamics model
+        and label the CR3BP primary radios with the actual body names.
+
+        HF: scene-contents, reference-frames, third-bodies and scene-
+        frame groups are all visible; the CR3BP group is hidden.
+
+        CR3BP: only scene-contents (trajectory + trail) and the CR3BP
+        group are visible. Third-bodies / ICRF / body-fixed triads are
+        irrelevant in the synodic rotating frame and the scene-frame
+        ICRF/PA switch is HF-only too -- all hidden so the dialog
+        shows only knobs that actually do something."""
+        is_cr3bp = (model == "cr3bp") and primary_names is not None
+        self._gb_frames.setVisible(not is_cr3bp)
+        self._gb_bodies.setVisible(not is_cr3bp)
+        self._gb_frame_switch.setVisible(not is_cr3bp)
+        self._gb_cr3bp.setVisible(is_cr3bp)
+        # The third-bodies checkbox in 'Scene contents' is HF-only too
+        # (CR3BP scenes have no third bodies -- the two primaries are
+        # part of the dynamics, not decoration).
+        self._cb_third_bodies.setVisible(not is_cr3bp)
+        if is_cr3bp:
+            self._rb_primary_1.setText(f"primary 1: {primary_names[0]}")
+            self._rb_primary_2.setText(f"primary 2: {primary_names[1]}")
 
     def set_available_bodies(self, body_names: list[str]) -> None:
         """Repopulate the per-body checkbox section. Called by the
@@ -247,4 +306,12 @@ class SceneOptionsDialog(QDialog):
             self._options.show_bodies.add(name)
         else:
             self._options.show_bodies.discard(name)
+        self.optionsChanged.emit()
+
+    def _on_primary_changed(self, primary_id: int, checked: bool) -> None:
+        """QButtonGroup.idToggled fires twice per click (old off, new on);
+        we only act on the 'on' edge so optionsChanged is emitted once."""
+        if not checked:
+            return
+        self._options.cr3bp_elements_primary = primary_id
         self.optionsChanged.emit()
