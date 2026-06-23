@@ -100,10 +100,15 @@ from .vtk_canvas import MOON_RADIUS_KM, VtkCanvas
 # lazily inside the plot fn so non-events workflows don't pay the
 # numpy-heavy module import cost.
 
-# Recurse this many levels under the working dir when scanning for
-# *.bin files. 3 covers the common `output/<UTC-ISO8601>/<case>.bin`
-# pattern without crawling huge data trees by accident.
-SCAN_MAX_DEPTH = 3
+# Folder names skipped during the working-dir .bin scan. Same
+# build / VCS / venv pruning the TOML combo uses in MainWindow,
+# so picking a project root in either tab gives consistent visibility.
+# `output/` is INTENTIONALLY NOT in the skip set -- per-run bins
+# live exactly there.
+_BIN_SCAN_SKIP_DIRS: frozenset[str] = frozenset({
+    "__pycache__", ".git", ".venv", "venv",
+    "build", "dist", "node_modules",
+})
 
 # Matches the per-run subfolder names spody.exe creates at launch
 # (compact ISO 8601 UTC, see spody_io_make_run_subdir in app_io.c).
@@ -2514,26 +2519,35 @@ def _detect_kind(path: Path) -> str | None:
     return None
 
 
-def _scan_bin_files(root: Path, max_depth: int) -> list[Path]:
-    """Return all *.bin files under `root`, sorted by relative path,
-    descending no deeper than `max_depth` directories. Silently skips
-    anything we can't traverse."""
+def _scan_bin_files(root: Path) -> list[Path]:
+    """Return all *.bin files under `root`, scanning fully recursively
+    so deep run-folder layouts (`output/<ts>/...`, nested case dirs)
+    surface in the tree no matter how deep they sit. Subtrees listed
+    in `_BIN_SCAN_SKIP_DIRS` (build / VCS / venv noise) are pruned
+    upfront so a huge venv pointed at by accident doesn't lock the
+    UI. Silently skips anything we can't traverse."""
     out: list[Path] = []
     if not root.is_dir():
         return out
-    # rglob would walk arbitrarily deep; we limit depth manually so a
-    # huge tree pointed at by accident doesn't lock up the UI.
-    def walk(d: Path, depth: int) -> None:
+    stack: list[Path] = [root]
+    while stack:
+        cur = stack.pop()
         try:
-            entries = list(d.iterdir())
+            entries = list(cur.iterdir())
         except OSError:
-            return
+            continue
         for p in entries:
-            if p.is_file() and p.suffix.lower() == ".bin":
+            try:
+                is_dir  = p.is_dir()
+                is_file = p.is_file()
+            except OSError:
+                continue
+            if is_dir:
+                if p.name in _BIN_SCAN_SKIP_DIRS:
+                    continue
+                stack.append(p)
+            elif is_file and p.suffix.lower() == ".bin":
                 out.append(p)
-            elif p.is_dir() and depth < max_depth:
-                walk(p, depth + 1)
-    walk(root, 0)
     out.sort(key=lambda p: str(p.relative_to(root)).lower())
     return out
 
@@ -2966,7 +2980,7 @@ class AnalysisPanel(QWidget):
         if self._working_dir is None:
             self._tree.addTopLevelItem(self._make_header("In folder (none)"))
         else:
-            files = _scan_bin_files(self._working_dir, SCAN_MAX_DEPTH)
+            files = _scan_bin_files(self._working_dir)
             grouped = self._group_files_by_run(files, self._working_dir)
             self._tree.addTopLevelItem(self._make_header(
                 f"In folder ({self._working_dir}) -- "
