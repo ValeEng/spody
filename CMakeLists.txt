@@ -60,6 +60,7 @@ add_executable(spody
     src/app_diagnostics.c
     src/app_io.c
     src/central_body.c
+    src/dynamics_model.c
     src/toml_input.c
     src/sim_setup.c
     src/sim_run.c

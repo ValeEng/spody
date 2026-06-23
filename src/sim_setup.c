@@ -36,6 +36,21 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
     spody_error_clear(err);
     memset(shared, 0, sizeof *shared);
 
+    /* Dispatch on the dynamics model. Today only high_fidelity is wired
+     * (ephemeris + harmonics + EOP/IAU 2006). When a new model is added,
+     * its shared-resource build path branches off here -- CR3BP, for
+     * instance, would skip every file-mapped block below. */
+    {
+        const SpodyDynamicsModelSpec *spec =
+                spody_dynamics_model_get(cfg->dynamics_model);
+        if (!spec || !spec->implemented) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "dynamics_model '%s' is not yet implemented in sim_setup",
+                    spec ? spec->name : "?");
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+
     /* Ephemeris (shared, memory-mapped). */
     if (spody_setup_MappedEphemerisData(&shared->med,
                                         cfg->ephemeris_file) != 0) {
@@ -106,6 +121,21 @@ int spody_build_worker(const InputConfig *cfg,
     spody_error_clear(err);
     memset(w, 0, sizeof *w);
     w->shared = shared;
+
+    /* Dispatch on the dynamics model. The body of this function is the
+     * high_fidelity builder (per-thread eph/hg, ctx, integrator with
+     * spody_force_rhs_default). Other models will branch here and bind
+     * their own RHS + per-thread state. */
+    {
+        const SpodyDynamicsModelSpec *spec =
+                spody_dynamics_model_get(cfg->dynamics_model);
+        if (!spec || !spec->implemented) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "dynamics_model '%s' is not yet implemented in sim_setup",
+                    spec ? spec->name : "?");
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
 
     /* Per-thread handles bound to the shared, read-only data. */
     spody_setup_MappedEphemeris(&w->eph, &shared->med);

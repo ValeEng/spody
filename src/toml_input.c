@@ -331,6 +331,29 @@ static int parse_simulation(toml_table_t *root, InputConfig *cfg,
     int rc;
     if ((rc = req_string(t, "simulation", "name",
                          cfg->sim_name, sizeof cfg->sim_name, err))) return rc;
+
+    /* dynamics_model: optional, defaults to "high_fidelity" so every TOML
+     * written before this slice parses unchanged. When present, the value
+     * must match a registered model name (see dynamics_model.c). */
+    cfg->dynamics_model = SPODY_DYN_HIGH_FIDELITY;
+    {
+        char dm_name[32] = {0};
+        int  present     = 0;
+        if ((rc = opt_string(t, "dynamics_model", dm_name, sizeof dm_name,
+                             &present))) return rc;
+        if (present) {
+            if (spody_dynamics_model_from_name(dm_name,
+                                               &cfg->dynamics_model) != 0) {
+                char known[128];
+                spody_dynamics_model_known_names(known, sizeof known);
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "simulation.dynamics_model = '%s' is not recognised "
+                        "(known: %s)", dm_name, known);
+                return SPODY_ERR_BAD_VALUE;
+            }
+        }
+    }
+
     if ((rc = req_double(t, "simulation", "et_start_s",
                          &cfg->et_start_s, err))) return rc;
     if ((rc = req_double(t, "simulation", "duration_s",
@@ -1152,6 +1175,29 @@ int spody_load_input(const char *toml_path, InputConfig *cfg, SpodyError *err) {
     int rc;
     if ((rc = parse_simulation   (root,            cfg, err))) goto out;
 
+    /* Discriminate on the dynamics model BEFORE parsing model-specific
+     * sections. Only high_fidelity has its full parse path wired today;
+     * other registered tags (e.g. cr3bp) short-circuit here with a
+     * "not implemented" error. When a new model is wired in, its
+     * dedicated parse branch goes here -- the sections relevant to that
+     * model (CR3BP would skip [spacecraft]/[force_model]/[ephemeris]
+     * and parse a [cr3bp] block instead) live behind this dispatch. */
+    {
+        const SpodyDynamicsModelSpec *spec =
+                spody_dynamics_model_get(cfg->dynamics_model);
+        if (!spec || !spec->implemented) {
+            char known[128];
+            spody_dynamics_model_known_names(known, sizeof known);
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "simulation.dynamics_model = '%s' is registered but not "
+                    "yet implemented in this release (known: %s)",
+                    spec ? spec->name : "?", known);
+            rc = SPODY_ERR_BAD_VALUE; goto out;
+        }
+    }
+
+    /* From here down: high_fidelity parse path (the only one wired today). */
+
     /* [spacecraft] XOR [debris]: exactly one selects the object
      * parameterisation. Spacecraft = named vehicle (mass + area), debris =
      * A/m-driven fragment (mass irrelevant). */
@@ -1222,6 +1268,20 @@ void spody_apply_batch_case(const InputConfig *base, const BatchConfig *batch,
 
 int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
     spody_error_clear(err);
+
+    /* Dispatch on the dynamics model. The body of this function is the
+     * high_fidelity validator; other models will branch off here once
+     * they have a real implementation. */
+    {
+        const SpodyDynamicsModelSpec *spec =
+                spody_dynamics_model_get(cfg->dynamics_model);
+        if (!spec || !spec->implemented) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "simulation.dynamics_model = '%s' is not yet implemented",
+                    spec ? spec->name : "?");
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
 
     /* Time / duration */
     if (cfg->duration_s <= 0.0) {

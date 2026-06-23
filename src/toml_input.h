@@ -31,6 +31,7 @@
 
 #include "app_diagnostics.h"   /* SpodyError, SpodyErrorCode */
 #include "central_body.h"      /* SpodyCentralBody + registry helpers */
+#include "dynamics_model.h"    /* SpodyDynamicsModel + registry helpers */
 
 #ifdef __cplusplus
 extern "C" {
@@ -134,9 +135,12 @@ typedef struct {
 
 typedef struct {
     /* [simulation] */
-    char   sim_name[SPODY_MAX_SIM_NAME];
-    double et_start_s;
-    double duration_s;
+    char               sim_name[SPODY_MAX_SIM_NAME];
+    SpodyDynamicsModel dynamics_model;   /* discriminator, defaults to
+                                          * SPODY_DYN_HIGH_FIDELITY if the
+                                          * TOML key is absent */
+    double             et_start_s;
+    double             duration_s;
 
     /* [spacecraft] OR [debris] -- exactly one is present (XOR at parse).
      * In debris mode the parser sets mass_kg=1.0 so srp_area_m2 numerically
