@@ -261,6 +261,35 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
     *out_events = NULL;
     *out_n      = 0;
 
+    /* CR3BP branch: two IMPACT-at-point events, one per primary, with
+     * the primary's standard radius as the trigger threshold. No third
+     * bodies, no eclipse (validator rejects it). */
+    if (cfg->dynamics_model == SPODY_DYN_CR3BP) {
+        int p1_naif = 0, p2_naif = 0;
+        double r1_km = 0.0, r2_km = 0.0;
+        if (spody_lookup_third_body(cfg->cr3bp_primary_1, &p1_naif, NULL, &r1_km) != 0 ||
+            spody_lookup_third_body(cfg->cr3bp_primary_2, &p2_naif, NULL, &r2_km) != 0) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "cr3bp primary name not resolvable to a body (internal)");
+            return SPODY_ERR_INTERNAL;
+        }
+        SpodyEvent *ev = (SpodyEvent *)calloc(2, sizeof *ev);
+        if (!ev) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "out of memory allocating cr3bp event array");
+            return SPODY_ERR_INTERNAL;
+        }
+        double ref1[3] = { w->ctx.cr3bp_x1, 0.0, 0.0 };
+        double ref2[3] = { w->ctx.cr3bp_x2, 0.0, 0.0 };
+        ev[0] = spody_event_impact_at_point(p1_naif, ref1, r1_km,
+                                             SPODY_EVENT_ACTION_LOG_AND_STOP);
+        ev[1] = spody_event_impact_at_point(p2_naif, ref2, r2_km,
+                                             SPODY_EVENT_ACTION_LOG_AND_STOP);
+        *out_events = ev;
+        *out_n      = 2;
+        return SPODY_OK;
+    }
+
     int cap = 1 + w->n_third + (cfg->eclipse_event_enabled ? 1 : 0);
     SpodyEvent *ev = (SpodyEvent *)calloc((size_t)cap, sizeof *ev);
     if (!ev) {

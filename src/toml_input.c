@@ -290,10 +290,44 @@ static int parse_frame(const char *name, SpodyFrame *out, SpodyError *err) {
     if (strcmp(name, "central_inertial") == 0) {
         *out = SPODY_FRAME_CENTRAL_INERTIAL; return SPODY_OK;
     }
+    if (strcmp(name, "synodic_rotating") == 0) {
+        *out = SPODY_FRAME_SYNODIC_ROTATING; return SPODY_OK;
+    }
     spody_error_set(err, SPODY_ERR_BAD_VALUE,
-            "initial_state.frame = '%s' is not supported in v0 "
-            "(supported: 'central_inertial')", name);
+            "initial_state.frame = '%s' is not supported "
+            "(supported: 'central_inertial', 'synodic_rotating')", name);
     return SPODY_ERR_BAD_VALUE;
+}
+
+/* --------------------------------------------------------------------------
+ * CR3BP primary-pair lookup
+ *
+ * Curated table mapping a (primary_1, primary_2) pair to the canonical
+ * primary-primary separation L (km). The CR3BP assumes a fixed circular
+ * orbit between the two bodies; L is the radius of that circle. Adding
+ * a new pair is one line. Order in the TOML is significant: primary_1
+ * is the bigger body.
+ * -------------------------------------------------------------------------- */
+typedef struct {
+    const char *primary_1;
+    const char *primary_2;
+    double      L_km;
+} CR3BPPair;
+
+static const CR3BPPair CR3BP_PAIRS[] = {
+    { "Earth", "Moon", EARTH_MOON_DISTANCE_KM },
+};
+static const int N_CR3BP_PAIRS = (int)(sizeof CR3BP_PAIRS / sizeof CR3BP_PAIRS[0]);
+
+static int lookup_cr3bp_pair(const char *p1, const char *p2, double *L_out) {
+    for (int i = 0; i < N_CR3BP_PAIRS; ++i) {
+        if (strcmp(CR3BP_PAIRS[i].primary_1, p1) == 0 &&
+            strcmp(CR3BP_PAIRS[i].primary_2, p2) == 0) {
+            if (L_out) *L_out = CR3BP_PAIRS[i].L_km;
+            return 0;
+        }
+    }
+    return -1;
 }
 
 static int parse_integrator_type(const char *name, SpodyIntegratorType *out,
@@ -354,8 +388,20 @@ static int parse_simulation(toml_table_t *root, InputConfig *cfg,
         }
     }
 
-    if ((rc = req_double(t, "simulation", "et_start_s",
-                         &cfg->et_start_s, err))) return rc;
+    /* et_start_s: required for high_fidelity (drives ephemeris/EOP
+     * lookups), ignorable for autonomous models like cr3bp. Read as
+     * optional here, with a presence flag so the model-specific
+     * validator can reject "missing for HF" without being fooled by
+     * a legitimate value of 0.0 (= J2000 epoch). */
+    cfg->et_start_s     = 0.0;
+    cfg->has_et_start_s = 0;
+    {
+        toml_datum_t d  = toml_double_in(t, "et_start_s");
+        toml_datum_t di = toml_int_in   (t, "et_start_s");
+        if (d.ok)       { cfg->et_start_s = d.u.d;           cfg->has_et_start_s = 1; }
+        else if (di.ok) { cfg->et_start_s = (double)di.u.i;  cfg->has_et_start_s = 1; }
+    }
+
     if ((rc = req_double(t, "simulation", "duration_s",
                          &cfg->duration_s, err))) return rc;
     return SPODY_OK;
@@ -504,6 +550,58 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
             resolve_path(toml_dir, rel,
                          cfg->iau2006_dir, sizeof cfg->iau2006_dir);
         }
+    }
+    return SPODY_OK;
+}
+
+/* [cr3bp] -- two primaries by name. mu1/mu2 are resolved from the
+ * shared body table (BODY_TABLE), L is looked up in the curated
+ * CR3BP_PAIRS table. The two primaries are required and must be
+ * distinct; only registered pairs (today: Earth-Moon) are accepted. */
+static int parse_cr3bp(toml_table_t *root, InputConfig *cfg, SpodyError *err) {
+    toml_table_t *t = toml_table_in(root, "cr3bp");
+    if (!t) {
+        spody_error_set(err, SPODY_ERR_MISSING_KEY, "missing section [cr3bp]");
+        return SPODY_ERR_MISSING_KEY;
+    }
+    int rc;
+    if ((rc = req_string(t, "cr3bp", "primary_1",
+                         cfg->cr3bp_primary_1, sizeof cfg->cr3bp_primary_1, err))) return rc;
+    if ((rc = req_string(t, "cr3bp", "primary_2",
+                         cfg->cr3bp_primary_2, sizeof cfg->cr3bp_primary_2, err))) return rc;
+
+    if (strcmp(cfg->cr3bp_primary_1, cfg->cr3bp_primary_2) == 0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "cr3bp.primary_1 and primary_2 must be different bodies (both = '%s')",
+                cfg->cr3bp_primary_1);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    /* Resolve mu from the shared body table. */
+    if (spody_lookup_third_body(cfg->cr3bp_primary_1, NULL,
+                                &cfg->cr3bp_mu1, NULL) != 0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "cr3bp.primary_1 = '%s' is not a known body",
+                cfg->cr3bp_primary_1);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (spody_lookup_third_body(cfg->cr3bp_primary_2, NULL,
+                                &cfg->cr3bp_mu2, NULL) != 0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "cr3bp.primary_2 = '%s' is not a known body",
+                cfg->cr3bp_primary_2);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    /* Look up L in the curated pair table. */
+    if (lookup_cr3bp_pair(cfg->cr3bp_primary_1, cfg->cr3bp_primary_2,
+                          &cfg->cr3bp_L_km) != 0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "cr3bp primary pair ('%s', '%s') is not in the curated table "
+                "(known today: 'Earth' + 'Moon'). Add a row to CR3BP_PAIRS "
+                "in src/toml_input.c to register a new pair.",
+                cfg->cr3bp_primary_1, cfg->cr3bp_primary_2);
+        return SPODY_ERR_BAD_VALUE;
     }
     return SPODY_OK;
 }
@@ -1175,13 +1273,9 @@ int spody_load_input(const char *toml_path, InputConfig *cfg, SpodyError *err) {
     int rc;
     if ((rc = parse_simulation   (root,            cfg, err))) goto out;
 
-    /* Discriminate on the dynamics model BEFORE parsing model-specific
-     * sections. Only high_fidelity has its full parse path wired today;
-     * other registered tags (e.g. cr3bp) short-circuit here with a
-     * "not implemented" error. When a new model is wired in, its
-     * dedicated parse branch goes here -- the sections relevant to that
-     * model (CR3BP would skip [spacecraft]/[force_model]/[ephemeris]
-     * and parse a [cr3bp] block instead) live behind this dispatch. */
+    /* Reject any registered-but-not-implemented dynamics model BEFORE we
+     * touch any model-specific section. New models register here once
+     * their parse path is wired below. */
     {
         const SpodyDynamicsModelSpec *spec =
                 spody_dynamics_model_get(cfg->dynamics_model);
@@ -1196,27 +1290,36 @@ int spody_load_input(const char *toml_path, InputConfig *cfg, SpodyError *err) {
         }
     }
 
-    /* From here down: high_fidelity parse path (the only one wired today). */
-
-    /* [spacecraft] XOR [debris]: exactly one selects the object
-     * parameterisation. Spacecraft = named vehicle (mass + area), debris =
-     * A/m-driven fragment (mass irrelevant). */
-    toml_table_t *sc_t = toml_table_in(root, "spacecraft");
-    toml_table_t *db_t = toml_table_in(root, "debris");
-    if (!sc_t == !db_t) {
-        spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "TOML must contain exactly one of [spacecraft] or [debris] "
-                "(got %s)", sc_t ? "both" : "neither");
-        rc = SPODY_ERR_BAD_VALUE; goto out;
-    }
-    if (db_t) {
-        if ((rc = parse_debris       (root,            cfg, err))) goto out;
-    } else {
-        if ((rc = parse_spacecraft   (root,            cfg, err))) goto out;
-    }
+    /* [initial_state] is shared across all models; the frame string is
+     * parsed here but its compatibility with the model is enforced by
+     * spody_validate_input. */
     if ((rc = parse_initial_state(root,            cfg, err))) goto out;
-    if ((rc = parse_force_model  (root, toml_dir,  cfg, err))) goto out;
-    if ((rc = parse_ephemeris    (root, toml_dir,  cfg, err))) goto out;
+
+    /* Model-specific sections. */
+    if (cfg->dynamics_model == SPODY_DYN_HIGH_FIDELITY) {
+        /* [spacecraft] XOR [debris]: exactly one selects the object
+         * parameterisation. Spacecraft = named vehicle (mass + area),
+         * debris = A/m-driven fragment (mass irrelevant). */
+        toml_table_t *sc_t = toml_table_in(root, "spacecraft");
+        toml_table_t *db_t = toml_table_in(root, "debris");
+        if (!sc_t == !db_t) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "TOML must contain exactly one of [spacecraft] or [debris] "
+                    "(got %s)", sc_t ? "both" : "neither");
+            rc = SPODY_ERR_BAD_VALUE; goto out;
+        }
+        if (db_t) {
+            if ((rc = parse_debris       (root,            cfg, err))) goto out;
+        } else {
+            if ((rc = parse_spacecraft   (root,            cfg, err))) goto out;
+        }
+        if ((rc = parse_force_model  (root, toml_dir,  cfg, err))) goto out;
+        if ((rc = parse_ephemeris    (root, toml_dir,  cfg, err))) goto out;
+    } else if (cfg->dynamics_model == SPODY_DYN_CR3BP) {
+        if ((rc = parse_cr3bp        (root,            cfg, err))) goto out;
+    }
+
+    /* Shared trailing sections. */
     if ((rc = parse_integrator   (root,            cfg, err))) goto out;
     if ((rc = parse_output       (root, toml_dir,  cfg, err))) goto out;
     if ((rc = parse_events       (root,            cfg, err))) goto out;
@@ -1269,9 +1372,7 @@ void spody_apply_batch_case(const InputConfig *base, const BatchConfig *batch,
 int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
     spody_error_clear(err);
 
-    /* Dispatch on the dynamics model. The body of this function is the
-     * high_fidelity validator; other models will branch off here once
-     * they have a real implementation. */
+    /* Dispatch on the dynamics model. */
     {
         const SpodyDynamicsModelSpec *spec =
                 spody_dynamics_model_get(cfg->dynamics_model);
@@ -1281,6 +1382,97 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                     spec ? spec->name : "?");
             return SPODY_ERR_BAD_VALUE;
         }
+    }
+
+    /* CR3BP branch: minimal validation. The CR3BP system has no
+     * spacecraft (no mass / SRP / drag), no third bodies, no
+     * harmonics, no ephemeris -- the entire HF validator below is
+     * skipped. Per-cell batch validation re-uses FIELD_TABLE, which
+     * only contains shared knobs (integrator, output, IC) plus HF
+     * fields that are unreachable here. */
+    if (cfg->dynamics_model == SPODY_DYN_CR3BP) {
+        if (cfg->duration_s <= 0.0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "simulation.duration_s must be positive (got %.6g)",
+                    cfg->duration_s);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->initial_frame != SPODY_FRAME_SYNODIC_ROTATING) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "initial_state.frame must be 'synodic_rotating' "
+                    "when dynamics_model = 'cr3bp'");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->cr3bp_mu1 <= 0.0 || cfg->cr3bp_mu2 <= 0.0 ||
+            cfg->cr3bp_L_km <= 0.0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "cr3bp primaries unresolved (mu1=%.6g, mu2=%.6g, L=%.6g)",
+                    cfg->cr3bp_mu1, cfg->cr3bp_mu2, cfg->cr3bp_L_km);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        double rmag = sqrt(cfg->position_km[0]*cfg->position_km[0] +
+                           cfg->position_km[1]*cfg->position_km[1] +
+                           cfg->position_km[2]*cfg->position_km[2]);
+        if (rmag < 1.0e-3) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "initial_state.position_km is essentially at the "
+                    "barycenter (|r| = %.3e km)", rmag);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        /* Integrator + output sanity (identical rules HF-side). */
+        if (cfg->rel_tol <= 0.0 || cfg->h_min_s <= 0.0 ||
+            cfg->h_max_s <= cfg->h_min_s ||
+            cfg->h_init_s < cfg->h_min_s || cfg->h_init_s > cfg->h_max_s) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "integrator settings out of bounds "
+                    "(rel_tol=%.3g, h_min=%.3g, h_init=%.3g, h_max=%.3g)",
+                    cfg->rel_tol, cfg->h_min_s, cfg->h_init_s, cfg->h_max_s);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->output_mode == SPODY_OUT_FIXED &&
+            cfg->output_interval_s <= 0.0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "output.interval_s must be positive when mode = 'fixed' "
+                    "(got %.6g)", cfg->output_interval_s);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        /* Per-force breakdown is HF-only: it reads ctx->hg / ctx->eph
+         * which CR3BP never populates. Impacts against the primaries
+         * use the explicit-ref-point path and are wired by build_events
+         * in sim_run; eclipse needs a Sun position and is not modelled. */
+        if (cfg->accelerations_file[0] != '\0') {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "output.accelerations_file is not supported when "
+                    "dynamics_model = 'cr3bp' (no per-force breakdown applies)");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->eclipse_event_enabled) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "[events].eclipse_threshold is not supported when "
+                    "dynamics_model = 'cr3bp' (no Sun in this model)");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        return SPODY_OK;
+    }
+
+    /* From here down: high_fidelity validator. */
+
+    /* Initial state frame must be central_inertial for HF. */
+    if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "initial_state.frame must be 'central_inertial' "
+                "when dynamics_model = 'high_fidelity'");
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    /* et_start_s anchors every time-dependent ephemeris / EOP / IAU
+     * query: a HF run without it would silently propagate against
+     * the J2000 epoch, almost never what the user meant. */
+    if (!cfg->has_et_start_s) {
+        spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                "simulation.et_start_s is required when dynamics_model = "
+                "'high_fidelity' (anchors ephemeris / EOP lookups)");
+        return SPODY_ERR_MISSING_KEY;
     }
 
     /* Time / duration */

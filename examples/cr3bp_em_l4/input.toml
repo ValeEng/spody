@@ -1,0 +1,44 @@
+# SpOdy input file -- Earth-Moon CR3BP equilibrium at L4.
+#
+# Smoke test for the Circular Restricted 3-Body Problem dynamics
+# (synodic rotating frame, dimensional units). The satellite is
+# placed at the L4 triangular libration point with zero synodic
+# velocity. With the Earth-Moon mass ratio mu = M_Moon/(M_Earth+M_Moon)
+# ~ 0.01215 well below the Routh stability limit (mu < 0.0385),
+# L4 is linearly stable: a satellite at rest in the synodic frame
+# stays at L4 indefinitely (any small perturbation gives bounded
+# epicyclic motion around the point).
+#
+# Validation: |r(t) - r_L4| should stay near zero over the 30-day
+# propagation (up to numerical noise from rel_tol and IC quantisation).
+# All paths are relative to this TOML file.
+
+[simulation]
+name           = "cr3bp_em_l4"
+dynamics_model = "cr3bp"
+duration_s     = 2.592e+06            # 30 days
+
+[cr3bp]
+primary_1 = "Earth"
+primary_2 = "Moon"
+
+[initial_state]
+# L4 in the synodic frame: ((1/2 - mu) * L, (sqrt(3)/2) * L, 0)
+# with mu = 0.012150585609 and L = 384400 km (EARTH_MOON_DISTANCE_KM).
+frame        = "synodic_rotating"
+position_km  = [187529.35, 332900.16, 0.0]
+velocity_kms = [0.0, 0.0, 0.0]
+
+[integrator]
+type     = "rkdp45"
+rel_tol  = 1.0e-12
+h_init_s = 60.0
+h_min_s  = 1.0e-5
+h_max_s  = 3600.0
+
+[output]
+mode       = "fixed"
+interval_s = 3600.0                   # hourly samples
+output_dir = "output"
+csv_file   = "output/cr3bp_em_l4_state.csv"
+bin_file   = "output/cr3bp_em_l4_state.bin"

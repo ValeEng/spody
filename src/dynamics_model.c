@@ -27,7 +27,7 @@ static const SpodyDynamicsModelSpec _registry[] = {
     {
         .model       = SPODY_DYN_CR3BP,
         .name        = "cr3bp",
-        .implemented = 0,
+        .implemented = 1,
     },
 };
 static const size_t _registry_n = sizeof _registry / sizeof _registry[0];

@@ -50,7 +50,12 @@ typedef enum {
 } SpodyIntegratorType;
 
 typedef enum {
-    SPODY_FRAME_CENTRAL_INERTIAL = 0
+    SPODY_FRAME_CENTRAL_INERTIAL = 0,   /* HF: ICRF-aligned, central body
+                                         * at origin */
+    SPODY_FRAME_SYNODIC_ROTATING = 1    /* CR3BP: barycenter-centred,
+                                         * rotating with the two
+                                         * primaries; +x toward the
+                                         * smaller primary */
 } SpodyFrame;
 
 #define SPODY_MAX_THIRD_BODIES   8
@@ -140,6 +145,9 @@ typedef struct {
                                           * SPODY_DYN_HIGH_FIDELITY if the
                                           * TOML key is absent */
     double             et_start_s;
+    int                has_et_start_s;   /* 1 if the TOML provided
+                                          * simulation.et_start_s explicitly;
+                                          * required for HF, ignored by CR3BP */
     double             duration_s;
 
     /* [spacecraft] OR [debris] -- exactly one is present (XOR at parse).
@@ -174,6 +182,22 @@ typedef struct {
 
     /* [ephemeris] */
     char ephemeris_file[SPODY_MAX_PATH];               /* resolved path */
+
+    /* [cr3bp] -- populated only when dynamics_model = "cr3bp".
+     * Empty (zero-init) for high_fidelity runs.
+     *   primary_1, primary_2 : verbatim strings from TOML, used in
+     *                          error messages and for the (primary_1,
+     *                          primary_2) -> L lookup in the curated
+     *                          pair table.
+     *   mu1, mu2             : resolved from the body table
+     *                          (km^3/s^2); convention mu1 >= mu2.
+     *   L_km                 : primary-primary separation from the
+     *                          curated pair table (km). */
+    char   cr3bp_primary_1[SPODY_MAX_BODY_NAME];
+    char   cr3bp_primary_2[SPODY_MAX_BODY_NAME];
+    double cr3bp_mu1;
+    double cr3bp_mu2;
+    double cr3bp_L_km;
 
     /* [integrator] */
     SpodyIntegratorType integrator_type;

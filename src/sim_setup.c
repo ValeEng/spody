@@ -36,10 +36,7 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
     spody_error_clear(err);
     memset(shared, 0, sizeof *shared);
 
-    /* Dispatch on the dynamics model. Today only high_fidelity is wired
-     * (ephemeris + harmonics + EOP/IAU 2006). When a new model is added,
-     * its shared-resource build path branches off here -- CR3BP, for
-     * instance, would skip every file-mapped block below. */
+    /* Reject unimplemented dynamics models defensively. */
     {
         const SpodyDynamicsModelSpec *spec =
                 spody_dynamics_model_get(cfg->dynamics_model);
@@ -50,6 +47,15 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
             return SPODY_ERR_BAD_VALUE;
         }
     }
+
+    /* CR3BP has no file-mapped shared resources -- no ephemeris, no
+     * harmonics, no EOP/IAU. Nothing to do; init flags stay 0 so
+     * spody_free_shared is a no-op. */
+    if (cfg->dynamics_model == SPODY_DYN_CR3BP) {
+        return SPODY_OK;
+    }
+
+    /* From here down: high_fidelity shared build. */
 
     /* Ephemeris (shared, memory-mapped). */
     if (spody_setup_MappedEphemerisData(&shared->med,
@@ -122,10 +128,7 @@ int spody_build_worker(const InputConfig *cfg,
     memset(w, 0, sizeof *w);
     w->shared = shared;
 
-    /* Dispatch on the dynamics model. The body of this function is the
-     * high_fidelity builder (per-thread eph/hg, ctx, integrator with
-     * spody_force_rhs_default). Other models will branch here and bind
-     * their own RHS + per-thread state. */
+    /* Reject unimplemented dynamics models defensively. */
     {
         const SpodyDynamicsModelSpec *spec =
                 spody_dynamics_model_get(cfg->dynamics_model);
@@ -136,6 +139,47 @@ int spody_build_worker(const InputConfig *cfg,
             return SPODY_ERR_BAD_VALUE;
         }
     }
+
+    /* CR3BP branch: no eph/hg/eop/iau handles, no Spacecraft, no
+     * third-body arrays. Populate ctx with cr3bp_* fields, cache the
+     * derived quantities via spody_init_CR3BPContext, bind the
+     * integrator to spody_force_rhs_cr3bp. State y is (r, v) in km,
+     * km/s in the synodic rotating frame. */
+    if (cfg->dynamics_model == SPODY_DYN_CR3BP) {
+        w->ctx.cr3bp_mu1 = cfg->cr3bp_mu1;
+        w->ctx.cr3bp_mu2 = cfg->cr3bp_mu2;
+        w->ctx.cr3bp_L   = cfg->cr3bp_L_km;
+        spody_init_CR3BPContext(&w->ctx);
+
+        IntegratorOptions opt;
+        spody_default_integrator_options(SPODY_INTEG_RK45, &opt);
+        opt.rel_tol = cfg->rel_tol;
+        opt.h_init  = cfg->h_init_s;
+        opt.h_min   = cfg->h_min_s;
+        opt.h_max   = cfg->h_max_s;
+
+        if (spody_setup_integrator(&w->integ, SPODY_INTEG_RK45, &opt,
+                                   6, spody_force_rhs_cr3bp,
+                                   &w->ctx) != SPODY_INTEG_OK) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "spody_setup_integrator failed (cr3bp)");
+            goto fail;
+        }
+        w->init_integ = 1;
+
+        double y0[6] = {
+            cfg->position_km[0],  cfg->position_km[1],  cfg->position_km[2],
+            cfg->velocity_kms[0], cfg->velocity_kms[1], cfg->velocity_kms[2]
+        };
+        if (spody_set_integrator_state(&w->integ, 0.0, y0) != SPODY_INTEG_OK) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "spody_set_integrator_state failed (cr3bp)");
+            goto fail;
+        }
+        return SPODY_OK;
+    }
+
+    /* From here down: high_fidelity worker build. */
 
     /* Per-thread handles bound to the shared, read-only data. */
     spody_setup_MappedEphemeris(&w->eph, &shared->med);
