@@ -55,6 +55,7 @@ _SECTION_ORDER: tuple[str, ...] = (
     "spacecraft",
     "debris",
     "initial_state",
+    "cr3bp",        # CR3BP-only; mutually exclusive with force_model/ephemeris
     "force_model",
     "ephemeris",
     "integrator",
@@ -67,10 +68,11 @@ _SECTION_ORDER: tuple[str, ...] = (
 # not in this list are emitted at the end alphabetically (so an
 # unknown / new key from the form still round-trips).
 _KEY_ORDER: dict[str, tuple[str, ...]] = {
-    "simulation":    ("name", "et_start_s", "duration_s"),
+    "simulation":    ("name", "dynamics_model", "et_start_s", "duration_s"),
     "spacecraft":    ("mass_kg",),
     "debris":        ("am_srp", "Cr"),
     "initial_state": ("frame", "position_km", "velocity_kms"),
+    "cr3bp":         ("primary_1", "primary_2"),
     "force_model":   ("central_body", "harmonics_file", "harmonics_degree",
                       "third_bodies", "srp"),
     "ephemeris":     ("file",),

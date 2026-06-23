@@ -130,7 +130,20 @@ class _AssetCombo(QComboBox):
 
 
 CENTRAL_BODIES   = known_central_body_names()
-FRAMES           = ("central_inertial",)
+DYNAMICS_MODELS  = ("high_fidelity", "cr3bp")
+# Per-model valid frames -- the [initial_state] frame combo is filtered
+# to the entries valid under the currently-selected dynamics_model.
+FRAMES_BY_MODEL: dict[str, tuple[str, ...]] = {
+    "high_fidelity": ("central_inertial",),
+    "cr3bp":         ("synodic_rotating",),
+}
+# Curated CR3BP primary pairs. Mirror of CR3BP_PAIRS in
+# src/toml_input.c; adding a pair on either side without the other is
+# a load-time validate error from the engine, so the two lists must
+# stay in lockstep.
+CR3BP_PAIRS: tuple[tuple[str, str], ...] = (
+    ("Earth", "Moon"),
+)
 INTEGRATORS      = ("rkdp45",)
 OUTPUT_MODES     = ("fixed", "step")
 THIRD_BODIES_ALL = ("Sun", "Mercury", "Venus", "Earth", "Moon",
@@ -174,8 +187,11 @@ _UNASSIGNED = "(unassigned)"
 # dotted paths the form uses internally.
 _TOOLTIPS: dict[str, str] = {
     "simulation.name":               "Human-readable scenario name. Drives single-run output names AND batch per-case file names (the form mirrors this into batch.name on emit).",
-    "simulation.et_start_s":         "Start epoch in TDB seconds past J2000.",
+    "simulation.dynamics_model":     "Physics model. 'high_fidelity' = Cowell perturbations around a central body (needs spacecraft / force_model / ephemeris). 'cr3bp' = Circular Restricted 3-Body Problem in the synodic rotating frame (needs only [cr3bp] + [initial_state]).",
+    "simulation.et_start_s":         "Start epoch in TDB seconds past J2000. Required by high_fidelity (anchors ephemeris / EOP lookups); ignored by cr3bp (autonomous).",
     "simulation.duration_s":         "Propagation duration in seconds; > 0.",
+    "cr3bp.primary_1":               "Bigger primary (heavier body). GM looked up from the body table; primary-primary separation L from the curated CR3BP_PAIRS in spody-core.",
+    "cr3bp.primary_2":               "Smaller primary. Must form a pair with primary_1 that is registered in the curated CR3BP table (today: Earth+Moon).",
     "spacecraft.mass_kg":            "Dry mass in kilograms; must be > 0.",
     "spacecraft.srp.area_m2":        "SRP cross-section in m²; A/m derived as area_m2 / mass_kg.",
     "spacecraft.srp.am_srp":         "A/m directly in m²/kg; alternative to area_m2 (XOR).",
@@ -341,7 +357,7 @@ class TomlForm(QWidget):
     # sections the form does not yet render does NOT lose them.
     _FORM_OWNED_TOP = {
         "simulation", "spacecraft", "debris",
-        "initial_state", "force_model", "ephemeris",
+        "initial_state", "cr3bp", "force_model", "ephemeris",
         "integrator", "output",
         "events", "batch",
     }
@@ -429,10 +445,20 @@ class TomlForm(QWidget):
         body = QWidget()
         body_lay = QVBoxLayout(body)
         body_lay.addWidget(self._build_simulation())
-        body_lay.addWidget(self._build_object())
+        # Per-model section groups: HF needs object + force_model +
+        # ephemeris; CR3BP needs just [cr3bp]. Both branches share
+        # [initial_state] (with a model-filtered frame combo).
+        # Kept on `self` so _on_dynamics_model_changed can flip
+        # visibility without re-walking the layout.
+        self._object_group     = self._build_object()
+        body_lay.addWidget(self._object_group)
         body_lay.addWidget(self._build_initial_state())
-        body_lay.addWidget(self._build_force_model())
-        body_lay.addWidget(self._build_ephemeris())
+        self._cr3bp_group      = self._build_cr3bp()
+        body_lay.addWidget(self._cr3bp_group)
+        self._force_model_group = self._build_force_model()
+        body_lay.addWidget(self._force_model_group)
+        self._ephemeris_group   = self._build_ephemeris()
+        body_lay.addWidget(self._ephemeris_group)
         body_lay.addWidget(self._build_integrator())
         body_lay.addWidget(self._build_output())
         body_lay.addWidget(self._build_events())
@@ -440,6 +466,12 @@ class TomlForm(QWidget):
         body_lay.addWidget(self._build_notes())
         body_lay.addStretch(1)
         scroll.setWidget(body)
+
+        # Sync HF/CR3BP visibility with the dynamics_model combo's
+        # default selection (high_fidelity), so a freshly-opened form
+        # starts in the legacy layout.
+        self._on_dynamics_model_changed(
+            self._widgets["simulation.dynamics_model"].currentText())
 
         # Live TOML preview: read-only QPlainTextEdit fed by
         # _refresh_preview() on every form change. Wrapped in a small
@@ -482,12 +514,25 @@ class TomlForm(QWidget):
     # ==================================================================
     def _build_simulation(self) -> QGroupBox:
         g = QGroupBox("[simulation]")
-        f = QFormLayout(g)
+        self._sim_form = QFormLayout(g)
+        f = self._sim_form
         self._add_string(f, "simulation.name",       "name")
+        # dynamics_model selects which downstream sections are needed.
+        # Switching this combo hides / shows [cr3bp] vs the HF stack
+        # (object / force_model / ephemeris) -- see
+        # _on_dynamics_model_changed below.
+        self._add_enum(f, "simulation.dynamics_model", "dynamics_model",
+                       DYNAMICS_MODELS)
         # ET stays the only thing the TOML carries; the UTC cell next
         # to it is a typing aid driven by `→` / `←` convert buttons.
         self._add_et_with_utc(f, "simulation.et_start_s", "et_start_s")
+        # Remember the et_start_s row so we can mark it optional when
+        # the model is autonomous (cr3bp).
+        self._sim_et_row = f.rowCount() - 1
         self._add_duration_seconds(f, "simulation.duration_s", "duration_s")
+
+        dm_combo = self._widgets["simulation.dynamics_model"]
+        dm_combo.currentTextChanged.connect(self._on_dynamics_model_changed)
         return g
 
     def _add_et_with_utc(self, layout: QFormLayout, key: str,
@@ -638,10 +683,49 @@ class TomlForm(QWidget):
     def _build_initial_state(self) -> QGroupBox:
         g = QGroupBox("[initial_state]")
         f = QFormLayout(g)
-        self._add_enum(f, "initial_state.frame", "frame", FRAMES)
+        # Frame combo: items are filtered by the active dynamics model
+        # (HF -> central_inertial; CR3BP -> synodic_rotating). Seed with
+        # the HF set; _on_dynamics_model_changed reflows on switch.
+        self._add_enum(f, "initial_state.frame", "frame",
+                       FRAMES_BY_MODEL["high_fidelity"])
         self._add_vec3(f, "initial_state.position_km",  "position_km")
         self._add_vec3(f, "initial_state.velocity_kms", "velocity_kms")
         return g
+
+    def _build_cr3bp(self) -> QGroupBox:
+        """[cr3bp]: pick a primary pair from the curated table. The
+        combos cascade: primary_2 is filtered to the pairs registered
+        with the currently-selected primary_1, so a user cannot pick a
+        pair the engine would reject. Visible only when
+        dynamics_model = 'cr3bp'."""
+        g = QGroupBox("[cr3bp]")
+        f = QFormLayout(g)
+
+        primaries_1 = sorted({p1 for p1, _ in CR3BP_PAIRS})
+        self._add_enum(f, "cr3bp.primary_1", "primary_1", tuple(primaries_1))
+        # primary_2 starts wide; _on_cr3bp_primary_1_changed narrows it.
+        self._add_enum(f, "cr3bp.primary_2", "primary_2",
+                       tuple(sorted({p2 for _, p2 in CR3BP_PAIRS})))
+        p1_combo = self._widgets["cr3bp.primary_1"]
+        p1_combo.currentTextChanged.connect(self._on_cr3bp_primary_1_changed)
+        self._on_cr3bp_primary_1_changed(p1_combo.currentText())
+        return g
+
+    def _on_cr3bp_primary_1_changed(self, p1: str) -> None:
+        """Refresh primary_2 options to only those that form a
+        registered pair with the just-selected primary_1."""
+        valid = [p2 for q1, p2 in CR3BP_PAIRS if q1 == p1]
+        combo = self._widgets.get("cr3bp.primary_2")
+        if not isinstance(combo, QComboBox):
+            return
+        prev = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        for name in valid:
+            combo.addItem(name)
+        idx = combo.findText(prev)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
 
     def _build_force_model(self) -> QGroupBox:
         g = QGroupBox("[force_model]")
@@ -840,6 +924,54 @@ class TomlForm(QWidget):
             return   # called too early during construction
         self._output_form.setRowVisible(self._output_interval_row,
                                         mode == "fixed")
+
+    def _on_dynamics_model_changed(self, model: str) -> None:
+        """Reflow the per-model sections + filter the frame combo + grey
+        out HF-only optional toggles. HF shows the legacy stack (object
+        / force_model / ephemeris) and hides [cr3bp]; CR3BP swaps the
+        visibility and disables the output / event toggles whose engine
+        path rejects CR3BP runs. Called once after construction (sync
+        with the default selection) and on every user change of the
+        dynamics_model combo."""
+        if not hasattr(self, "_object_group"):
+            return   # called too early during construction
+        is_hf = (model == "high_fidelity")
+        self._object_group.setVisible(is_hf)
+        self._force_model_group.setVisible(is_hf)
+        self._ephemeris_group.setVisible(is_hf)
+        self._cr3bp_group.setVisible(not is_hf)
+        # Frame combo: rebuild items + select the default for the model.
+        frame_combo = self._widgets.get("initial_state.frame")
+        if isinstance(frame_combo, QComboBox):
+            valid = FRAMES_BY_MODEL.get(model, ())
+            prev = frame_combo.currentText()
+            frame_combo.blockSignals(True)
+            frame_combo.clear()
+            for v in valid:
+                frame_combo.addItem(v)
+            idx = frame_combo.findText(prev)
+            frame_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            frame_combo.blockSignals(False)
+
+        # Optional knobs the engine rejects under CR3BP -- grey out and
+        # uncheck so the user cannot enable them and so a stale toggle
+        # from a prior HF scenario doesn't carry over.
+        acc_cb = self._widgets.get("output.accelerations_file")
+        if isinstance(acc_cb, QCheckBox):
+            acc_cb.setEnabled(is_hf)
+            if not is_hf and acc_cb.isChecked():
+                acc_cb.setChecked(False)
+            acc_cb.setToolTip(
+                _TOOLTIPS.get("output.accelerations_file", "") if is_hf
+                else "Disabled in CR3BP (per-force breakdown is HF-only)")
+        if hasattr(self, "_events_check"):
+            self._events_check.setEnabled(is_hf)
+            if not is_hf and self._events_check.isChecked():
+                self._events_check.setChecked(False)
+            self._events_check.setToolTip(
+                "" if is_hf
+                else "Disabled in CR3BP (no Sun in this model -- "
+                     "primary-impact events are wired automatically)")
 
     # ------------------------------------------------------------------
     # Output auto-naming
@@ -2084,21 +2216,37 @@ class TomlForm(QWidget):
                 continue
             flat[key] = v
 
-        # Apply object XOR by stripping the inactive branch (so even if
-        # both have stale data the emitted TOML is consistent).
-        if self._radio_spc.isChecked():
-            flat = {k: v for k, v in flat.items() if not k.startswith("debris.")}
-            if not self._srp_check.isChecked():
-                flat = {k: v for k, v in flat.items() if not k.startswith("spacecraft.srp.")}
-            else:
-                # XOR inside [spacecraft.srp]: drop whichever param is unselected.
-                if self._srp_radio_area.isChecked():
-                    flat.pop("spacecraft.srp.am_srp", None)
-                else:
-                    flat.pop("spacecraft.srp.area_m2", None)
+        # Model dispatch: CR3BP strips every HF-only section so a stale
+        # widget value left over from a Moon scenario doesn't leak into
+        # the emitted TOML. HF strips [cr3bp] for the same reason.
+        dyn_model = flat.get("simulation.dynamics_model", "high_fidelity")
+        if dyn_model == "cr3bp":
+            flat = {k: v for k, v in flat.items()
+                    if not (k.startswith("spacecraft.")
+                            or k.startswith("debris.")
+                            or k.startswith("force_model.")
+                            or k.startswith("ephemeris."))}
         else:
             flat = {k: v for k, v in flat.items()
-                    if not (k.startswith("spacecraft.") or k == "spacecraft.mass_kg")}
+                    if not k.startswith("cr3bp.")}
+
+            # Apply object XOR by stripping the inactive branch (so
+            # even if both have stale data the emitted TOML is
+            # consistent). HF-only -- under CR3BP both sub-branches
+            # were already wiped above.
+            if self._radio_spc.isChecked():
+                flat = {k: v for k, v in flat.items() if not k.startswith("debris.")}
+                if not self._srp_check.isChecked():
+                    flat = {k: v for k, v in flat.items() if not k.startswith("spacecraft.srp.")}
+                else:
+                    # XOR inside [spacecraft.srp]: drop whichever param is unselected.
+                    if self._srp_radio_area.isChecked():
+                        flat.pop("spacecraft.srp.am_srp", None)
+                    else:
+                        flat.pop("spacecraft.srp.area_m2", None)
+            else:
+                flat = {k: v for k, v in flat.items()
+                        if not (k.startswith("spacecraft.") or k == "spacecraft.mass_kg")}
 
         # Optional sections: drop their fields entirely when the gating
         # checkbox is off so an unchecked block isn't emitted half-filled.
@@ -2136,6 +2284,15 @@ class TomlForm(QWidget):
             flat.pop(key, None)
             if key in paths:
                 flat[key] = paths[key]
+
+        # CR3BP-specific drops: the engine rejects the per-force
+        # breakdown (no HF force model to break down) and the eclipse
+        # event (no Sun in the model). Strip them regardless of the
+        # checkbox state so a stale toggle from a HF scenario doesn't
+        # turn into a validate error.
+        if dyn_model == "cr3bp":
+            flat.pop("output.accelerations_file", None)
+            flat.pop("events.eclipse_threshold", None)
 
         # Resolve cases_file from the source path + frame combo. The
         # form has a SINGLE path widget (always showing the user-picked
@@ -2289,8 +2446,21 @@ class TomlForm(QWidget):
                 {k: v for k, v in data.items() if k in self._FORM_OWNED_TOP}
             )
 
+            # Pick dynamics_model FIRST so HF/CR3BP visibility is right
+            # before field values are pushed. Default to high_fidelity
+            # when the TOML omits the key (legacy files).
+            dm_value = flat.get("simulation.dynamics_model") or "high_fidelity"
+            dm_combo = self._widgets.get("simulation.dynamics_model")
+            if isinstance(dm_combo, QComboBox):
+                idx = dm_combo.findText(str(dm_value))
+                if idx >= 0:
+                    dm_combo.setCurrentIndex(idx)
+            self._on_dynamics_model_changed(str(dm_value))
+
             # Decide object mode FIRST so the XOR visibility is right
-            # before fields populate.
+            # before fields populate. (No-op when dynamics_model = cr3bp
+            # since the object group is hidden, but the radio still
+            # tracks state for a later HF load.)
             if "debris.am_srp" in flat:
                 self._radio_dbr.setChecked(True)
             else:
@@ -2371,6 +2541,14 @@ class TomlForm(QWidget):
         self._loading = True
         try:
             self._reset_widgets()
+            # Re-snap dynamics_model to the HF default so a previous
+            # CR3BP session does not leak hidden HF widgets.
+            dm_combo = self._widgets.get("simulation.dynamics_model")
+            if isinstance(dm_combo, QComboBox):
+                idx = dm_combo.findText("high_fidelity")
+                if idx >= 0:
+                    dm_combo.setCurrentIndex(idx)
+            self._on_dynamics_model_changed("high_fidelity")
             self._radio_spc.setChecked(True)
             self._on_object_radio_toggled(True)
             self._srp_check.setChecked(False)
