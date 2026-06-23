@@ -41,6 +41,18 @@ const char *spody_io_basename(const char *path) {
 int spody_io_make_run_subdir(const char *output_dir,
                              char *run_subdir_out, size_t out_sz,
                              SpodyError *err) {
+    /* Auto-create the parent output_dir (single level) so the user
+     * does not have to mkdir it by hand before the first run. EEXIST
+     * is the common case (subsequent runs) -- ignored. Anything else
+     * we report directly because the inner mkdir would fail with a
+     * less helpful message otherwise. */
+    if (SPODY_MKDIR(output_dir) != 0 && errno != EEXIST) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "cannot create output_dir '%s' (errno %d)",
+                output_dir, errno);
+        return SPODY_ERR_IO;
+    }
+
     time_t now = time(NULL);
     struct tm *tm = gmtime(&now);
     char ts[32];
@@ -50,10 +62,18 @@ int spody_io_make_run_subdir(const char *output_dir,
     if (SPODY_MKDIR(run_subdir_out) == 0) return SPODY_OK;
     if (errno == EEXIST) return SPODY_OK;   /* second-precision collision */
     spody_error_set(err, SPODY_ERR_IO,
-            "cannot create run output dir '%s' (errno %d): "
-            "verify that output_dir '%s' exists",
-            run_subdir_out, errno, output_dir);
+            "cannot create run output dir '%s' (errno %d)",
+            run_subdir_out, errno);
     return SPODY_ERR_IO;
+}
+
+void spody_io_run_subdir_filepath(const char *run_subdir,
+                                  const char *basename,
+                                  char *out, size_t out_sz) {
+    /* `ts` is just the trailing component of run_subdir -- the
+     * timestamp spody_io_make_run_subdir wrote there. */
+    const char *ts = spody_io_basename(run_subdir);
+    snprintf(out, out_sz, "%s/%s_%s", run_subdir, ts, basename);
 }
 
 int spody_io_copy_file(const char *src, const char *dst, SpodyError *err) {
@@ -95,14 +115,15 @@ int spody_io_copy_file(const char *src, const char *dst, SpodyError *err) {
 }
 
 /* Helper for spody_io_rewrite_outputs_to_run_subdir: replace path's
- * directory with run_subdir, keep its basename. In-place rewrite into
+ * directory with run_subdir AND prefix its basename with the run's
+ * timestamp via spody_io_run_subdir_filepath. In-place rewrite into
  * the same fixed-size buffer so callers don't reallocate. */
 static void rewrite_one_path(char *path, size_t path_sz,
                              const char *run_subdir) {
     if (!path[0]) return;
     const char *bn = spody_io_basename(path);
     char tmp[SPODY_MAX_PATH];
-    snprintf(tmp, sizeof tmp, "%s/%s", run_subdir, bn);
+    spody_io_run_subdir_filepath(run_subdir, bn, tmp, sizeof tmp);
     snprintf(path, path_sz, "%s", tmp);
 }
 
@@ -137,11 +158,11 @@ void spody_io_timestamp_filename(const char *base, char *out, size_t out_sz) {
 void spody_io_batch_log_path(const BatchConfig *batch,
                              const char *batch_subdir,
                              char *out, size_t out_sz) {
-    time_t now = time(NULL);
-    struct tm *tm = gmtime(&now);
-    char ts[32];
-    strftime(ts, sizeof ts, "%Y-%m-%dT%H%M%SZ", tm);
-    snprintf(out, out_sz, "%s/%s_%s.log", batch_subdir, batch->name, ts);
+    /* Reuse the run-folder's own timestamp (its trailing path
+     * component) instead of re-sampling time(NULL), so the log
+     * filename matches exactly the run dir it lives in. */
+    const char *ts = spody_io_basename(batch_subdir);
+    snprintf(out, out_sz, "%s/%s_%s.log", batch_subdir, ts, batch->name);
 }
 
 void spody_io_case_output_paths(InputConfig *cfg, const BatchConfig *batch,
@@ -149,23 +170,27 @@ void spody_io_case_output_paths(InputConfig *cfg, const BatchConfig *batch,
     /* Per-case file names follow the same `<subject>_<frame>` pattern as
      * the GUI's auto-naming for single-propagate runs, with the case id
      * inserted between batch name and subject so the directory listing
-     * groups by case visually. Events are aggregated batch-wide (see
-     * cmd_batch) and so don't appear here. */
+     * groups by case visually. Every name is prefixed with the run
+     * folder's timestamp -- consistent with the single-propagate
+     * rewrite (see `rewrite_one_path`) so editor-side tools cannot
+     * accidentally treat snapshots as sources. Events are aggregated
+     * batch-wide (see cmd_batch) and so don't appear here. */
     const char *id = batch->case_ids[case_idx];
+    const char *ts = spody_io_basename(batch_subdir);
     if (cfg->csv_file[0]) {
         snprintf(cfg->csv_file, sizeof cfg->csv_file,
-                 "%s/%s_%s_state_icrf.csv", batch_subdir, batch->name, id);
+                 "%s/%s_%s_%s_state_icrf.csv", batch_subdir, ts, batch->name, id);
     }
     if (cfg->bin_file[0]) {
         snprintf(cfg->bin_file, sizeof cfg->bin_file,
-                 "%s/%s_%s_state_icrf.bin", batch_subdir, batch->name, id);
+                 "%s/%s_%s_%s_state_icrf.bin", batch_subdir, ts, batch->name, id);
     }
     if (cfg->accelerations_file[0]) {
         snprintf(cfg->accelerations_file, sizeof cfg->accelerations_file,
-                 "%s/%s_%s_acc_icrf.bin", batch_subdir, batch->name, id);
+                 "%s/%s_%s_%s_acc_icrf.bin", batch_subdir, ts, batch->name, id);
     }
     if (cfg->events_log[0]) {
         snprintf(cfg->events_log, sizeof cfg->events_log,
-                 "%s/%s_%s_events.bin", batch_subdir, batch->name, id);
+                 "%s/%s_%s_%s_events.bin", batch_subdir, ts, batch->name, id);
     }
 }

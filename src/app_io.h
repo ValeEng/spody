@@ -48,12 +48,28 @@ const char *spody_io_basename(const char *path);
  * within the run shares the same folder name) and uses the same
  * compact "%Y-%m-%dT%H%M%SZ" format as spody_io_timestamp_filename.
  *
- * Returns SPODY_OK on success, SPODY_ERR_IO if the parent dir doesn't
- * exist or the mkdir failed for any other reason (already-exists is
- * very unlikely with the timestamp resolution but treated as OK). */
+ * `output_dir` itself is also created if missing (mkdir, single
+ * level) -- spares the user from having to mkdir output/ by hand
+ * just so the first run can land. Errors other than EEXIST on the
+ * output_dir mkdir surface as SPODY_ERR_IO.
+ *
+ * Returns SPODY_OK on success, SPODY_ERR_IO if the inner mkdir
+ * failed for any reason (already-exists is very unlikely with the
+ * timestamp resolution but treated as OK). */
 int spody_io_make_run_subdir(const char *output_dir,
                              char *run_subdir_out, size_t out_sz,
                              SpodyError *err);
+
+/* Compose `<run_subdir>/<ts>_<basename>` where `ts` is extracted as
+ * the trailing path component of `run_subdir` (the UTC timestamp
+ * spody_io_make_run_subdir emits). Used wherever a file is written
+ * inside a run folder so the filename carries the run's timestamp,
+ * keeping snapshots and source TOMLs unambiguous (e.g. an editor
+ * cannot accidentally overwrite a snapshot named identically to the
+ * source it was copied from). */
+void spody_io_run_subdir_filepath(const char *run_subdir,
+                                  const char *basename,
+                                  char *out, size_t out_sz);
 
 /* Byte-for-byte copy of src -> dst. Used to snapshot the source TOML
  * into a fresh run subdir so each run is self-contained. dst is opened

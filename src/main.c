@@ -222,8 +222,13 @@ static int cmd_propagate(int argc, char **argv) {
             return 1;
         }
         spody_io_rewrite_outputs_to_run_subdir(&cfg, run_subdir);
+        /* Snapshot file lives inside the run folder so it carries the
+         * run timestamp as a prefix -- consistent with the rewritten
+         * output paths. Editors then cannot confuse it with the
+         * source TOML named identically up the tree. */
         char toml_copy[SPODY_MAX_PATH];
-        snprintf(toml_copy, sizeof toml_copy, "%s/input.toml", run_subdir);
+        spody_io_run_subdir_filepath(run_subdir, "input.toml",
+                                     toml_copy, sizeof toml_copy);
         if (spody_io_copy_file(toml_path, toml_copy, &err) != SPODY_OK) {
             spody_error_print(&err);
             spody_log_close_mirror(); spody_free_input(&cfg);
@@ -393,7 +398,8 @@ static int cmd_batch(int argc, char **argv) {
         return 1;
     }
     char toml_copy[SPODY_MAX_PATH];
-    snprintf(toml_copy, sizeof toml_copy, "%s/input.toml", batch_subdir);
+    spody_io_run_subdir_filepath(batch_subdir, "input.toml",
+                                 toml_copy, sizeof toml_copy);
     if (spody_io_copy_file(toml_path, toml_copy, &err) != SPODY_OK) {
         if (err.file[0] == '\0') {
             snprintf(err.file, sizeof err.file, "%s", toml_path);
@@ -452,8 +458,14 @@ static int cmd_batch(int argc, char **argv) {
     FILE *batch_events_fp = NULL;
     char  batch_events_path[SPODY_MAX_PATH] = {0};
     if (cfg.events_log[0]) {
-        snprintf(batch_events_path, sizeof batch_events_path,
-                 "%s/%s_events.bin", batch_subdir, cfg.batch->name);
+        /* Prefix with the batch_subdir's timestamp so the aggregated
+         * events file is consistent with every other file inside the
+         * run folder (per-case bins, snapshot TOML, log). */
+        char ev_name[SPODY_MAX_PATH];
+        snprintf(ev_name, sizeof ev_name, "%s_events.bin", cfg.batch->name);
+        spody_io_run_subdir_filepath(batch_subdir, ev_name,
+                                     batch_events_path,
+                                     sizeof batch_events_path);
         if (spody_open_batch_events(batch_events_path, &batch_events_fp) != 0) {
             spody_error_set(&err, SPODY_ERR_IO,
                     "cannot open aggregated events file '%s'",
