@@ -719,6 +719,20 @@ def _plot_acc_eclipse(ax: Axes, d: np.ndarray) -> None:
 # which walks up to find input.toml and parses out what it needs.
 
 @dataclass(frozen=True)
+class CR3BPPrimary:
+    """Fixed-position primary in the synodic CR3BP scene. Built by
+    the analysis panel from the loaded run's [cr3bp] section + the
+    Earth-Moon (or any future pair's) reference distance in
+    spody_const.h. The two primaries are visualised as static spheres
+    at the synodic positions (-mu/(mu1+mu2)*L, 0, 0) and
+    (+mu1/(mu1+mu2)*L, 0, 0)."""
+    name:        str
+    position_km: tuple[float, float, float]
+    radius_km:   float
+    mu_km3_s2:   float
+
+
+@dataclass(frozen=True)
 class PlotContext:
     """Side-channel context passed to context-aware plot functions
     (PlotSpec.mode == 'context').
@@ -754,11 +768,24 @@ class PlotContext:
                             when no snapshot is found. Plot fns use
                             it instead of hardcoding Moon constants
                             / labels.
+    `dynamics_model`      : "high_fidelity" (default) or "cr3bp", read
+                            from the snapshot's
+                            `simulation.dynamics_model`. Plot fns
+                            branch on this to render the right scene
+                            (HF: single central body; CR3BP: two
+                            primaries in the synodic frame).
+    `cr3bp_primaries`     : Two CR3BPPrimary entries when
+                            dynamics_model == "cr3bp", empty
+                            otherwise. Drives the synodic 3D scene
+                            geometry: primary positions, radii, and
+                            display names.
     """
     path: Path
     central_body_texture: Path | None = None
     scene_options: SceneOptions = field(default_factory=SceneOptions)
     central_body: CentralBodySpec = field(default_factory=default_central_body)
+    dynamics_model: str = "high_fidelity"
+    cr3bp_primaries: tuple[CR3BPPrimary, ...] = ()
 
 
 def _find_run_input_toml(events_path: Path) -> Path | None:
@@ -1942,7 +1969,15 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     None (dev path) or the ephemeris is unreachable, only the ICRF
     triad is drawn -- the convention is symmetric with the impact 3D
     view.
+
+    CR3BP runs render a separate scene: two static primary spheres at
+    the synodic positions + trajectory + a simple legend. No central
+    body, no third bodies, no body-fixed orientation -- the synodic
+    rotating frame IS the working frame.
     """
+    if ctx is not None and ctx.dynamics_model == "cr3bp" and ctx.cr3bp_primaries:
+        _plot_cr3bp_3d_orbit(canvas, d, ctx)
+        return
     body = ctx.central_body if ctx is not None else default_central_body()
     canvas.add_central_body(radius_km=body.radius_km)
     opts = ctx.scene_options if ctx is not None else SceneOptions()
@@ -1976,6 +2011,106 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     _add_animated_pa_decoration(canvas, ctx, ts,
                                   show_icrf=opts.show_icrf_triad,
                                   show_pa=opts.show_pa_triad)
+
+
+# ----------------------------------------------------------------------
+# CR3BP synodic 3D scene
+# ----------------------------------------------------------------------
+# Colour palette for the primaries: a warm blue for the bigger one
+# (Earth) and a cool grey for the smaller (Moon). Plain colours rather
+# than textures keep the scene readable when the camera fits the whole
+# synodic span (~400 000 km) instead of a single body.
+_CR3BP_PRIMARY_COLORS: tuple[tuple[float, float, float], ...] = (
+    (0.35, 0.55, 0.85),   # primary 1: blue-ish
+    (0.70, 0.70, 0.72),   # primary 2: grey
+)
+
+
+def _plot_cr3bp_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
+                          ctx: PlotContext) -> None:
+    """Synodic-frame view for a CR3BP run: two primary spheres at fixed
+    positions + the satellite trajectory + a viewport legend. The
+    barycenter sits at the scene origin; the +x axis points from
+    primary 1 (bigger) to primary 2 (smaller). No third bodies, no
+    body-fixed triad: the scene IS the rotating frame, and the corner
+    ICRF triad would be misleading here -- we suppress it via the
+    Scene options like every other plot does."""
+    opts = ctx.scene_options
+    # Static primaries at their cached synodic positions.
+    for primary, color in zip(ctx.cr3bp_primaries, _CR3BP_PRIMARY_COLORS):
+        canvas.add_secondary_body(
+            position_km=primary.position_km,
+            radius_km=primary.radius_km,
+            color=color,
+            label=primary.name,
+        )
+    legend_entries: list[tuple[str, tuple[float, float, float]]] = []
+    legend_entries.extend(
+        (f"{p.name}  (synodic x = {p.position_km[0]:+.0f} km)", c)
+        for p, c in zip(ctx.cr3bp_primaries, _CR3BP_PRIMARY_COLORS)
+    )
+    if opts.show_trajectory:
+        ts  = d["t"].astype(float)
+        pts = np.column_stack([d["x"], d["y"], d["z"]])
+        canvas.add_animated_trajectory(
+            pts, ts, color=(1.0, 0.85, 0.20),
+            marker_radius_km=_cr3bp_marker_radius_km(ctx, pts),
+        )
+        legend_entries.append(("trajectory + moving marker",
+                               (1.0, 0.85, 0.20)))
+    if legend_entries:
+        canvas.add_legend(legend_entries)
+
+
+def _cr3bp_marker_radius_km(ctx: PlotContext, pts: np.ndarray) -> float:
+    """Marker radius rule for CR3BP scenes. The synodic bbox spans
+    ~L (~3.8e5 km for Earth-Moon), so HF's 3 %-of-trajectory-diagonal
+    rule degenerates near libration-point equilibria where the orbit
+    collapses to a point (L4 at v=0). Floor at 1 % of the primary
+    separation so the marker is always visible against the scene
+    diagonal; bump up with the trajectory bbox for larger orbits
+    (Lyapunov, halo) so it scales sensibly when the orbit is itself
+    a sizable fraction of L."""
+    if not ctx.cr3bp_primaries:
+        return 500.0
+    L_km = abs(ctx.cr3bp_primaries[1].position_km[0]
+               - ctx.cr3bp_primaries[0].position_km[0])
+    traj_diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+    return max(L_km * 0.01, traj_diag * 0.03)
+
+
+def _overlay_cr3bp_3d_orbit(canvas: VtkCanvas,
+                             items: list[tuple[Path, np.ndarray]],
+                             ctx: PlotContext) -> None:
+    """N-trajectory variant of `_plot_cr3bp_3d_orbit`. Same scene
+    geometry; trajectories colour-cycle through the turbo palette and
+    each is picker-registered via `source_path`."""
+    opts = ctx.scene_options
+    for primary, color in zip(ctx.cr3bp_primaries, _CR3BP_PRIMARY_COLORS):
+        canvas.add_secondary_body(
+            position_km=primary.position_km,
+            radius_km=primary.radius_km,
+            color=color,
+            label=primary.name,
+        )
+    legend_items: list[tuple[str, tuple[float, float, float]]] = []
+    legend_items.extend(
+        (f"{p.name}  (synodic x = {p.position_km[0]:+.0f} km)", c)
+        for p, c in zip(ctx.cr3bp_primaries, _CR3BP_PRIMARY_COLORS)
+    )
+    if opts.show_trajectory:
+        n = len(items)
+        for i, (path, data) in enumerate(items):
+            color = _turbo_color(i, n)
+            pts = np.column_stack([data["x"], data["y"], data["z"]])
+            canvas.add_animated_trajectory(
+                pts, data["t"].astype(float), color=color,
+                source_path=path,
+                marker_radius_km=_cr3bp_marker_radius_km(ctx, pts),
+            )
+            legend_items.append((path.name, color))
+    if legend_items:
+        canvas.add_legend(legend_items)
 
 
 # ----------------------------------------------------------------------
@@ -2040,7 +2175,13 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
     Triads use the libration at the *first* trajectory's start time;
     the lunar libration evolves on a ~1-day scale so the cross-file
     discrepancy is visually negligible inside a single batch.
+
+    CR3BP runs delegate to `_overlay_cr3bp_3d_orbit`: two static
+    primaries + the N trajectories in the synodic frame.
     """
+    if ctx is not None and ctx.dynamics_model == "cr3bp" and ctx.cr3bp_primaries:
+        _overlay_cr3bp_3d_orbit(canvas, items, ctx)
+        return
     body = ctx.central_body if ctx is not None else default_central_body()
     canvas.add_central_body(radius_km=body.radius_km)
     opts = ctx.scene_options if ctx is not None else SceneOptions()
@@ -2065,6 +2206,8 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
             central_body_texture=ctx.central_body_texture if ctx else None,
             scene_options=opts,
             central_body=ctx.central_body if ctx is not None else default_central_body(),
+            dynamics_model=ctx.dynamics_model if ctx is not None else "high_fidelity",
+            cr3bp_primaries=ctx.cr3bp_primaries if ctx is not None else (),
         )
         first_ts = first_data["t"].astype(float)
         if opts.show_third_bodies:
@@ -2514,6 +2657,12 @@ class AnalysisPanel(QWidget):
         # opening a bare .bin without a snapshot still renders
         # something (the legacy assumption).
         self._central_body: CentralBodySpec = default_central_body()
+        # Dynamics-model side-channel state populated by load_file from
+        # the run's snapshot. Defaults match the legacy HF behaviour so
+        # opening a bare .bin without a snapshot keeps rendering the
+        # single-central-body scene.
+        self._dynamics_model: str = "high_fidelity"
+        self._cr3bp_primaries: tuple[CR3BPPrimary, ...] = ()
         # Backwards-compat shim: set_default_epoch still gets called
         # from MainWindow when a TOML is loaded. We no longer need
         # the epoch in the panel (the third-body markers compute
@@ -2926,12 +3075,8 @@ class AnalysisPanel(QWidget):
         # Same context for 2D and 3D overlays: the central body
         # drives orbital-element mu (2D) AND triad/body/marker
         # scaling (3D). Built once per dispatch.
-        ovl_ctx = PlotContext(
-            path=items[0][0],
-            central_body_texture=self._configured_central_body_texture(),
-            scene_options=self._scene_options,
-            central_body=self._central_body,
-        ) if items else None
+        ovl_ctx = (self._build_plot_context(items[0][0])
+                   if items else None)
         try:
             if spec.dim == "2d":
                 self._stack.setCurrentIndex(0)
@@ -2998,6 +3143,12 @@ class AnalysisPanel(QWidget):
         # + frame name + orientation from one place. Falls back to
         # the Moon spec when no snapshot is available.
         self._central_body = self._resolve_central_body_from_snapshot()
+        # CR3BP plumbing: dispatch table on simulation.dynamics_model
+        # (high_fidelity by default). The two primaries' synodic
+        # positions, radii and GM come from a tiny hardcoded table
+        # mirroring CR3BP_PAIRS in src/toml_input.c.
+        self._dynamics_model   = self._resolve_dynamics_model_from_snapshot()
+        self._cr3bp_primaries  = self._resolve_cr3bp_primaries_from_snapshot()
         # Refresh the Scene-options dialog's body list with whatever
         # `force_model.third_bodies` is declared in this run's TOML
         # (silently no-op when the snapshot is missing or the dialog
@@ -3187,10 +3338,7 @@ class AnalysisPanel(QWidget):
 
         # Built once: context specs all consume the same PlotContext
         # (one file = one path) -- no need to re-build per subplot.
-        ctx = (PlotContext(path=self._path,
-                           central_body_texture=self._configured_central_body_texture(),
-                           scene_options=self._scene_options,
-                           central_body=self._central_body)
+        ctx = (self._build_plot_context(self._path)
                if mode == "single" and self._path is not None
                else None)
 
@@ -3357,6 +3505,91 @@ class AnalysisPanel(QWidget):
         spec = resolve_central_body(name) if isinstance(name, str) else None
         return spec if spec is not None else default_central_body()
 
+    def _resolve_dynamics_model_from_snapshot(self) -> str:
+        """Look up `simulation.dynamics_model` from the run's snapshot
+        TOML. Returns "high_fidelity" when the key is absent, when the
+        snapshot is missing, or when the file is unreadable -- legacy
+        runs and bare .bin files therefore always look HF to the
+        downstream plots, matching pre-CR3BP behaviour."""
+        if self._path is None:
+            return "high_fidelity"
+        info = _resolve_run_context(self._path)
+        if info is None:
+            return "high_fidelity"
+        try:
+            cfg = read_toml(info["toml_path"])
+        except (OSError, ValueError):
+            return "high_fidelity"
+        model = cfg.get("simulation", {}).get("dynamics_model", "")
+        return str(model) if model else "high_fidelity"
+
+    def _resolve_cr3bp_primaries_from_snapshot(
+        self) -> tuple[CR3BPPrimary, ...]:
+        """Build the two CR3BP primary descriptors from the snapshot's
+        [cr3bp] section. Returns an empty tuple for non-CR3BP runs (or
+        when [cr3bp] is missing / unrecognised), so downstream plots
+        can `if ctx.cr3bp_primaries:` to branch."""
+        if self._path is None:
+            return ()
+        info = _resolve_run_context(self._path)
+        if info is None:
+            return ()
+        try:
+            cfg = read_toml(info["toml_path"])
+        except (OSError, ValueError):
+            return ()
+        if cfg.get("simulation", {}).get("dynamics_model", "") != "cr3bp":
+            return ()
+        cr = cfg.get("cr3bp", {})
+        name1 = str(cr.get("primary_1", ""))
+        name2 = str(cr.get("primary_2", ""))
+        spec1 = resolve_central_body(name1)
+        spec2 = resolve_central_body(name2)
+        # The curated CR3BP_PAIRS in the engine + the Python form
+        # mirror it; Earth-Moon is the only pair today and both bodies
+        # are in the central-body registry. Future pairs (Sun-Earth,
+        # ...) will need the Sun registered there too -- gating on
+        # `spec is not None` keeps the GUI graceful in the interim.
+        if spec1 is None or spec2 is None:
+            return ()
+        # Look up L from the same constant the engine uses
+        # (EARTH_MOON_DISTANCE_KM in spody_const.h). Hardcoded to the
+        # single registered pair until more pairs land.
+        if {name1, name2} != {"Earth", "Moon"}:
+            return ()
+        L_km = 384400.0
+        mu1 = spec1.mu_km3_s2
+        mu2 = spec2.mu_km3_s2
+        mu_tot = mu1 + mu2
+        x1 = -(mu2 / mu_tot) * L_km
+        x2 = +(mu1 / mu_tot) * L_km
+        return (
+            CR3BPPrimary(name=spec1.name,
+                         position_km=(x1, 0.0, 0.0),
+                         radius_km=spec1.radius_km,
+                         mu_km3_s2=mu1),
+            CR3BPPrimary(name=spec2.name,
+                         position_km=(x2, 0.0, 0.0),
+                         radius_km=spec2.radius_km,
+                         mu_km3_s2=mu2),
+        )
+
+    def _build_plot_context(self, path: Path) -> PlotContext:
+        """Single source of truth for the PlotContext fed to every
+        context-aware plot fn. Centralised here so that adding a new
+        side-channel (dynamics_model, cr3bp_primaries, ...) is one
+        place, not four. Caller is responsible for passing a non-None
+        path; we trust load_file to have populated `self._path` and
+        the model-specific resolved state already."""
+        return PlotContext(
+            path=path,
+            central_body_texture=self._configured_central_body_texture(),
+            scene_options=self._scene_options,
+            central_body=self._central_body,
+            dynamics_model=self._dynamics_model,
+            cr3bp_primaries=self._cr3bp_primaries,
+        )
+
     def _refresh_scene_dialog_bodies(self) -> None:
         """Push the current run's `force_model.third_bodies` into
         the Scene-options dialog so the per-body checkboxes match,
@@ -3517,10 +3750,7 @@ class AnalysisPanel(QWidget):
         # touching QSettings. Built once here so each plot fn stays a
         # pure (ax, data, ctx) call. self._path is guaranteed non-None
         # whenever self._data is (set together in load_file).
-        ctx = (PlotContext(path=self._path,
-                           central_body_texture=self._configured_central_body_texture(),
-                           scene_options=self._scene_options,
-                           central_body=self._central_body)
+        ctx = (self._build_plot_context(self._path)
                if spec.mode == "context" and self._path is not None
                else None)
         try:

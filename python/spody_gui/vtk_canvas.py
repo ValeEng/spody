@@ -370,6 +370,69 @@ class VtkCanvas(QWidget):
         # bind a libration animation onto it.
         self._central_body_actor = actor
 
+    def add_secondary_body(self, position_km: tuple[float, float, float],
+                            radius_km: float,
+                            color: tuple[float, float, float] = (0.55, 0.55, 0.58),
+                            resolution: int = 64,
+                            texture_path: Path | None = None,
+                            label: str | None = None) -> None:
+        """Static body sphere placed at an arbitrary position. Used by
+        the CR3BP 3D scene where the two primaries sit at fixed synodic
+        coordinates and neither is "central" in the HF sense (the
+        barycenter is at the scene origin instead).
+        Unlike `add_central_body`, this method does NOT stash the actor
+        for animated orientation: CR3BP primaries are fixed in the
+        synodic frame by construction. `label`, if given, attaches a
+        small billboard text actor next to the body so the user knows
+        which primary is which without checking the scene table."""
+        chosen = texture_path
+        reader = self._make_image_reader(chosen) if chosen else None
+
+        if reader is not None:
+            sphere = vtkTexturedSphereSource()
+            sphere.SetRadius(radius_km)
+            sphere.SetThetaResolution(resolution)
+            sphere.SetPhiResolution(resolution // 2)
+            texture = vtkTexture()
+            texture.SetInputConnection(reader.GetOutputPort())
+            texture.InterpolateOn()
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.SetTexture(texture)
+            actor.GetProperty().SetAmbient(0.50)
+            actor.GetProperty().SetDiffuse(0.55)
+        else:
+            sphere = vtkSphereSource()
+            sphere.SetRadius(radius_km)
+            sphere.SetThetaResolution(resolution)
+            sphere.SetPhiResolution(resolution // 2)
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetAmbient(0.30)
+            actor.GetProperty().SetDiffuse(0.70)
+        actor.SetPosition(float(position_km[0]),
+                          float(position_km[1]),
+                          float(position_km[2]))
+        self._renderer.AddActor(actor)
+
+        if label:
+            billboard = vtkBillboardTextActor3D()
+            billboard.SetInput(str(label))
+            # Offset the label by 1.5 radii along +z so it sits clearly
+            # above the body in the default view; VTK billboards keep
+            # the text facing the camera regardless of orbit.
+            billboard.SetPosition(float(position_km[0]),
+                                  float(position_km[1]),
+                                  float(position_km[2]) + 1.5 * radius_km)
+            billboard.GetTextProperty().SetFontSize(14)
+            billboard.GetTextProperty().SetColor(1.0, 1.0, 1.0)
+            self._renderer.AddActor(billboard)
+
     @staticmethod
     def _make_image_reader(path: Path):
         """Pick a vtk image reader based on the file extension. Returns
