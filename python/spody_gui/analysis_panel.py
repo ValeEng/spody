@@ -92,6 +92,7 @@ from .central_bodies import (
     default_central_body,
     resolve_central_body,
 )
+from .plot_options import PlotOptionsDialog
 from .scene_options import SceneOptions, SceneOptionsDialog
 from .vtk_canvas import MOON_RADIUS_KM, VtkCanvas
 # spopy is the pure-Python re-implementation of the spody-core read
@@ -123,6 +124,56 @@ _PATH_ROLE = Qt.ItemDataRole.UserRole
 # Same trick on the plot-selection tree: each leaf carries its
 # PlotSpec so the click handler dispatches without index bookkeeping.
 _SPEC_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+def _serialize_axes_to_csv(axes) -> str:
+    """Dump every Line2D on every axis as CSV text.
+
+    One section per axis (separated by a blank line + comment header
+    carrying the subplot title); within a section, lines that share an
+    identical x-array collapse to `x, y1, y2, ...`, otherwise each
+    line gets `x_<lbl>, y_<lbl>` pairs padded with empty cells to the
+    longest length. Lines whose matplotlib label starts with `_`
+    (auto-generated legend-hidden labels) get a generic `y<j>` name."""
+    chunks: list[str] = []
+    for i, ax in enumerate(axes):
+        lines = ax.get_lines()
+        if not lines:
+            continue
+        title = ax.get_title() or f"axis {i + 1}"
+        chunks.append(f"# Axis {i + 1}: {title}")
+        chunks.append(
+            f"# xlabel: {ax.get_xlabel()}   ylabel: {ax.get_ylabel()}")
+        xs = [np.asarray(ln.get_xdata(), dtype=float) for ln in lines]
+        ys = [np.asarray(ln.get_ydata(), dtype=float) for ln in lines]
+        labels = []
+        for j, ln in enumerate(lines):
+            lab = ln.get_label() or ""
+            labels.append(lab if (lab and not lab.startswith("_")) else f"y{j}")
+        same_x = all(
+            x.shape == xs[0].shape and np.array_equal(x, xs[0]) for x in xs)
+        if same_x:
+            chunks.append("x," + ",".join(labels))
+            for k in range(xs[0].size):
+                row = [repr(float(xs[0][k]))]
+                row.extend(repr(float(y[k])) for y in ys)
+                chunks.append(",".join(row))
+        else:
+            chunks.append(
+                ",".join(f"x_{lab},y_{lab}" for lab in labels))
+            max_len = max(x.size for x in xs)
+            for k in range(max_len):
+                cells: list[str] = []
+                for x, y in zip(xs, ys):
+                    if k < x.size:
+                        cells.append(repr(float(x[k])))
+                        cells.append(repr(float(y[k])))
+                    else:
+                        cells.append("")
+                        cells.append("")
+                chunks.append(",".join(cells))
+        chunks.append("")
+    return "\n".join(chunks) + "\n"
 
 
 # ----------------------------------------------------------------------
@@ -2821,14 +2872,28 @@ class AnalysisPanel(QWidget):
         self._sun_widget = QWidget()
         self._sun_widget.setVisible(False)
 
-        # 2D page: matplotlib canvas + toolbar in a sub-widget.
+        # 2D page: matplotlib canvas + toolbar + Plot-options button.
+        # The Options button rides on the toolbar row (right-aligned),
+        # mirroring how the 3D AnimationBar exposes its "Scene..."
+        # button. It only lives on the 2D page so 3D plots never see
+        # it, which is the whole point of having a separate 3D control.
         self._figure  = Figure(figsize=(6, 4))
         self._canvas  = FigureCanvasQTAgg(self._figure)
         self._toolbar = NavigationToolbar2QT(self._canvas, self)
+        self._btn_plot_options = QPushButton("Plot options...")
+        self._btn_plot_options.setToolTip(
+            "Open plot options (export CSV, ...)")
+        self._btn_plot_options.clicked.connect(self._on_open_plot_options)
+        self._plot_options_dialog: PlotOptionsDialog | None = None
+        toolbar_row = QWidget()
+        toolbar_row_lay = QHBoxLayout(toolbar_row)
+        toolbar_row_lay.setContentsMargins(0, 0, 0, 0)
+        toolbar_row_lay.addWidget(self._toolbar, 1)
+        toolbar_row_lay.addWidget(self._btn_plot_options)
         mpl_page = QWidget()
         mpl_lay = QVBoxLayout(mpl_page)
         mpl_lay.setContentsMargins(0, 0, 0, 0)
-        mpl_lay.addWidget(self._toolbar)
+        mpl_lay.addWidget(toolbar_row)
         mpl_lay.addWidget(self._canvas, 1)
 
         # 3D page: VTK widget with its own built-in mouse controls,
@@ -3580,6 +3645,13 @@ class AnalysisPanel(QWidget):
         handles; otherwise they're greyed out but the Scene button
         still works (user can re-enable the spacecraft trajectory
         from the dialog and re-render)."""
+        # Sync the Plot-options dialog's Export CSV state whenever a
+        # new figure is rendered, so the user doesn't see a stale
+        # enabled/disabled state if the dialog was left open between
+        # plot clicks.
+        if self._plot_options_dialog is not None:
+            self._plot_options_dialog.set_export_enabled(
+                self._can_export_active_plot_csv())
         if self._stack.currentIndex() != 1:
             self._anim_bar.setVisible(False)
             return
@@ -3636,6 +3708,93 @@ class AnalysisPanel(QWidget):
             rng = self._vtk.animation_time_range()
             if rng is not None and rng[0] <= saved_t <= rng[1]:
                 self._anim_bar.set_time(saved_t)
+
+    # ------------------------------------------------------------------
+    # Plot options dialog (2D canvas) -- non-modal, hosts Export CSV
+    # and any future per-plot toggles. Counterpart to the 3D Scene
+    # options dialog above.
+    # ------------------------------------------------------------------
+    def _on_open_plot_options(self) -> None:
+        if self._plot_options_dialog is None:
+            self._plot_options_dialog = PlotOptionsDialog(parent=self)
+            self._plot_options_dialog.exportCsvRequested.connect(
+                self._export_active_plot_csv)
+        self._plot_options_dialog.set_export_enabled(
+            self._can_export_active_plot_csv())
+        self._plot_options_dialog.clear_status()
+        self._plot_options_dialog.show()
+        self._plot_options_dialog.raise_()
+        self._plot_options_dialog.activateWindow()
+
+    def _can_export_active_plot_csv(self) -> bool:
+        """True iff the matplotlib figure currently shows a 2D plot
+        with at least one Line2D somewhere on it. Tile mode counts as
+        long as one subplot has lines."""
+        if self._stack.currentIndex() != 0:
+            return False
+        for ax in self._figure.axes:
+            if ax.get_lines():
+                return True
+        return False
+
+    def _export_active_plot_csv(self) -> None:
+        """Dump every Line2D on the current matplotlib figure to a CSV
+        file. Tile mode produces one section per subplot, separated by
+        a blank line and a comment header carrying the subplot title.
+        Lines that share an identical x-array collapse to `x, y1, y2,
+        ...`; otherwise each line gets its own `x_<lbl>, y_<lbl>`
+        pair, padded with empty cells to the longest length.
+
+        Scatter / fill / collection-based plots (impact lat/lon, batch
+        density heatmaps, ...) carry no Line2D and are skipped with a
+        message instead of writing an empty file."""
+        if not self._can_export_active_plot_csv():
+            QMessageBox.information(
+                self, "Nothing to export",
+                "The current plot has no line data to export "
+                "(scatter, fill, and 3D plots aren't supported yet).")
+            return
+        stem = self._path.stem if self._path is not None else "plot"
+        label = (self._active_spec.label
+                 if self._active_spec is not None else "plot")
+        safe_label = "".join(c if c.isalnum() or c in "-_" else "_"
+                             for c in label)
+        suggested = f"{stem}_{safe_label}.csv"
+        start_dir = (str(self._working_dir / suggested)
+                     if self._working_dir is not None else suggested)
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Export CSV", start_dir, "CSV files (*.csv);;All files (*)")
+        if not dest:
+            return
+        dest_path = Path(dest)
+        dlg = self._plot_options_dialog
+        # Visible progress on a fast op: wait cursor + status label in
+        # the dialog. processEvents() flushes the paint so the user
+        # actually sees the message even when the write completes in a
+        # few ms. The cursor is restored unconditionally in `finally`.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        if dlg is not None:
+            dlg.set_status(f"Saving to {dest_path.name}...")
+        QApplication.processEvents()
+        try:
+            csv_text = _serialize_axes_to_csv(self._figure.axes)
+            dest_path.write_text(csv_text, encoding="utf-8")
+        except OSError as exc:
+            if dlg is not None:
+                dlg.set_status(f"Export failed: {exc}", ok=False)
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        # Success: confirm in the panel info label (stays visible after
+        # the dialog auto-closes) and dismiss the dialog so the user
+        # is back at the canvas.
+        size_kb = dest_path.stat().st_size / 1024.0
+        self._info_label.setText(
+            f"Exported CSV: {dest_path}  ({size_kb:.1f} kB)")
+        if dlg is not None:
+            dlg.set_status(f"Saved {size_kb:.1f} kB")
+            dlg.hide()
 
     def _resolve_central_body_from_snapshot(self) -> CentralBodySpec:
         """Read `force_model.central_body` from the loaded run's
