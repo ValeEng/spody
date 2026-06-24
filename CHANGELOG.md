@@ -6,7 +6,22 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
-No changes since v0.2.0-beta.
+### Added
+
+- **3rd-body markers spin in 3D scenes.** When a third body has a
+  registered orientation provider (Earth ITRS via `spopy.icrf_to_
+  itrs`, Moon PA via DE440 libration angles), the textured sphere
+  now rotates per-tick alongside its position so the surface
+  features (continents / mares) track the body's actual attitude
+  across the run. Same provider the central body uses; bodies
+  without one (Sun, planets) keep the previous behaviour.
+
+### Fixed
+
+- **Wizard star-map asset min size.** The Solar System Scope 8K
+  Milky Way JPEG (~1.9 MB on disk) was flagged truncated against
+  a wrong 4 MB floor; lowered to 1 MB so the real file passes and
+  a half-finished download still trips.
 
 ## v0.2.0-beta &mdash; 2026-06-24
 
