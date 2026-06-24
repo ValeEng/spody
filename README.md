@@ -33,12 +33,13 @@ TOML schema validation, per-force acceleration breakdown, run-
 folder layout with timestamp-prefixed snapshot + outputs, and a
 PySide6 desktop frontend covering Setup wizard, TOML editor with
 syntax-aware autocompletion, embedded runner, and a full Analysis
-tab (Plot / Table split, per-plot Export CSV, optional
-equirectangular star-map background on the 3D scene, batch-event
-impact maps in 2D equirectangular + Mollweide projections +
-density heatmap, 3D body-textured impact scene with body-fixed +
-ICRF triads, diff-RIC plots, Jacobi-constant conservation for
-CR3BP). Releases ship signed-sha256 bundles for Windows / Linux
+tab (Plot / Table / Info split, per-plot Export CSV, per-kind
+key/value summary panel with diff-aware |&Delta;r| / |&Delta;v|
+/ RIC rows, optional equirectangular star-map background on the
+3D scene, batch-event impact maps in 2D equirectangular +
+Mollweide projections + density heatmap, 3D body-textured impact
+scene with body-fixed + ICRF triads, diff-RIC plots, Jacobi-
+constant conservation for CR3BP). Releases ship signed-sha256 bundles for Windows / Linux
 x86_64 / macOS arm64 plus a 14-chapter user manual PDF.
 
 The library underneath (`spody-core`) is validated against SPICE
@@ -228,8 +229,8 @@ Ordered roughly by what unlocks the most for users.
         `et2utc` (`deltet` algorithm + IERS leap seconds)
       - Duration unit combo (`s | min | h | days`)
       - Embedded terminal pane streaming `spody`'s stdout/stderr live
-      - **Analysis tab**: Plot / Table split, file tree grouped by
-        run folder (fully recursive scan), per-plot
+      - **Analysis tab**: Plot / Table / **Info** split, file tree
+        grouped by run folder (fully recursive scan), per-plot
         **Export CSV** action (every `Line2D` on the active
         figure, one section per subplot; tile and overlay views
         supported), batch-event impact views (time-to-impact
@@ -243,7 +244,13 @@ Ordered roughly by what unlocks the most for users.
         8K, ICRF-aligned via on-the-fly re-projection; toggle in
         the Scene options dialog, persisted across sessions);
         **camera pan / zoom preserved** across re-renders of the
-        same file
+        same file; **Info tab** with per-kind key/value summary
+        (trajectory: t-range, |r|/|v| ranges, initial+final
+        state, osculating Kepler at t0/tf; accel: per-force RMS
+        + time in shadow; events: counts, impact timing,
+        complete-eclipse pairing min/avg/max; batch: impact
+        rate, survivors; diff-aware overlay with |&Delta;r| /
+        |&Delta;v| / RIC stats when a Diff plot is active)
       - Settings dialog for persisted asset paths
 - [x] **`spopy` Python package**: pure-NumPy DE440 reader + ICRF&lt;-&gt;
       Moon PA rotations + Keplerian&harr;Cartesian + CR3BP

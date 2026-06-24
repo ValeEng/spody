@@ -112,6 +112,25 @@ Two large slices landed on top of v0.1.3-beta:
   (Scene-options toggle, animation refresh) keep the user's
   pan / zoom; only a switch to a different file triggers the
   ResetCamera auto-fit.
+- **Analysis Info tab.** A third tab alongside *Plot* and *Table*
+  in the Analysis right pane shows a per-kind key/value summary
+  of the loaded binary: run-context block sourced from the
+  snapshot TOML (central body, dynamics model, CR3BP primaries +
+  mass ratio, ET start, planned duration, ephemeris, cases CSV)
+  plus a kind-specific block. Trajectory files surface t-range /
+  span / &Delta;t stats, |r| and |v| ranges, initial and final
+  state, and osculating Kepler elements at t0 / tf (HF only).
+  Acceleration files surface |a_total| min/max/mean/RMS, per-
+  force RMS (2-body / harmonics / 3rd-body / SRP / drag), and
+  integrated time in shadow. Events files surface IMPACT and
+  ECLIPSE counts, impact timing min/mean/median/max in seconds
+  with auto-scaled (min/h/d) labels, complete-eclipse pairing
+  with min/avg/max duration, and for batch logs also the per-
+  case stats (cases impacted, total cases from the CSV,
+  survivors, impact rate). When the active plot is one of the
+  *Diff (pick 2 files)* specs the tab appends |&Delta;r| / |&Delta;v|
+  max/mean/RMS/final, linear |&Delta;r| growth in km/day, and the
+  RIC-frame |&Delta;| breakdown (max + RMS) in A's frame.
 
 ### Changed
 

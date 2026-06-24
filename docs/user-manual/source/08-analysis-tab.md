@@ -2,12 +2,12 @@
 
 The Analysis tab is where you inspect the binary outputs the engine
 produces. Its workspace is organised around two trees on the left
-(files and plots) and a **two-tab right pane** &mdash; one tab for
-plots, one for the raw record table &mdash; that lets you switch
-between graphical and tabular views of the same loaded file
-without re-reading from disk. This chapter walks through the
-layout and the interaction patterns; the plot catalogue itself
-lives in chapter 9.
+(files and plots) and a **three-tab right pane** &mdash; one tab
+for plots, one for the raw record table, one for a per-kind
+summary &mdash; that lets you switch between graphical, tabular
+and high-level views of the same loaded file without re-reading
+from disk. This chapter walks through the layout and the
+interaction patterns; the plot catalogue itself lives in chapter 9.
 
 ## Layout
 
@@ -26,9 +26,10 @@ of the main-window chapter &mdash; not in the tab itself):
    up to give the plot tree more room when many plots are visible,
    pull it down when you want more file rows.
 2. The **right column**, a vertical stack:
-    - a **tab bar** at the top with two tabs: **Plot** (the
-      canvas) and **Table** (a spreadsheet view of the loaded
-      file's records);
+    - a **tab bar** at the top with three tabs: **Plot** (the
+      canvas), **Table** (a spreadsheet view of the loaded
+      file's records), and **Info** (a per-kind key/value
+      summary populated from the file + its run snapshot);
     - inside the **Plot** tab: an **animation bar** that appears
       only when the active plot is 3D (chapter 9 covers it),
       followed by the **canvas** (matplotlib for 2D plots, VTK
@@ -38,7 +39,10 @@ of the main-window chapter &mdash; not in the tab itself):
     - inside the **Table** tab: a `QTableView` over the loaded
       record array, populated whenever you click a file (see
       section *The Table tab* below);
-    - an **info label** at the bottom (shared between the two
+    - inside the **Info** tab: a two-column key/value table
+      summarising the loaded binary (see section *The Info tab*
+      below);
+    - an **info label** at the bottom (shared between the three
       tabs), with the current file or operation summary.
 3. The **horizontal splitter** between left and right columns is
    draggable too.
@@ -324,3 +328,127 @@ works because the format is plain UTF-8 text.
 
 This is the path to take whenever you want the *numbers* &mdash;
 the Plot tab is for the *picture*.
+
+## The Info tab
+
+The Info tab is a **per-kind summary** of the loaded binary. It
+trades off the Plot tab's visual answer and the Table tab's
+exhaustive record list for a compact one-screen overview: which
+file you're on, what the run setup was, and a handful of key
+statistics computed from the data.
+
+The tab refreshes on three triggers:
+
+- when you click a new file in the file tree;
+- when you click a plot in the plot tree (so the diff-aware
+  rows described at the end of this section appear / disappear
+  with the plot selection);
+- when you switch into the tab on an already-loaded file.
+
+All blocks are cheap to compute (one numpy pass over the loaded
+array), so the refresh is unnoticeable.
+
+### Run summary (always shown)
+
+Every kind starts with a *Run summary* section. The first four
+rows always come from the file itself:
+
+- **File** &mdash; the binary's filename.
+- **Folder** &mdash; the absolute parent directory.
+- **Type** &mdash; one of `trajectory (SPDYOUT_)`, `accelerations
+  (SPDYACC_)`, `events log (SPDYEVT_)`, `events log (SPDYEVTB,
+  batch-aggregated)`.
+- **Records** &mdash; the record count.
+
+The remaining rows come from the **per-run snapshot TOML** the
+engine drops next to the bin (`<ts>_input.toml`); they are skipped
+when no snapshot sits alongside the loaded file:
+
+- **Central body** &mdash; `Moon` / `Earth` / &hellip;
+- **Dynamics model** &mdash; `high_fidelity` or `cr3bp`.
+- **CR3BP primaries** + **CR3BP mass ratio &micro;** &mdash;
+  only shown in CR3BP runs.
+- **ET start [s]** &mdash; the simulation epoch.
+- **Planned duration** &mdash; the scheduled `duration_s`,
+  rendered in seconds plus a friendly unit (min / h / d) once
+  it crosses the obvious thresholds.
+- **Ephemeris** &mdash; the resolved DE-series file's basename.
+- **Cases file** &mdash; the resolved batch CSV's basename
+  (batch runs only).
+
+### Trajectory files (`SPDYOUT_`)
+
+Two sections on top of *Run summary*:
+
+- *Trajectory* &mdash; t range and span (s + d), &Delta;t
+  min/avg/max, |r| min/max [km], |v| min/max [km/s];
+- *Initial state* and *Final state* &mdash; the (x, y, z) and
+  (vx, vy, vz) triplets at t0 and tf.
+
+For high-fidelity runs whose central body is registered (Moon,
+Earth) a final *Kepler elements (HF, central body)* section
+adds the six classical osculating elements (a, e, i, &Omega;,
+&omega;, &nu;) at t0 and tf, computed via `spopy.cartesian_to_
+keplerian` with the body's GM. The section is silently omitted
+in CR3BP runs (the relevant frame is primary-relative; switch
+to the Plot tab's *Orbital elements* group with the Scene-
+options dialog's primary selector for a per-primary breakdown).
+
+### Acceleration files (`SPDYACC_`)
+
+- *Accelerations* &mdash; t range, span, &Delta;t stats, plus
+  |a_total| min/max/mean/RMS [km/s&sup2;];
+- *Per-force RMS [km/s&sup2;]* &mdash; one row each for the
+  2-body, harmonics, 3rd-body, SRP, and drag components;
+- *Eclipse* &mdash; the minimum `eclipse_fraction` reached over
+  the run plus the **time in shadow** integrated trapezoidally
+  over the (1 &minus; fraction) signal.
+
+### Events files (`SPDYEVT_` / `SPDYEVTB`)
+
+The top *Events* section is shared between per-run and batch
+events: **Total records**, **IMPACT count**, **ECLIPSE count**.
+Batch logs add three extra rows up there (**Cases with events**,
+**Cases with impact**, and &mdash; when the cases CSV is
+resolved next to the snapshot &mdash; **Cases total (CSV)**,
+**Survivors (no impact)**, **Impact rate %**).
+
+Two derived sections follow when the underlying counts are
+non-zero:
+
+- *Impact timing* (any IMPACT row present) &mdash; first / last
+  / median / mean impact time, each formatted as raw seconds
+  with the friendly (min / h / d) equivalent in parentheses.
+- *Eclipses* (any ECLIPSE row present) &mdash; **Trigger
+  records** is the raw count of crossings (entry + exit). The
+  engine emits one record per threshold crossing of the signed
+  (fraction &minus; threshold) predicate, so successive triggers
+  for the same `{case_idx, naif_id}` group alternate
+  entry &harr; exit; consecutive pairs are one **complete
+  eclipse** with duration `t_exit - t_entry`. The summary
+  reports the pair count and the min / avg / max duration.
+  Odd tails (the run started or ended inside shadow) are
+  silently dropped from the pairing &mdash; expect
+  `2 &times; Complete eclipses + odd-tails = Trigger records`
+  per group.
+
+### Diff overlay (plot-aware)
+
+When the active plot in the plot tree is one of the *Diff (pick
+2 files)* specs &mdash; and a successful diff dispatch has
+already cached the aligned pair &mdash; the Info tab appends a
+section named after the plot label with:
+
+- the A and B filenames;
+- the alignment note ("B interpolated onto A's grid") when the
+  two grids didn't match;
+- |&Delta;r| **max / mean / RMS / final** [km];
+- |&Delta;v| **max / mean / RMS / final** [km/s];
+- |&Delta;r| **linear growth** as the least-squares slope in
+  km/day;
+- **RIC frame (A)** &mdash; |&Delta;| max and RMS broken down
+  into radial / in-track / cross-track in A's local frame.
+
+The overlay disappears as soon as you click a non-diff plot or
+load a different file.
+
