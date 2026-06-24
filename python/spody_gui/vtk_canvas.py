@@ -120,6 +120,12 @@ class _AnimHandle:
     marker_actor:     vtkActor
     silhouette_actor: vtkActor | None  # None for textured markers (e.g. Moon 3rd-body) -- the body's surface is self-identifying so a white outline would only halo it.
     color:            tuple[float, float, float] = (1.0, 0.85, 0.20)
+    # Optional per-time body-fixed -> scene rotation for the marker
+    # actor. When non-None, set_animation_time installs the rotation
+    # as the marker's UserMatrix so e.g. Earth's ITRS texture rotates
+    # under the continents even when Earth is shown as a third body
+    # in a Moon-centred scene. Shape (N, 3, 3); same length as `times`.
+    marker_R_sequence: "np.ndarray | None" = None    # noqa: F821
 
 
 @dataclass
@@ -786,6 +792,7 @@ class VtkCanvas(QWidget):
                                  source_path: Path | None = None,
                                  marker_radius_km: float | None = None,
                                  marker_texture_path: Path | None = None,
+                                 marker_R_bf_to_scene_sequence: np.ndarray | None = None,
                                  is_decoration: bool = False) -> None:
         """Like `add_trajectory` but also registers an animation
         handle: a coloured sphere marker (sized to ~1% of the scene
@@ -923,10 +930,24 @@ class VtkCanvas(QWidget):
         if source_path is not None:
             self._trajectory_actors.append((line_actor, source_path))
 
+        # Marker attitude animation: required for bodies that have a
+        # body-fixed frame (Earth's ITRF, Moon's PA) so the texture
+        # rotates under the surface features over the run. Shape gate
+        # is loud — silently dropping a wrong shape would mean the
+        # texture freezes with no visible error.
+        R_marker: np.ndarray | None = None
+        if marker_R_bf_to_scene_sequence is not None:
+            R_marker = np.asarray(marker_R_bf_to_scene_sequence,
+                                   dtype=float)
+            if R_marker.shape != (n, 3, 3):
+                raise ValueError(
+                    "marker_R_bf_to_scene_sequence must have shape "
+                    f"({n}, 3, 3); got {R_marker.shape}")
         self._anim_handles.append(_AnimHandle(
             times=ts, points=pts, line_actor=line_actor,
             full_poly=poly, marker_actor=marker,
-            silhouette_actor=silhouette_actor, color=color))
+            silhouette_actor=silhouette_actor, color=color,
+            marker_R_sequence=R_marker))
 
         # If the user already turned the trail mode on for the previous
         # scene, mirror that on the new handle so all polylines start
@@ -1146,7 +1167,23 @@ class VtkCanvas(QWidget):
         another, the shorter one freezes at its last sample."""
         for h in self._anim_handles:
             pos = self._interp_point(h, t_s)
-            h.marker_actor.SetPosition(*pos)
+            if h.marker_R_sequence is not None:
+                # Marker attitude AND position baked into a single
+                # UserMatrix. Two reasons we do not just call
+                # SetUserMatrix(R) + SetPosition(p): (a) VTK's
+                # ComputeMatrix composes UserMatrix INSIDE the
+                # position translation, which is right in theory but
+                # surprising to debug; (b) leaving a stale
+                # SetPosition from a previous rotation-less pass on
+                # the same actor would silently double-translate.
+                # The 4x4 we build is M = T(p) * R, so applying it
+                # to a body-frame vertex v gives R*v + p directly.
+                # SetPosition is cleared to (0,0,0) for this actor so
+                # the rotated-position pipeline owns the placement.
+                R_now = self._interp_R(h.times, h.marker_R_sequence, t_s)
+                self._apply_pose(h.marker_actor, R_now, pos)
+            else:
+                h.marker_actor.SetPosition(*pos)
             if h.silhouette_actor is not None:
                 h.silhouette_actor.SetPosition(*pos)
             if self._trail_enabled:
@@ -1243,6 +1280,27 @@ class VtkCanvas(QWidget):
             m.SetElement(i, 3, 0.0)
         m.SetElement(3, 0, 0.0); m.SetElement(3, 1, 0.0)
         m.SetElement(3, 2, 0.0); m.SetElement(3, 3, 1.0)
+        actor.SetUserMatrix(m)
+
+    @staticmethod
+    def _apply_pose(actor: vtkActor,
+                     R: np.ndarray,
+                     position_km: np.ndarray) -> None:
+        """Bake (R, position) into a single 4x4 UserMatrix and clear
+        the actor's SetPosition. The matrix is M = T(p) * R so
+        world = M @ model_bf = R @ model_bf + p directly. Avoids the
+        VTK composition order surprise where UserMatrix is applied
+        INSIDE Position translation, and dodges leaving a stale
+        SetPosition value behind from a previous tick where the
+        rotation-less path called SetPosition explicitly."""
+        m = vtkMatrix4x4()
+        for i in range(3):
+            for j in range(3):
+                m.SetElement(i, j, float(R[i, j]))
+            m.SetElement(i, 3, float(position_km[i]))
+        m.SetElement(3, 0, 0.0); m.SetElement(3, 1, 0.0)
+        m.SetElement(3, 2, 0.0); m.SetElement(3, 3, 1.0)
+        actor.SetPosition(0.0, 0.0, 0.0)
         actor.SetUserMatrix(m)
 
     @staticmethod

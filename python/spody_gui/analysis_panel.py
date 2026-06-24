@@ -1816,12 +1816,39 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
                 paths.data_dir(), name)
         except Exception:
             marker_texture_path = None
+        # Body-fixed -> ICRF rotation per sample, sourced from the
+        # central-body registry's orientation provider. When the body
+        # has one (Earth ITRS via spopy.icrf_to_itrs, Moon PA via
+        # libration angles), the marker actor spins in the 3D scene
+        # so the texture features (continents, mares) track the
+        # physical rotation. Bodies without a provider (Sun, planets)
+        # stay un-rotated -- the texture orientation is still correct
+        # at t=0, and visual rotation is academic when the body is a
+        # spec on the horizon. None on lookup failure -> no rotation
+        # animation, no other code change required.
+        marker_R_seq: np.ndarray | None = None
+        body_spec = resolve_central_body(name)
+        if (body_spec is not None
+                and body_spec.bf_orientation is not None):
+            try:
+                marker_R_seq = np.empty((n, 3, 3), dtype=float)
+                for i in range(n):
+                    R_icrf_to_bf = body_spec.bf_orientation(
+                        et_start + float(times_s[i]), eph)
+                    # SetUserMatrix takes a model-to-world rotation; we
+                    # want the body-fixed texture rotated INTO the ICRF
+                    # scene, so transpose.
+                    marker_R_seq[i] = np.asarray(R_icrf_to_bf,
+                                                  dtype=float).T
+            except Exception:
+                marker_R_seq = None
         canvas.add_animated_trajectory(
             pts_display, np.asarray(times_s, dtype=float),
             color=color, line_width=1.2,
             marker_radius_km=_body_marker_radius_km(
                 name, ref_radius_km=ctx.central_body.radius_km),
             marker_texture_path=marker_texture_path,
+            marker_R_bf_to_scene_sequence=marker_R_seq,
             is_decoration=True,
         )
         # 2) Fixed-length direction arrow anchored at the origin so
