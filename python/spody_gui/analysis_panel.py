@@ -285,91 +285,23 @@ MU_MOON_KM3_S2 = _MOON_MU_KM3S2_FALLBACK
 
 def _orbital_elements(r: np.ndarray, v: np.ndarray, mu: float
                       ) -> dict[str, np.ndarray]:
-    """Classical orbital elements from state vectors at every sample.
+    """Classical orbital elements at every sample of (r, v).
 
-    `r` (N, 3) km, `v` (N, 3) km/s, both expressed in the same inertial
-    frame; `mu` km^3/s^2 is the central body's GM. For HF runs the
-    caller passes the raw state vector and the run's central-body mu.
-    For CR3BP runs the caller passes state shifted into one primary's
-    frame and rotated to inertial (synodic `v` + omega x r_rel), with
-    that primary's mu -- see `_state_for_elements`.
-
-    Returns a dict with the per-sample arrays:
-        a    [km]     -- semi-major axis (vis-viva)
-        e    [-]      -- eccentricity (magnitude of eccentricity vector)
-        i    [deg]    -- inclination
-        raan [deg]    -- right ascension of ascending node
-        aop  [deg]    -- argument of periapsis
-        nu   [deg]    -- true anomaly
-
-    All math is vectorised across the full trajectory. The classical
-    set has two degenerate cases that we handle explicitly:
-        * Equatorial orbit (i ~ 0): RAAN is undefined; we fold its
-          rotation into AOP and set RAAN = 0.
-        * Circular orbit (e ~ 0): AOP and true anomaly are undefined;
-          we set both to 0.
-    The thresholds are tight (1e-8) so any realistic propagated orbit
-    is unaffected.
-    """
-    r_mag = np.linalg.norm(r, axis=-1)
-    v_mag = np.linalg.norm(v, axis=-1)
-
-    # Specific angular momentum h = r x v -- normal to the orbit plane.
-    h = np.cross(r, v)
-    h_mag = np.linalg.norm(h, axis=-1)
-
-    # Eccentricity vector e = (v x h)/mu - r_hat. |e| is the scalar
-    # eccentricity; the vector points toward periapsis.
-    r_hat = r / r_mag[..., None]
-    e_vec = np.cross(v, h) / mu - r_hat
-    e_mag = np.linalg.norm(e_vec, axis=-1)
-
-    # Vis-viva: 1/a = 2/r - v^2/mu  ->  a = 1 / (2/r - v^2/mu).
-    a = 1.0 / (2.0 / r_mag - v_mag ** 2 / mu)
-
-    # Inclination from h_z / |h|. Clip to dodge tiny floating-point
-    # excursions outside [-1, 1] that would NaN out arccos.
-    cos_i = np.clip(h[..., 2] / h_mag, -1.0, 1.0)
-    i_rad = np.arccos(cos_i)
-
-    # Node line n = z_hat x h = (-h_y, h_x, 0).
-    n = np.stack((-h[..., 1], h[..., 0], np.zeros_like(h_mag)), axis=-1)
-    n_mag = np.linalg.norm(n, axis=-1)
-
-    EPS = 1e-8
-    equatorial = n_mag < EPS
-    circular   = e_mag < EPS
-
-    # RAAN = acos(n_x / |n|); quadrant flip from sign of n_y.
-    safe_n = np.where(equatorial, 1.0, n_mag)
-    cos_O = np.clip(n[..., 0] / safe_n, -1.0, 1.0)
-    raan_rad = np.arccos(cos_O)
-    raan_rad = np.where(n[..., 1] < 0, 2 * np.pi - raan_rad, raan_rad)
-    raan_rad = np.where(equatorial, 0.0, raan_rad)
-
-    # AOP = acos((n.e)/(|n||e|)); quadrant flip from sign of e_z.
-    denom_w = np.where(equatorial | circular, 1.0, n_mag * e_mag)
-    cos_w = np.clip(np.einsum("...j,...j->...", n, e_vec) / denom_w, -1.0, 1.0)
-    aop_rad = np.arccos(cos_w)
-    aop_rad = np.where(e_vec[..., 2] < 0, 2 * np.pi - aop_rad, aop_rad)
-    aop_rad = np.where(equatorial | circular, 0.0, aop_rad)
-
-    # True anomaly nu = acos((e.r)/(|e||r|)); flip from sign of r.v
-    # (positive r.v means we're past periapsis but before apoapsis).
-    denom_nu = np.where(circular, 1.0, e_mag * r_mag)
-    cos_nu = np.clip(np.einsum("...j,...j->...", e_vec, r) / denom_nu, -1.0, 1.0)
-    nu_rad = np.arccos(cos_nu)
-    rdotv = np.einsum("...j,...j->...", r, v)
-    nu_rad = np.where(rdotv < 0, 2 * np.pi - nu_rad, nu_rad)
-    nu_rad = np.where(circular, 0.0, nu_rad)
-
+    Thin wrapper over `spopy.cartesian_to_keplerian` that converts
+    the canonical (sma_km/ecc/inc_rad/raan_rad/argp_rad/true_anom_rad)
+    dict into the analysis-panel convention
+    (`a`/`e`/`i`/`raan`/`aop`/`nu`, angles in **degrees**). One
+    shared implementation across the engine input path (TOML form
+    swap, kepler.h) and the post-run plots -- no two-codebase drift."""
+    from spopy import cartesian_to_keplerian
+    el = cartesian_to_keplerian(r, v, mu)
     return {
-        "a":    a,
-        "e":    e_mag,
-        "i":    np.degrees(i_rad),
-        "raan": np.degrees(raan_rad),
-        "aop":  np.degrees(aop_rad),
-        "nu":   np.degrees(nu_rad),
+        "a":    el["sma_km"],
+        "e":    el["ecc"],
+        "i":    np.degrees(el["inc_rad"]),
+        "raan": np.degrees(el["raan_rad"]),
+        "aop":  np.degrees(el["argp_rad"]),
+        "nu":   np.degrees(el["true_anom_rad"]),
     }
 
 

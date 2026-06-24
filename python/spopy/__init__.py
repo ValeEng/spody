@@ -50,6 +50,11 @@ from .ephemeris import (
 from .rotations import icrf_to_moon_pa, moon_pa_to_icrf
 from .eop import MappedEOP
 from .earth_orientation import icrf_to_itrs
+from .kepler import (
+    kepler_solve_E, mean_to_true_anom, true_to_mean_anom,
+    keplerian_to_cartesian, cartesian_to_keplerian,
+)
+from .cr3bp import inertial_to_synodic, synodic_to_inertial
 
 __all__ = [
     "Ephemeris",
@@ -58,4 +63,7 @@ __all__ = [
     "NAIF_NEPTUNE", "NAIF_PLUTO",
     "icrf_to_moon_pa", "moon_pa_to_icrf",
     "MappedEOP", "icrf_to_itrs",
+    "kepler_solve_E", "mean_to_true_anom", "true_to_mean_anom",
+    "keplerian_to_cartesian", "cartesian_to_keplerian",
+    "inertial_to_synodic", "synodic_to_inertial",
 ]

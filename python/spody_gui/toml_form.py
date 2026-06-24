@@ -144,6 +144,14 @@ FRAMES_BY_MODEL: dict[str, tuple[str, ...]] = {
 CR3BP_PAIRS: tuple[tuple[str, str], ...] = (
     ("Earth", "Moon"),
 )
+# Primary-primary separation (km) for each curated pair. Needed by the
+# Keplerian <-> Cartesian swap in [initial_state] under CR3BP so the
+# GUI can call spopy.inertial_to_synodic without going back to the
+# engine. Mirrors EARTH_MOON_DISTANCE_KM in spody-core's spody_const.h
+# and the lookup_cr3bp_pair table in src/toml_input.c.
+_CR3BP_L_KM: dict[tuple[str, str], float] = {
+    ("Earth", "Moon"): 384400.0,
+}
 INTEGRATORS      = ("rkdp45",)
 OUTPUT_MODES     = ("fixed", "step")
 THIRD_BODIES_ALL = ("Sun", "Mercury", "Venus", "Earth", "Moon",
@@ -199,6 +207,15 @@ _TOOLTIPS: dict[str, str] = {
     "debris.am_srp":                 "Area-to-mass ratio in m²/kg; > 0.",
     "debris.Cr":                     "Reflectivity coefficient (used only when SRP is enabled).",
     "initial_state.frame":           "Inertial reference frame. v0 supports only 'central_inertial'.",
+    "initial_state.kind":            "Cartesian (default) gives [x, y, z] and [vx, vy, vz] directly. Keplerian gives six classical orbital elements + a reference body; the engine (and the form's swap helper) converts to Cartesian on the fly.",
+    "initial_state.reference_body":  "Which body the Keplerian elements reference. HF: 'central' (implicit). CR3BP: 'primary_1' (bigger) or 'primary_2' (smaller); required, no default.",
+    "initial_state.semi_major_axis_km": "Semi-major axis a, in km; > 0 for elliptical orbits.",
+    "initial_state.eccentricity":    "Eccentricity e in [0, 1). Hyperbolic / parabolic orbits are not supported via Keplerian input.",
+    "initial_state.inclination_deg": "Inclination i, in degrees, in [0, 180].",
+    "initial_state.raan_deg":        "Right ascension of the ascending node, in degrees. Folded into argument of periapsis when the orbit is equatorial.",
+    "initial_state.arg_periapsis_deg": "Argument of periapsis omega, in degrees. Folded into 0 when the orbit is circular.",
+    "initial_state.anomaly_deg":     "Anomaly value at t = 0, in degrees. Interpreted as true OR mean depending on anomaly_type below.",
+    "initial_state.anomaly_type":    "Is anomaly_deg true anomaly (most natural) or mean anomaly (catalog convention; converted via Kepler's equation).",
     "initial_state.position_km":     "[x, y, z] position in km, central-body inertial frame.",
     "initial_state.velocity_kms":    "[vx, vy, vz] velocity in km/s, same frame as position.",
     "force_model.central_body":      "Central body of the propagation. Supported: " + ", ".join(f"'{n}'" for n in CENTRAL_BODIES) + ".",
@@ -238,6 +255,9 @@ def _nonneg (v: float) -> str: return "" if v >= 0.0 else "must be >= 0"
 def _harm_deg(v: int)  -> str: return "" if 2 <= v <= 2200 else "must be in [2, 2200] (schema cap; file maximum is the effective ceiling: 1200 for GRGM1200B, 2190 for EIGEN-6C4)"
 def _frac01 (v: float) -> str: return "" if 0.0 <= v <= 1.0 else "must be in [0, 1]"
 
+def _ecc01    (v: float) -> str: return "" if 0.0 <= v < 1.0 else "must be in [0, 1) (hyperbolic / parabolic not supported)"
+def _inc_deg  (v: float) -> str: return "" if 0.0 <= v <= 180.0 else "must be in [0, 180] deg"
+
 _VALIDATORS: dict[str, Any] = {
     "simulation.duration_s":          _pos,
     "spacecraft.mass_kg":             _pos,
@@ -247,6 +267,9 @@ _VALIDATORS: dict[str, Any] = {
     "debris.am_srp":                  _pos,
     "debris.Cr":                      _nonneg,
     "force_model.harmonics_degree":   _harm_deg,
+    "initial_state.semi_major_axis_km": _pos,
+    "initial_state.eccentricity":     _ecc01,
+    "initial_state.inclination_deg":  _inc_deg,
     "integrator.rel_tol":             _pos,
     "integrator.h_init_s":            _pos,
     "integrator.h_min_s":             _pos,
@@ -279,6 +302,11 @@ _UNIT = {
     "interval_s":  "s",
     "position_km": "km",
     "velocity_kms":"km/s",
+    "semi_major_axis_km": "km",
+    "inclination_deg":    "deg",
+    "raan_deg":           "deg",
+    "arg_periapsis_deg":  "deg",
+    "anomaly_deg":        "deg",
 }
 
 
@@ -679,15 +707,69 @@ class TomlForm(QWidget):
         return g
 
     def _build_initial_state(self) -> QGroupBox:
+        """Two-flavour [initial_state] form: a `kind` combo at the top
+        swaps between the legacy Cartesian block (position_km +
+        velocity_kms) and the Keplerian block (six classical elements
+        + reference_body + anomaly_type). Switching `kind` after the
+        user has typed values converts in place via spopy so nothing
+        is lost; the swap is silent if any source field is empty /
+        unparseable.
+
+        The reference_body combo's items are filtered by the active
+        dynamics_model -- HF defaults to 'central' (the only option);
+        CR3BP exposes 'primary_1' and 'primary_2'."""
         g = QGroupBox("[initial_state]")
-        f = QFormLayout(g)
+        v_outer = QVBoxLayout(g)
+        v_outer.setContentsMargins(8, 6, 8, 6)
+
+        # Top form row: frame + kind. Always visible.
+        top = QFormLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        v_outer.addLayout(top)
         # Frame combo: items are filtered by the active dynamics model
         # (HF -> central_inertial; CR3BP -> synodic_rotating). Seed with
         # the HF set; _on_dynamics_model_changed reflows on switch.
-        self._add_enum(f, "initial_state.frame", "frame",
+        self._add_enum(top, "initial_state.frame", "frame",
                        FRAMES_BY_MODEL["high_fidelity"])
-        self._add_vec3(f, "initial_state.position_km",  "position_km")
-        self._add_vec3(f, "initial_state.velocity_kms", "velocity_kms")
+        self._add_enum(top, "initial_state.kind", "kind",
+                       ("cartesian", "keplerian"))
+
+        # --- Cartesian block --------------------------------------------------
+        self._init_cart_block = QWidget()
+        cart_form = QFormLayout(self._init_cart_block)
+        cart_form.setContentsMargins(0, 0, 0, 0)
+        self._add_vec3(cart_form, "initial_state.position_km",  "position_km")
+        self._add_vec3(cart_form, "initial_state.velocity_kms", "velocity_kms")
+        v_outer.addWidget(self._init_cart_block)
+
+        # --- Keplerian block --------------------------------------------------
+        self._init_kep_block = QWidget()
+        kep_form = QFormLayout(self._init_kep_block)
+        kep_form.setContentsMargins(0, 0, 0, 0)
+        # reference_body: cascade visibility / contents from dynamics_model.
+        # Seed with the HF-only entry; _on_dynamics_model_changed reflows it.
+        self._add_enum(kep_form, "initial_state.reference_body",
+                       "reference_body", ("central",))
+        self._add_float(kep_form, "initial_state.semi_major_axis_km",
+                        "semi_major_axis_km")
+        self._add_float(kep_form, "initial_state.eccentricity",
+                        "eccentricity")
+        self._add_float(kep_form, "initial_state.inclination_deg",
+                        "inclination_deg")
+        self._add_float(kep_form, "initial_state.raan_deg", "raan_deg")
+        self._add_float(kep_form, "initial_state.arg_periapsis_deg",
+                        "arg_periapsis_deg")
+        self._add_float(kep_form, "initial_state.anomaly_deg", "anomaly_deg")
+        self._add_enum(kep_form, "initial_state.anomaly_type",
+                       "anomaly_type", ("true", "mean"))
+        v_outer.addWidget(self._init_kep_block)
+
+        # Default kind = cartesian -> hide kep block.
+        self._init_kep_block.setVisible(False)
+
+        # Wire the kind combo: on change, convert (best-effort) and swap.
+        kind_combo = self._widgets["initial_state.kind"]
+        kind_combo.currentTextChanged.connect(self._on_init_kind_changed)
         return g
 
     def _build_cr3bp(self) -> QGroupBox:
@@ -923,6 +1005,193 @@ class TomlForm(QWidget):
         self._output_form.setRowVisible(self._output_interval_row,
                                         mode == "fixed")
 
+    # ------------------------------------------------------------------
+    # [initial_state] kind swap (cartesian <-> keplerian)
+    # ------------------------------------------------------------------
+    def _on_init_kind_changed(self, kind: str) -> None:
+        """Try a best-effort in-place conversion of the just-vacated
+        block into the newly-active one, then toggle visibility. Silent
+        on conversion failure (empty / unparseable source fields, mu
+        unresolvable, ...): the destination block stays at whatever it
+        was holding so the user can fill it in by hand.
+
+        During load the conversion is skipped (the loader populates the
+        destination block from the TOML directly); only the visibility
+        toggle still runs so the right block is on screen."""
+        is_kep = (kind == "keplerian")
+        if not self._loading:
+            if is_kep:
+                self._convert_cart_to_kep()
+            else:
+                self._convert_kep_to_cart()
+        self._init_cart_block.setVisible(not is_kep)
+        self._init_kep_block.setVisible(is_kep)
+        self._touch()
+
+    def _resolve_kep_mu_and_synodic(self) -> tuple[float, dict] | None:
+        """Look up the reference-body mu (+ CR3BP geometry when needed)
+        for the current dynamics_model + reference_body combo. Returns
+        `(mu_km3_s2, synodic_ctx)` where synodic_ctx is either None
+        (HF) or a dict {mu1, mu2, L, primary_index} that the two
+        conversion helpers feed into spopy.synodic_to_inertial /
+        inertial_to_synodic. Returns None when anything cannot be
+        resolved (unknown body, missing CR3BP pair, ...)."""
+        dm_combo = self._widgets.get("simulation.dynamics_model")
+        dyn_model = (dm_combo.currentText()
+                     if isinstance(dm_combo, QComboBox) else "high_fidelity")
+        if dyn_model == "cr3bp":
+            ref_combo = self._widgets.get("initial_state.reference_body")
+            ref = ref_combo.currentText() if isinstance(ref_combo, QComboBox) else ""
+            if ref not in ("primary_1", "primary_2"):
+                return None
+            p1_combo = self._widgets.get("cr3bp.primary_1")
+            p2_combo = self._widgets.get("cr3bp.primary_2")
+            p1 = p1_combo.currentText() if isinstance(p1_combo, QComboBox) else ""
+            p2 = p2_combo.currentText() if isinstance(p2_combo, QComboBox) else ""
+            from .central_bodies import resolve_central_body
+            spec1 = resolve_central_body(p1)
+            spec2 = resolve_central_body(p2)
+            L = _CR3BP_L_KM.get((p1, p2))
+            if spec1 is None or spec2 is None or L is None:
+                return None
+            primary_index = 1 if ref == "primary_1" else 2
+            mu_ref = spec1.mu_km3_s2 if primary_index == 1 else spec2.mu_km3_s2
+            return mu_ref, {
+                "mu1": spec1.mu_km3_s2, "mu2": spec2.mu_km3_s2,
+                "L":   L,               "primary_index": primary_index,
+            }
+        # HF path: mu = central body's GM.
+        cb_combo = self._widgets.get("force_model.central_body")
+        cb_name = cb_combo.currentText() if isinstance(cb_combo, QComboBox) else ""
+        from .central_bodies import resolve_central_body
+        spec = resolve_central_body(cb_name)
+        if spec is None:
+            return None
+        return spec.mu_km3_s2, None
+
+    def _read_vec3(self, key: str) -> "np.ndarray | None":
+        import numpy as np  # local: avoid loading numpy at form-import time
+        widgets = self._widgets.get(key)
+        if not isinstance(widgets, tuple) or len(widgets) != 3:
+            return None
+        out = []
+        for w in widgets:
+            txt = w.text().strip()
+            if not txt:
+                return None
+            try:
+                out.append(float(txt))
+            except ValueError:
+                return None
+        return np.array(out)
+
+    def _write_vec3(self, key: str, vals) -> None:
+        widgets = self._widgets.get(key)
+        if not isinstance(widgets, tuple) or len(widgets) != 3:
+            return
+        for w, v in zip(widgets, vals):
+            w.setText(repr(float(v)))
+
+    def _read_float(self, key: str) -> float | None:
+        w = self._widgets.get(key)
+        if not isinstance(w, QLineEdit):
+            return None
+        txt = w.text().strip()
+        if not txt:
+            return None
+        try:
+            return float(txt)
+        except ValueError:
+            return None
+
+    def _write_float(self, key: str, v: float) -> None:
+        w = self._widgets.get(key)
+        if isinstance(w, QLineEdit):
+            w.setText(repr(float(v)))
+
+    def _convert_cart_to_kep(self) -> None:
+        """Cartesian -> Keplerian. For CR3BP this first rotates the
+        synodic state back into the reference primary's inertial frame
+        before extracting the elements."""
+        import math
+        r = self._read_vec3("initial_state.position_km")
+        v = self._read_vec3("initial_state.velocity_kms")
+        if r is None or v is None:
+            return
+        ctx = self._resolve_kep_mu_and_synodic()
+        if ctx is None:
+            return
+        mu_ref, synodic_ctx = ctx
+        try:
+            from spopy import (cartesian_to_keplerian, synodic_to_inertial,
+                               true_to_mean_anom)
+            if synodic_ctx is not None:
+                r_in, v_in = synodic_to_inertial(
+                    r, v, synodic_ctx["mu1"], synodic_ctx["mu2"],
+                    synodic_ctx["L"], synodic_ctx["primary_index"])
+            else:
+                r_in, v_in = r, v
+            el = cartesian_to_keplerian(r_in, v_in, mu_ref)
+        except (ValueError, ZeroDivisionError):
+            return
+        self._write_float("initial_state.semi_major_axis_km", el["sma_km"])
+        self._write_float("initial_state.eccentricity",       el["ecc"])
+        self._write_float("initial_state.inclination_deg",    math.degrees(el["inc_rad"]))
+        self._write_float("initial_state.raan_deg",           math.degrees(el["raan_rad"]))
+        self._write_float("initial_state.arg_periapsis_deg",  math.degrees(el["argp_rad"]))
+        # Honour the current anomaly_type so a round-trip keplerian ->
+        # cartesian -> keplerian preserves the user's choice between
+        # true and mean.
+        anom_combo = self._widgets.get("initial_state.anomaly_type")
+        anom_type = (anom_combo.currentText()
+                     if isinstance(anom_combo, QComboBox) else "true")
+        nu_rad = el["true_anom_rad"]
+        if anom_type == "mean":
+            anom_rad = true_to_mean_anom(nu_rad, el["ecc"])
+        else:
+            anom_rad = nu_rad
+        self._write_float("initial_state.anomaly_deg", math.degrees(anom_rad))
+
+    def _convert_kep_to_cart(self) -> None:
+        """Keplerian -> Cartesian. For CR3BP, the primary-centered
+        inertial state is then mapped into the synodic frame at t = 0."""
+        import math
+        sma = self._read_float("initial_state.semi_major_axis_km")
+        ecc = self._read_float("initial_state.eccentricity")
+        inc = self._read_float("initial_state.inclination_deg")
+        raan = self._read_float("initial_state.raan_deg")
+        argp = self._read_float("initial_state.arg_periapsis_deg")
+        anom = self._read_float("initial_state.anomaly_deg")
+        if (sma is None or ecc is None or inc is None or raan is None
+                or argp is None or anom is None):
+            return
+        ctx = self._resolve_kep_mu_and_synodic()
+        if ctx is None:
+            return
+        mu_ref, synodic_ctx = ctx
+        anom_combo = self._widgets.get("initial_state.anomaly_type")
+        anom_type = (anom_combo.currentText()
+                     if isinstance(anom_combo, QComboBox) else "true")
+        try:
+            from spopy import (keplerian_to_cartesian, inertial_to_synodic,
+                               mean_to_true_anom)
+            anom_rad = math.radians(anom)
+            if anom_type == "mean":
+                anom_rad = mean_to_true_anom(anom_rad, ecc)
+            r_in, v_in = keplerian_to_cartesian(
+                sma, ecc, math.radians(inc), math.radians(raan),
+                math.radians(argp), anom_rad, mu_ref)
+            if synodic_ctx is not None:
+                r, v = inertial_to_synodic(
+                    r_in, v_in, synodic_ctx["mu1"], synodic_ctx["mu2"],
+                    synodic_ctx["L"], synodic_ctx["primary_index"])
+            else:
+                r, v = r_in, v_in
+        except (ValueError, ZeroDivisionError):
+            return
+        self._write_vec3("initial_state.position_km",  r)
+        self._write_vec3("initial_state.velocity_kms", v)
+
     def _on_dynamics_model_changed(self, model: str) -> None:
         """Reflow the per-model sections + filter the frame combo + grey
         out HF-only optional toggles. HF shows the legacy stack (object
@@ -950,6 +1219,23 @@ class TomlForm(QWidget):
             idx = frame_combo.findText(prev)
             frame_combo.setCurrentIndex(idx if idx >= 0 else 0)
             frame_combo.blockSignals(False)
+
+        # reference_body combo: HF only ever uses "central" (implicit
+        # central body); CR3BP exposes primary_1 / primary_2 with no
+        # default ("--" placeholder forces an explicit pick).
+        ref_combo = self._widgets.get("initial_state.reference_body")
+        if isinstance(ref_combo, QComboBox):
+            ref_combo.blockSignals(True)
+            prev = ref_combo.currentText()
+            ref_combo.clear()
+            if is_hf:
+                ref_combo.addItem("central")
+            else:
+                ref_combo.addItem("primary_1")
+                ref_combo.addItem("primary_2")
+            idx = ref_combo.findText(prev)
+            ref_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            ref_combo.blockSignals(False)
 
         # Optional knobs the engine rejects under CR3BP -- grey out and
         # uncheck so the user cannot enable them and so a stale toggle
@@ -2297,6 +2583,34 @@ class TomlForm(QWidget):
             flat.pop("output.accelerations_file", None)
             flat.pop("events.eclipse_threshold", None)
 
+        # [initial_state] kind dispatch: drop the inactive block's
+        # keys so the emitted TOML matches what the user sees in the
+        # form. 'cartesian' is the default; we also drop the `kind`
+        # key itself in that case so legacy round-trips stay
+        # byte-identical when the user never touched the new combo.
+        init_kind = flat.get("initial_state.kind", "cartesian")
+        if init_kind == "cartesian":
+            for k in (
+                "initial_state.kind",
+                "initial_state.reference_body",
+                "initial_state.semi_major_axis_km",
+                "initial_state.eccentricity",
+                "initial_state.inclination_deg",
+                "initial_state.raan_deg",
+                "initial_state.arg_periapsis_deg",
+                "initial_state.anomaly_deg",
+                "initial_state.anomaly_type",
+            ):
+                flat.pop(k, None)
+        else:  # keplerian
+            flat.pop("initial_state.position_km",  None)
+            flat.pop("initial_state.velocity_kms", None)
+            # HF: reference_body is implicit ("central"); omit so the
+            # emitted TOML mirrors the schema docs (defaults are not
+            # written).
+            if dyn_model != "cr3bp":
+                flat.pop("initial_state.reference_body", None)
+
         # Resolve cases_file from the source path + frame combo. The
         # form has a SINGLE path widget (always showing the user-picked
         # source); the TOML carries three batch keys whose contract is:
@@ -2459,6 +2773,21 @@ class TomlForm(QWidget):
                 if idx >= 0:
                     dm_combo.setCurrentIndex(idx)
             self._on_dynamics_model_changed(str(dm_value))
+
+            # [initial_state].kind also drives visibility: pick it BEFORE
+            # the field push so the right block is shown. Default to
+            # cartesian (legacy TOMLs). The kind combo is wired through
+            # _on_init_kind_changed which would otherwise try to convert
+            # whatever is in the cartesian block right now (most likely
+            # empty); _loading=True is already set so _touch is a no-op,
+            # but we still want to skip the conversion attempt -- toggle
+            # visibility manually here, _set_widget_value below will set
+            # the combo to the right text.
+            init_kind = (flat.get("initial_state.kind") or "cartesian")
+            init_is_kep = (init_kind == "keplerian")
+            if hasattr(self, "_init_cart_block"):
+                self._init_cart_block.setVisible(not init_is_kep)
+                self._init_kep_block.setVisible(init_is_kep)
 
             # Decide object mode FIRST so the XOR visibility is right
             # before fields populate. (No-op when dynamics_model = cr3bp
