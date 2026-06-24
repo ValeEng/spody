@@ -272,7 +272,10 @@ STAR_TEXTURE = Asset(
     name="Star map (Solar System Scope, Milky Way 8K)",
     url="https://www.solarsystemscope.com/textures/download/8k_stars_milky_way.jpg",
     relpath="Stars/8k_stars_milky_way.jpg",
-    min_bytes=4_000_000,
+    # The 8K Milky Way JPEG is heavily compressed (real payload ~1.9 MB).
+    # Floor sits at 1 MB so a truncated download still trips, but the
+    # real file passes cleanly.
+    min_bytes=1_000_000,
     kind="raw",
     required=False,
     category="texture_skybox",
