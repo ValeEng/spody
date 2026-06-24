@@ -6,16 +6,19 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
-Two large slices landed on top of v0.1.3-beta:
+No changes since v0.2.0-beta.
 
-1. **CR3BP** &mdash; the Circular Restricted 3-Body Problem joins the
-   high-fidelity propagator as a selectable dynamics model.
-2. **Run-folder hygiene + WIP TOML protection** &mdash; every file
-   the engine writes inside a per-run folder is now prefixed with
-   that folder's timestamp, and the GUI auto-diverts saves on
-   snapshots / runnata TOMLs to `.wip.toml` sidecars so the
-   on-disk record of each past run stays exactly as it was when
-   the engine produced it.
+## v0.2.0-beta &mdash; 2026-06-24
+
+Headline: **CR3BP joins high-fidelity as a selectable dynamics
+model**, and the GUI grows three orthogonal usability slices on
+top of that &mdash; Keplerian initial-state input, full run-folder
+hygiene (timestamp-prefixed files + WIP-TOML protection), and a
+third **Info** tab in the Analysis pane that summarises any loaded
+binary together with the run snapshot. Other notable additions:
+an `Export CSV` action on every 2D plot, an optional ICRF-aligned
+star-map background for the 3D scenes, and the spopy package
+gains `kepler` + `cr3bp` mirrors of the engine helpers.
 
 ### Added
 

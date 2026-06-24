@@ -17,13 +17,13 @@ Layout:
 
     +-----------------------------------------+
     |   SpOdy                                 |
-    |   v0.1.3-beta                           |
+    |   v0.2.0-beta                           |
     |   Desktop frontend for the SpOdy        |
     |   orbital propagator.                   |
     |                                         |
     |   (c) 2026 ValeEng - Apache License 2.0 |
     +-----------------------------------------+
-    | App:    0.1.3-beta                      |
+    | App:    0.2.0-beta                      |
     | Core:   1.2.0 (git c5c0dd9,             |
     |         built 2026-06-22T00:00:00Z)     |
     +-----------------------------------------+
