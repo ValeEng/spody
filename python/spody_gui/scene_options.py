@@ -72,6 +72,7 @@ class SceneOptions:
     show_pa_triad:          bool = True   # also drives Moon body libration
     show_bodies:            set[str] = field(default_factory=set)
     trail_enabled:          bool = False  # polyline clipped behind the marker
+    show_starfield:         bool = False  # equirectangular star map skybox
     scene_frame:            str = "icrf"  # "icrf" | "pa" (pa = TODO)
     cr3bp_elements_primary: int = 1       # 1 (bigger) or 2 (smaller)
 
@@ -128,9 +129,23 @@ class SceneOptionsDialog(QDialog):
             "Trail (clip polyline behind marker)",
             options.trail_enabled,
             lambda v: self._set("trail_enabled", v))
+        # Skybox toggle. The texture comes from the wizard-managed
+        # data dir (Setup wizard > Textures > 'Star map'); the
+        # checkbox is greyed-out (with an explanatory tooltip) when
+        # the asset has not been downloaded. The panel wires the
+        # gating state via `set_starfield_available`.
+        self._cb_starfield = self._make_checkbox(
+            "Show starfield (equirectangular star map)",
+            options.show_starfield,
+            lambda v: self._set("show_starfield", v))
+        self._cb_starfield.setToolTip(
+            "Replaces the dark background with the star map from the "
+            "wizard-managed data dir. Disabled until the 'Star map' "
+            "asset is downloaded via Settings > Setup wizard.")
         lay_contents.addWidget(self._cb_trajectory)
         lay_contents.addWidget(self._cb_third_bodies)
         lay_contents.addWidget(self._cb_trail)
+        lay_contents.addWidget(self._cb_starfield)
         root.addWidget(self._gb_contents)
 
         # --- Reference frames ---------------------------------------
@@ -211,6 +226,16 @@ class SceneOptionsDialog(QDialog):
     # ------------------------------------------------------------------
     # External API
     # ------------------------------------------------------------------
+    def set_starfield_available(self, available: bool) -> None:
+        """Gate the starfield checkbox on whether a star map path is
+        configured (Settings > Paths). When disabled, the user sees a
+        tooltip explaining why and the checkbox cannot be checked, so
+        the SceneOptions value stays False and the canvas keeps the
+        flat background."""
+        self._cb_starfield.setEnabled(available)
+        if not available and self._cb_starfield.isChecked():
+            self._cb_starfield.setChecked(False)
+
     def set_body_frame_label(self, body_name: str,
                               frame_tag: str) -> None:
         """Update the body-fixed triad checkbox label to reflect the

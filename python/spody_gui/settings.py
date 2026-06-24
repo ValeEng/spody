@@ -58,6 +58,8 @@ KEY_EPHEMERIS     = "paths/ephemeris_file"      # legacy
 KEY_OUTPUT_DIR    = "paths/output_dir"          # legacy
 KEY_MOON_TEXTURE  = "paths/moon_texture"
 KEY_RECENT        = "files/recent"
+# Persistent per-session UI toggles (default-off, survive restarts).
+KEY_SHOW_STARFIELD = "analysis/show_starfield"
 
 
 class SettingsStore:
@@ -71,6 +73,12 @@ class SettingsStore:
     # Paths ------------------------------------------------------------
     def spody_binary(self) -> str:    return self._qs.value(KEY_SPODY_BIN,     "", type=str)
     def moon_texture(self) -> str:    return self._qs.value(KEY_MOON_TEXTURE,  "", type=str)
+
+    # UI toggles -------------------------------------------------------
+    def show_starfield(self) -> bool:
+        return self._qs.value(KEY_SHOW_STARFIELD, False, type=bool)
+    def set_show_starfield(self, on: bool) -> None:
+        self._qs.setValue(KEY_SHOW_STARFIELD, bool(on))
 
     def ensure_bundled_defaults(self) -> None:
         """Self-heal path settings: when a value is empty or points at
@@ -124,7 +132,8 @@ class SettingsStore:
         the `paths` module so the resolution rules live in one place."""
         return paths.data_dir()
 
-    def set_paths(self, *, spody_bin: str, data_dir: str, moon_texture: str) -> None:
+    def set_paths(self, *, spody_bin: str, data_dir: str,
+                  moon_texture: str) -> None:
         self._qs.setValue(KEY_SPODY_BIN,    spody_bin)
         self._qs.setValue(KEY_MOON_TEXTURE, moon_texture)
         paths.set_data_dir(data_dir)

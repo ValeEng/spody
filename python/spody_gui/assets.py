@@ -261,6 +261,24 @@ EARTH_TEXTURE = Asset(
     body="Earth",
 )
 
+# Equirectangular star map for the 3D Analysis scene skybox. Solar
+# System Scope's 2K Milky Way panorama (CC BY 4.0, ~1.5 MB; ~7 MB
+# at 8K if the user edits the URL in the wizard). When present and
+# the 'Show starfield' Scene-options toggle is on, VtkCanvas uses
+# vtkSkybox.Sphere to wrap it as the background; absent or unloaded
+# leaves the legacy dark colour. Body-agnostic (skybox is a scene
+# property, not tied to a central body), so `body=None`.
+STAR_TEXTURE = Asset(
+    name="Star map (Solar System Scope, Milky Way 2K)",
+    url="https://www.solarsystemscope.com/textures/download/2k_stars_milky_way.jpg",
+    relpath="Stars/2k_stars_milky_way.jpg",
+    min_bytes=500_000,
+    kind="raw",
+    required=False,
+    category="texture_skybox",
+    body=None,
+)
+
 
 # --------------------------------------------------------------------------
 # Coverage profile (read/write QSettings)
@@ -307,7 +325,8 @@ def required_assets(coverage_value: str | None = None) -> tuple[Asset, ...]:
     out.extend((EIGEN_6C4_GFC, EIGEN_6C4_TAB,
                 EOP_FILE,
                 IAU2006_TAB_X, IAU2006_TAB_Y, IAU2006_TAB_SXY,
-                EARTH_TEXTURE))
+                EARTH_TEXTURE,
+                STAR_TEXTURE))
     return tuple(out)
 
 
@@ -352,9 +371,10 @@ def asset_groups(coverage_value: str | None = None
          (EOP_FILE, IAU2006_TAB_X, IAU2006_TAB_Y, IAU2006_TAB_SXY)),
         ("Textures (optional)",
          "Body-fixed photographic textures used by the 3D Analysis scene "
-         "and the impact lat/lon backgrounds. SpOdy renders flat-grey "
+         "and the impact lat/lon backgrounds, plus an equirectangular "
+         "star map for the 3D skybox background. SpOdy renders flat-grey "
          "fallbacks when they are absent.",
-         (MOON_TEXTURE, EARTH_TEXTURE)),
+         (MOON_TEXTURE, EARTH_TEXTURE, STAR_TEXTURE)),
     )
 
 
@@ -414,6 +434,19 @@ def moon_texture_path(root: Path) -> Path | None:
     calling the Moon-specific helper. New code should call the
     body-aware variant below."""
     return central_body_texture_path(root, "Moon")
+
+
+def star_texture_path(root: Path) -> Path | None:
+    """Return the wizard-downloaded equirectangular star map if
+    present under `root`, else None. The skybox is body-agnostic
+    (one image wraps the whole scene regardless of central body), so
+    we look up the `texture_skybox` category without a body filter
+    and return the first registered asset that exists on disk."""
+    for a in assets_by_category("texture_skybox"):
+        p = root / a.relpath
+        if p.is_file():
+            return p
+    return None
 
 
 def central_body_texture_path(root: Path, body: str) -> Path | None:

@@ -71,6 +71,7 @@ from vtkmodules.vtkRenderingCore import (
     vtkPolyDataMapper2D,
     vtkPropPicker,
     vtkRenderer,
+    vtkSkybox,
     vtkTextActor,
     vtkTexture,
 )
@@ -284,6 +285,13 @@ class VtkCanvas(QWidget):
         # The panel sets this from Settings on every plot dispatch.
         self._default_central_texture: Path | None = None
 
+        # Skybox texture (equirectangular star map). Lives on the FAR
+        # renderer behind every other actor; clear_scene reinstalls it
+        # from this cached path so a scene rebuild does not lose the
+        # background. None = no skybox (the default dark colour shows).
+        self._skybox_texture: Path | None = None
+        self._skybox_actor:   vtkSkybox | None = None
+
         # The interactor must be initialised before the first render; it
         # is safe to call again later, so we do it once here.
         self._interactor.Initialize()
@@ -299,9 +307,14 @@ class VtkCanvas(QWidget):
         """Remove every actor added via add_* methods. The corner triad
         (which lives on a separate marker widget) is preserved.
         Picking state and animation handles are also cleared so stale
-        actor refs don't leak."""
+        actor refs don't leak.
+
+        The skybox is the one persistent FAR-renderer prop: it's
+        re-installed after the wipe from the cached `_skybox_texture`
+        path so a scene rebuild doesn't kill the star background."""
         self._renderer.RemoveAllViewProps()
         self._renderer_far.RemoveAllViewProps()
+        self._skybox_actor = None
         self._trajectory_actors.clear()
         self._highlighted_actor = None
         self._anim_handles.clear()
@@ -309,6 +322,71 @@ class VtkCanvas(QWidget):
         self._anim_triads.clear()
         self._anim_body = None
         self._central_body_actor = None
+        self._install_skybox_actor()
+
+    # ------------------------------------------------------------------
+    # Skybox
+    # ------------------------------------------------------------------
+    def set_skybox_texture(self, path: Path | None) -> None:
+        """Install an equirectangular star-map texture as the background
+        of the FAR renderer (behind every other actor). `path = None`
+        removes the skybox and falls back to the flat dark colour.
+
+        The skybox uses `vtkSkybox.Sphere` projection so a single image
+        suffices -- no cubemap juggling. clear_scene reinstalls the
+        actor from the cached path, so this setter is sticky across
+        scene rebuilds (typical: load a new .bin -> the skybox
+        survives the rebuild).
+
+        Idempotent: a call with the same path the canvas already has
+        installed is a no-op (no re-read, no extra render). The
+        analysis panel relies on this -- it calls into here on every
+        3D dispatch to pick up Settings edits, so duplicate work
+        would mean re-decoding a multi-MB image on every plot
+        click."""
+        new_path = Path(path) if path is not None else None
+        if new_path == self._skybox_texture and (
+                (new_path is None) == (self._skybox_actor is None)):
+            return
+        self._skybox_texture = new_path
+        if self._skybox_actor is not None:
+            self._renderer_far.RemoveViewProp(self._skybox_actor)
+            self._skybox_actor = None
+        self._install_skybox_actor()
+        self._render_window.Render()
+
+    def _install_skybox_actor(self) -> None:
+        """Build the vtkSkybox actor from `_skybox_texture` and add it
+        to the FAR renderer. No-op when the texture path is None or
+        the file is unreadable (the scene degrades silently to the
+        flat dark background)."""
+        if self._skybox_texture is None or self._skybox_actor is not None:
+            return
+        reader = self._make_image_reader(self._skybox_texture)
+        if reader is None:
+            return
+        reader.Update()
+        texture = vtkTexture()
+        texture.SetInputConnection(reader.GetOutputPort())
+        texture.InterpolateOn()
+        texture.MipmapOn()
+        skybox = vtkSkybox()
+        skybox.SetTexture(texture)
+        skybox.SetProjection(vtkSkybox.Sphere)
+        # Exclude the skybox geometry from the FAR renderer's bbox so
+        # ResetCameraClippingRange (called from _sync_far_camera on
+        # every camera nudge) does not clamp the near/far planes around
+        # the unit cube the skybox uses internally. Without this the
+        # skybox starts clipping into streaks as soon as the user
+        # rotates the trackball -- the camera position quickly leaves
+        # the tight box and the renderer drops the now-out-of-range
+        # background fragments. Skybox shaders force depth = 1 anyway,
+        # so they never need the renderer's frustum to "contain" them.
+        skybox.SetUseBounds(False)
+        # We add to the FAR renderer so the actor sits behind the
+        # bodies / trajectories on layer 1.
+        self._renderer_far.AddActor(skybox)
+        self._skybox_actor = skybox
 
     def set_central_body_texture(self, path: Path | None) -> None:
         """Default equirectangular texture used by subsequent

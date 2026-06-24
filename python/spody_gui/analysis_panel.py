@@ -2778,6 +2778,13 @@ class AnalysisPanel(QWidget):
         # _on_scene_options_changed. The dialog itself is opened from
         # the animation bar's "Scene..." button (see wiring below).
         self._scene_options = SceneOptions()
+        # Restore persistent toggles from Settings. show_starfield is
+        # the only one persisted today; the rest stay at dataclass
+        # defaults until the user touches them in the dialog.
+        try:
+            self._scene_options.show_starfield = self._store.show_starfield()
+        except Exception:
+            pass
         self._scene_dialog: SceneOptionsDialog | None = None
         # Central body resolved from the loaded run's snapshot
         # TOML's `force_model.central_body`. Defaults to Moon so
@@ -3221,6 +3228,7 @@ class AnalysisPanel(QWidget):
             else:  # "3d"
                 self._stack.setCurrentIndex(1)
                 self._vtk.set_central_body_texture(self._configured_central_body_texture())
+                self._apply_skybox_to_canvas()
                 self._vtk.clear_scene()
                 spec.overlay_fn(self._vtk, items, ovl_ctx)
                 # Pin the rotation pivot on the central body so mouse-
@@ -3606,6 +3614,11 @@ class AnalysisPanel(QWidget):
             self._scene_dialog.optionsChanged.connect(
                 self._on_scene_options_changed)
             self._refresh_scene_dialog_bodies()
+        # Re-gate the starfield checkbox every time the dialog opens:
+        # the user may have just edited Settings > Paths to point at a
+        # newly-downloaded star map (or cleared it).
+        self._scene_dialog.set_starfield_available(
+            self._configured_star_texture() is not None)
         self._scene_dialog.show()
         self._scene_dialog.raise_()
         self._scene_dialog.activateWindow()
@@ -3622,6 +3635,13 @@ class AnalysisPanel(QWidget):
         plots react to the CR3BP primary-selector radio. Re-render is
         cheap for 2D (single matplotlib redraw) and harmless when the
         active spec doesn't actually consume the changed option."""
+        # Persist the starfield toggle to QSettings so the choice
+        # survives session restarts. Other toggles stay session-local
+        # for now (matches the existing dataclass-default behaviour).
+        try:
+            self._store.set_show_starfield(self._scene_options.show_starfield)
+        except Exception:
+            pass
         if self._active_spec is None:
             return
         is_3d = (self._stack.currentIndex() == 1)
@@ -3630,6 +3650,10 @@ class AnalysisPanel(QWidget):
             # Push it now so the about-to-be-added handles see the right
             # state inside add_animated_trajectory.
             self._vtk.set_trail_enabled(self._scene_options.trail_enabled)
+            # Skybox state: pushed BEFORE the rebuild so clear_scene
+            # reinstalls the right (or no) actor instead of relying on
+            # a stale cache from the previous toggle state.
+            self._apply_skybox_to_canvas()
             # Preserve the playhead position across the re-plot. The
             # rebuild fires set_time_range which would otherwise snap
             # the animation back to t_min, wiping out wherever the
@@ -3905,6 +3929,27 @@ class AnalysisPanel(QWidget):
                         self._loading_item = False
                     return
 
+    def _configured_star_texture(self) -> Path | None:
+        """Resolve the equirectangular star map for the 3D skybox via
+        the wizard-managed data dir (same flow as the Moon / Earth
+        textures). Returns None when the user has not downloaded the
+        asset yet, which the caller turns into a disabled 'Show
+        starfield' checkbox + a no-op canvas state."""
+        from . import assets
+        return assets.star_texture_path(self._store.data_dir())
+
+    def _apply_skybox_to_canvas(self) -> None:
+        """Push the skybox state to VtkCanvas based on the current
+        SceneOptions toggle + the configured star texture path. Pulled
+        out so every render path (initial plot, re-render after a
+        scene-options toggle, scene rebuild via clear_scene) can
+        share one call."""
+        if self._scene_options.show_starfield:
+            tex = self._configured_star_texture()
+            self._vtk.set_skybox_texture(tex)
+        else:
+            self._vtk.set_skybox_texture(None)
+
     def _configured_central_body_texture(self) -> Path | None:
         """Resolve the equirectangular texture for the currently loaded
         run's central body. Looked up on demand so edits via the
@@ -4023,6 +4068,7 @@ class AnalysisPanel(QWidget):
             else:  # "3d"
                 self._stack.setCurrentIndex(1)
                 self._vtk.set_central_body_texture(self._configured_central_body_texture())
+                self._apply_skybox_to_canvas()
                 self._vtk.clear_scene()
                 if ctx is not None:
                     spec.fn(self._vtk, self._data, ctx)
