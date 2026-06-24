@@ -60,6 +60,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTableView,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -2502,6 +2504,353 @@ def _detect_kind(path: Path) -> str | None:
     return None
 
 
+# ----------------------------------------------------------------------
+# Info tab builders (per-kind summaries + diff overlay)
+# ----------------------------------------------------------------------
+# Each `_info_*` builder returns a flat list of (label, value) pairs
+# that the Info tab renders as a two-column key/value table. A pair
+# with `value == None` is rendered as a bold section header (label
+# spans both columns). All numeric formatting goes through `_fmt_num`
+# so the same precision rules apply everywhere.
+
+_SECTION = None  # sentinel: row is a section header
+
+
+def _fmt_num(x: float | int | None, unit: str = "", decimals: int = 6) -> str:
+    """Format `x` as a short human-readable string with optional unit.
+    Falls back to "-" on None / NaN / Inf so a missing metric never
+    breaks the table layout."""
+    if x is None:
+        return "-"
+    try:
+        xf = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if not math.isfinite(xf):
+        return "-"
+    # Pick g-format with the requested significant digits; strip
+    # trailing zeros for readability. Pad with the unit at the end.
+    txt = f"{xf:.{decimals}g}"
+    return f"{txt} {unit}".rstrip()
+
+
+def _fmt_duration(seconds: float | None) -> str:
+    """Friendly duration: seconds with hours/days in parentheses
+    once it crosses common thresholds."""
+    if seconds is None or not math.isfinite(float(seconds)):
+        return "-"
+    s = float(seconds)
+    if abs(s) < 60:
+        return f"{s:.6g} s"
+    if abs(s) < 3600:
+        return f"{s:.6g} s ({s / 60:.3g} min)"
+    if abs(s) < 86400:
+        return f"{s:.6g} s ({s / 3600:.4g} h)"
+    return f"{s:.6g} s ({s / 86400:.4g} d)"
+
+
+def _kep_elements_at(d: np.ndarray, idx: int, mu: float
+                     ) -> dict[str, float] | None:
+    """Compute classical Kepler elements at one trajectory sample.
+    Returns None on degenerate geometry (rectilinear / parabolic
+    edge cases inside spopy) so the caller can drop the row."""
+    try:
+        from spopy import cartesian_to_keplerian
+        r = np.array([d["x"][idx], d["y"][idx], d["z"][idx]],  dtype=float)
+        v = np.array([d["vx"][idx], d["vy"][idx], d["vz"][idx]], dtype=float)
+        el = cartesian_to_keplerian(r, v, mu)
+        return {
+            "a":    float(el["sma_km"]),
+            "e":    float(el["ecc"]),
+            "i":    math.degrees(float(el["inc_rad"])),
+            "raan": math.degrees(float(el["raan_rad"])),
+            "aop":  math.degrees(float(el["argp_rad"])),
+            "nu":   math.degrees(float(el["true_anom_rad"])),
+        }
+    except Exception:
+        return None
+
+
+def _info_rows_run_summary(path: Path,
+                           kind: str,
+                           n_records: int,
+                           snapshot: dict | None,
+                           central_body: "CentralBodySpec | None",
+                           dynamics_model: str,
+                           cr3bp_primaries: tuple
+                           ) -> list[tuple[str, str | None]]:
+    """File + run-level facts. Always shown at the top of the Info
+    tab; snapshot-derived rows are skipped when no input.toml sits
+    next to the binary."""
+    rows: list[tuple[str, str | None]] = [
+        ("Run summary", _SECTION),
+        ("File",       path.name),
+        ("Folder",     str(path.parent)),
+        ("Type",       _KIND_LABEL.get(kind, kind)),
+        ("Records",    f"{n_records}"),
+    ]
+    if central_body is not None:
+        rows.append(("Central body", central_body.name))
+    rows.append(("Dynamics model", dynamics_model))
+    if cr3bp_primaries:
+        p1, p2 = cr3bp_primaries
+        rows.append(("CR3BP primaries", f"{p1.name} + {p2.name}"))
+        mu_tot = p1.mu_km3_s2 + p2.mu_km3_s2
+        rows.append(("CR3BP mass ratio µ",
+                     _fmt_num(p2.mu_km3_s2 / mu_tot, decimals=8)))
+    if snapshot is not None:
+        rows.append(("ET start [s]",      _fmt_num(snapshot["et_start_s"])))
+        rows.append(("Planned duration",  _fmt_duration(snapshot["duration_s"])))
+        eph = snapshot.get("ephemeris_path")
+        if eph is not None:
+            rows.append(("Ephemeris", eph.name))
+        cases = snapshot.get("cases_file")
+        if cases is not None:
+            rows.append(("Cases file", cases.name))
+    else:
+        rows.append(("Snapshot TOML",
+                     "(not found next to this .bin)"))
+    return rows
+
+
+def _info_rows_traj(data: np.ndarray,
+                    central_body: "CentralBodySpec | None",
+                    dynamics_model: str
+                    ) -> list[tuple[str, str | None]]:
+    t = data["t"]
+    r = np.stack((data["x"],  data["y"],  data["z"]),  axis=-1)
+    v = np.stack((data["vx"], data["vy"], data["vz"]), axis=-1)
+    r_mag = np.linalg.norm(r, axis=-1)
+    v_mag = np.linalg.norm(v, axis=-1)
+    dt = np.diff(t) if len(t) > 1 else np.array([0.0])
+    rows: list[tuple[str, str | None]] = [
+        ("Trajectory", _SECTION),
+        ("t range [s]",
+         f"{_fmt_num(t[0])}  →  {_fmt_num(t[-1])}"),
+        ("Time span", _fmt_duration(float(t[-1] - t[0]))),
+        ("Δt min / avg / max [s]",
+         f"{_fmt_num(dt.min(), decimals=4)} / "
+         f"{_fmt_num(dt.mean(), decimals=4)} / "
+         f"{_fmt_num(dt.max(), decimals=4)}"),
+        ("|r| min / max [km]",
+         f"{_fmt_num(r_mag.min())} / {_fmt_num(r_mag.max())}"),
+        ("|v| min / max [km/s]",
+         f"{_fmt_num(v_mag.min())} / {_fmt_num(v_mag.max())}"),
+        ("Initial state", _SECTION),
+        ("r₀ [km]",   f"({_fmt_num(r[0,0])}, {_fmt_num(r[0,1])}, {_fmt_num(r[0,2])})"),
+        ("v₀ [km/s]", f"({_fmt_num(v[0,0])}, {_fmt_num(v[0,1])}, {_fmt_num(v[0,2])})"),
+        ("Final state", _SECTION),
+        ("r_f [km]",  f"({_fmt_num(r[-1,0])}, {_fmt_num(r[-1,1])}, {_fmt_num(r[-1,2])})"),
+        ("v_f [km/s]",f"({_fmt_num(v[-1,0])}, {_fmt_num(v[-1,1])}, {_fmt_num(v[-1,2])})"),
+    ]
+    # Osculating Kepler elements at endpoints — only meaningful in HF
+    # (CR3BP needs the primary-relative state, which is a separate
+    # PlotContext branch; we surface them in the diff/plot-aware path
+    # if the user wants them per primary).
+    if dynamics_model == "high_fidelity" and central_body is not None:
+        mu = central_body.mu_km3_s2
+        el0 = _kep_elements_at(data, 0,  mu)
+        elN = _kep_elements_at(data, -1, mu)
+        if el0 is not None and elN is not None:
+            rows.append(("Kepler elements (HF, central body)", _SECTION))
+            rows.append(("a [km]   (t0 / tf)",
+                         f"{_fmt_num(el0['a'])} / {_fmt_num(elN['a'])}"))
+            rows.append(("e        (t0 / tf)",
+                         f"{_fmt_num(el0['e'], decimals=5)} / "
+                         f"{_fmt_num(elN['e'], decimals=5)}"))
+            rows.append(("i [deg]  (t0 / tf)",
+                         f"{_fmt_num(el0['i'], decimals=5)} / "
+                         f"{_fmt_num(elN['i'], decimals=5)}"))
+            rows.append(("RAAN [deg] (t0 / tf)",
+                         f"{_fmt_num(el0['raan'], decimals=5)} / "
+                         f"{_fmt_num(elN['raan'], decimals=5)}"))
+            rows.append(("ω [deg]    (t0 / tf)",
+                         f"{_fmt_num(el0['aop'], decimals=5)} / "
+                         f"{_fmt_num(elN['aop'], decimals=5)}"))
+            rows.append(("ν [deg]    (t0 / tf)",
+                         f"{_fmt_num(el0['nu'], decimals=5)} / "
+                         f"{_fmt_num(elN['nu'], decimals=5)}"))
+    return rows
+
+
+def _info_rows_accel(data: np.ndarray
+                     ) -> list[tuple[str, str | None]]:
+    t = data["t"]
+    dt = np.diff(t) if len(t) > 1 else np.array([0.0])
+    def _mag(field: str) -> np.ndarray:
+        return np.linalg.norm(data[field], axis=-1)
+    a_tot = _mag("acc_total")
+    rows: list[tuple[str, str | None]] = [
+        ("Accelerations", _SECTION),
+        ("t range [s]",
+         f"{_fmt_num(t[0])}  →  {_fmt_num(t[-1])}"),
+        ("Time span", _fmt_duration(float(t[-1] - t[0]))),
+        ("Δt min / avg / max [s]",
+         f"{_fmt_num(dt.min(), decimals=4)} / "
+         f"{_fmt_num(dt.mean(), decimals=4)} / "
+         f"{_fmt_num(dt.max(), decimals=4)}"),
+        ("|a_total| min / max [km/s²]",
+         f"{_fmt_num(a_tot.min())} / {_fmt_num(a_tot.max())}"),
+        ("|a_total| mean / RMS [km/s²]",
+         f"{_fmt_num(a_tot.mean())} / "
+         f"{_fmt_num(math.sqrt(float((a_tot * a_tot).mean())))}"),
+        ("Per-force RMS [km/s²]", _SECTION),
+        ("2-body",       _fmt_num(
+            math.sqrt(float((_mag('acc_2body') ** 2).mean())))),
+        ("Harmonics",    _fmt_num(
+            math.sqrt(float((_mag('acc_sphericalharmonics') ** 2).mean())))),
+        ("3rd-body",     _fmt_num(
+            math.sqrt(float((_mag('acc_thirdbody_total') ** 2).mean())))),
+        ("SRP",          _fmt_num(
+            math.sqrt(float((_mag('acc_srp') ** 2).mean())))),
+        ("Drag",         _fmt_num(
+            math.sqrt(float((_mag('acc_drag') ** 2).mean())))),
+    ]
+    if "eclipse_fraction" in data.dtype.names:
+        ef = data["eclipse_fraction"].astype(float)
+        # Trapezoidal time in shadow: integrate (1 - ef) over t.
+        # `trapezoid` is NumPy >= 2.0; fall back to `trapz` for the
+        # 1.20+ baseline the project still supports.
+        _trapz = getattr(np, "trapezoid", np.trapz)
+        shadow_s = float(_trapz(1.0 - ef, t)) if len(t) > 1 else 0.0
+        rows.append(("Eclipse", _SECTION))
+        rows.append(("min eclipse_fraction", _fmt_num(ef.min(), decimals=4)))
+        rows.append(("Time in shadow",       _fmt_duration(shadow_s)))
+    return rows
+
+
+def _info_rows_events(data: np.ndarray, snapshot: dict | None
+                      ) -> list[tuple[str, str | None]]:
+    is_batch = "case_idx" in data.dtype.names
+    impacts  = data[data["kind"] == EVENT_KIND_IMPACT]
+    eclipses = data[data["kind"] == EVENT_KIND_ECLIPSE]
+    rows: list[tuple[str, str | None]] = [
+        ("Events", _SECTION),
+        ("Total records", f"{len(data)}"),
+        ("IMPACT count",  f"{len(impacts)}"),
+        ("ECLIPSE count", f"{len(eclipses)}"),
+    ]
+    if is_batch:
+        cases_with_events = np.unique(data["case_idx"]) if len(data) else np.array([])
+        cases_impacted    = (np.unique(impacts["case_idx"])
+                             if len(impacts) else np.array([]))
+        rows.append(("Cases with events", f"{len(cases_with_events)}"))
+        rows.append(("Cases with impact", f"{len(cases_impacted)}"))
+        if snapshot is not None and snapshot.get("cases_file") is not None:
+            try:
+                # Count CSV lines minus header to get total cases.
+                with snapshot["cases_file"].open() as fp:
+                    n_total = max(0, sum(1 for _ in fp) - 1)
+                rows.append(("Cases total (CSV)", f"{n_total}"))
+                rows.append(("Survivors (no impact)",
+                             f"{max(0, n_total - len(cases_impacted))}"))
+                if n_total > 0:
+                    rate = 100.0 * len(cases_impacted) / n_total
+                    rows.append(("Impact rate",
+                                 f"{_fmt_num(rate, decimals=4)} %"))
+            except OSError:
+                pass
+    if len(impacts) > 0:
+        ti = impacts["t"].astype(float)
+        rows.append(("Impact timing", _SECTION))
+        rows.append(("First impact",  _fmt_duration(float(ti.min()))))
+        rows.append(("Last impact",   _fmt_duration(float(ti.max()))))
+        rows.append(("Median impact", _fmt_duration(float(np.median(ti)))))
+        rows.append(("Mean impact",   _fmt_duration(float(ti.mean()))))
+    if len(eclipses) > 0:
+        # Pair consecutive triggers per occulter (per case in batch
+        # mode): the engine emits one ECLIPSE record on every sign
+        # crossing of (fraction - threshold), so successive triggers
+        # for the same {case, occulter} alternate entry / exit; a pair
+        # = one full eclipse with duration = t_exit - t_entry. Odd
+        # tail (started or ended inside shadow) is silently dropped.
+        groups: dict[tuple, list[float]] = {}
+        for rec in eclipses:
+            key = ((int(rec["case_idx"]), int(rec["naif_id"]))
+                   if is_batch else int(rec["naif_id"]))
+            groups.setdefault(key, []).append(float(rec["t"]))
+        durations_s: list[float] = []
+        for ts in groups.values():
+            ts_sorted = sorted(ts)
+            for i in range(len(ts_sorted) // 2):
+                durations_s.append(ts_sorted[2 * i + 1] - ts_sorted[2 * i])
+        rows.append(("Eclipses", _SECTION))
+        rows.append(("Trigger records",   f"{len(eclipses)}"))
+        rows.append(("Complete eclipses", f"{len(durations_s)}"))
+        if durations_s:
+            d_arr = np.asarray(durations_s)
+            rows.append(("Duration min", _fmt_duration(float(d_arr.min()))))
+            rows.append(("Duration avg", _fmt_duration(float(d_arr.mean()))))
+            rows.append(("Duration max", _fmt_duration(float(d_arr.max()))))
+    return rows
+
+
+def _info_rows_diff(data_a: np.ndarray, data_b: np.ndarray,
+                    spec: "PlotSpec",
+                    paths: list[Path],
+                    was_interp: bool
+                    ) -> list[tuple[str, str | None]]:
+    """Diff-aware stats for the currently active diff plot. Receives
+    the *aligned* arrays (same shape, same `t` grid) so the row math
+    is straight numpy. Empty list for non-traj diffs (the only diff
+    plots today are on the trajectory kind)."""
+    if "x" not in data_a.dtype.names or "x" not in data_b.dtype.names:
+        return []
+    r_a = np.stack((data_a["x"],  data_a["y"],  data_a["z"]),  axis=-1)
+    r_b = np.stack((data_b["x"],  data_b["y"],  data_b["z"]),  axis=-1)
+    v_a = np.stack((data_a["vx"], data_a["vy"], data_a["vz"]), axis=-1)
+    v_b = np.stack((data_b["vx"], data_b["vy"], data_b["vz"]), axis=-1)
+    dr = r_a - r_b
+    dv = v_a - v_b
+    dr_mag = np.linalg.norm(dr, axis=-1)
+    dv_mag = np.linalg.norm(dv, axis=-1)
+    rows: list[tuple[str, str | None]] = [
+        (f"Diff: {spec.label}", _SECTION),
+        ("A",  paths[0].name),
+        ("B",  paths[1].name),
+    ]
+    if was_interp:
+        rows.append(("Alignment", "B interpolated onto A's grid"))
+    rows.append(("|Δr| max / mean / RMS [km]",
+                 f"{_fmt_num(dr_mag.max())} / "
+                 f"{_fmt_num(dr_mag.mean())} / "
+                 f"{_fmt_num(math.sqrt(float((dr_mag * dr_mag).mean())))}"))
+    rows.append(("|Δr| final [km]", _fmt_num(dr_mag[-1])))
+    rows.append(("|Δv| max / mean / RMS [km/s]",
+                 f"{_fmt_num(dv_mag.max())} / "
+                 f"{_fmt_num(dv_mag.mean())} / "
+                 f"{_fmt_num(math.sqrt(float((dv_mag * dv_mag).mean())))}"))
+    rows.append(("|Δv| final [km/s]", _fmt_num(dv_mag[-1])))
+    # Linear growth rate of |Δr| — slope of a least-squares line, in
+    # km/day. Useful as a "how fast is the regression diverging"
+    # one-liner for the diff plots.
+    t = data_a["t"]
+    if len(t) > 1 and t[-1] > t[0]:
+        slope_km_s = float(np.polyfit(t, dr_mag, 1)[0])
+        rows.append(("|Δr| linear growth",
+                     f"{_fmt_num(slope_km_s * 86400.0)} km/day"))
+    # RIC decomposition of Δr in A's frame — the canonical orbit-
+    # regression breakdown (radial / in-track / cross-track).
+    r_mag_a = np.linalg.norm(r_a, axis=-1, keepdims=True)
+    r_hat = np.divide(r_a, r_mag_a, where=r_mag_a > 0)
+    h = np.cross(r_a, v_a)
+    h_mag = np.linalg.norm(h, axis=-1, keepdims=True)
+    c_hat = np.divide(h, h_mag, where=h_mag > 0)
+    i_hat = np.cross(c_hat, r_hat)
+    dR = np.abs(np.einsum("...j,...j->...", dr, r_hat))
+    dI = np.abs(np.einsum("...j,...j->...", dr, i_hat))
+    dC = np.abs(np.einsum("...j,...j->...", dr, c_hat))
+    rows.append(("RIC frame (A) — |Δ| max [km]",
+                 f"R {_fmt_num(dR.max())}  /  "
+                 f"I {_fmt_num(dI.max())}  /  "
+                 f"C {_fmt_num(dC.max())}"))
+    rows.append(("RIC frame (A) — |Δ| RMS [km]",
+                 f"R {_fmt_num(math.sqrt(float((dR * dR).mean())))}  /  "
+                 f"I {_fmt_num(math.sqrt(float((dI * dI).mean())))}  /  "
+                 f"C {_fmt_num(math.sqrt(float((dC * dC).mean())))}"))
+    return rows
+
+
 def _scan_bin_files(root: Path) -> list[Path]:
     """Return all *.bin files under `root`, scanning fully recursively
     so deep run-folder layouts (`output/<ts>/...`, nested case dirs)
@@ -2688,6 +3037,11 @@ class AnalysisPanel(QWidget):
         self._data: np.ndarray | None = None
         self._path: Path | None = None
         self._loading_item = False   # guard against itemClicked re-entry
+        # Last successful diff (aligned A/B + paths) cached by
+        # `_plot_diff` so the Info tab can show plot-aware diff stats
+        # (|Δr|, RIC, growth) without re-reading the files. Cleared
+        # whenever the active plot leaves a diff spec.
+        self._last_diff: "tuple[list[Path], np.ndarray, np.ndarray, bool] | None" = None
 
         # Working-dir display: the dedicated row used to live here, but
         # the working-dir field + Browse button now sit in the top bar
@@ -2922,12 +3276,38 @@ class AnalysisPanel(QWidget):
         table_lay.setContentsMargins(0, 0, 0, 0)
         table_lay.addWidget(self._table_view, 1)
 
+        # Info tab content: kind-specific summary table populated by
+        # `_refresh_info_tab` on every file load and (when the active
+        # plot is a diff) on every plot-tree click. Two columns
+        # (Field, Value); section headers are rendered as bold rows
+        # spanning both columns.
+        self._info_table = QTableWidget(0, 2)
+        self._info_table.setHorizontalHeaderLabels(["Field", "Value"])
+        self._info_table.verticalHeader().setVisible(False)
+        self._info_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._info_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._info_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectItems)
+        self._info_table.setAlternatingRowColors(True)
+        self._info_table.setWordWrap(True)
+        info_h = self._info_table.horizontalHeader()
+        info_h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        info_h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._info_table.setFont(mono)
+        info_tab = QWidget()
+        info_lay = QVBoxLayout(info_tab)
+        info_lay.setContentsMargins(0, 0, 0, 0)
+        info_lay.addWidget(self._info_table, 1)
+
         # Top-level tabs: clicking a file populates whichever tab is
         # active right now; switching tab on an already-loaded file
         # repopulates the new view from the cached array (no re-read).
         self._right_tabs = QTabWidget()
         self._right_tabs.addTab(plot_tab,  "Plot")
         self._right_tabs.addTab(table_tab, "Table")
+        self._right_tabs.addTab(info_tab,  "Info")
         self._right_tabs.currentChanged.connect(self._on_right_tab_changed)
 
         right = QWidget()
@@ -3081,8 +3461,10 @@ class AnalysisPanel(QWidget):
         """Switching to the Plot tab on an already-loaded file that has
         no current plot triggers the default render -- otherwise the
         canvas would stay blank until the user clicked something in the
-        plot tree. No-op on the Table side: the model is always in
-        sync with `self._data`."""
+        plot tree. The Table model is always in sync with `self._data`
+        so its tab needs no extra work. The Info tab repopulates on
+        every switch so a plot-tree click in the background propagates
+        immediately when the user comes back to it."""
         if idx == 0 and self._data is not None and self._kind is not None:
             current = self._plot_tree.currentItem()
             if current is None or current.data(0, _SPEC_ROLE) is None:
@@ -3090,6 +3472,69 @@ class AnalysisPanel(QWidget):
                 if first is not None:
                     self._plot_tree.setCurrentItem(first)
                     self._on_plot_tree_clicked(first, 0)
+        elif idx == 2:
+            self._refresh_info_tab()
+
+    def _refresh_info_tab(self) -> None:
+        """Rebuild the Info-tab table from `self._data` + the loaded
+        run's snapshot + the currently active plot spec. Cheap (a
+        handful of rows, no plotting); called on every load_file,
+        every right-tab change to Info, and every plot-tree click
+        whose spec is a diff -- the cost is bounded by the per-kind
+        builders, which all run in O(N) numpy."""
+        self._info_table.setRowCount(0)
+        if self._kind is None or self._data is None or self._path is None:
+            self._info_table.setRowCount(1)
+            self._info_table.setSpan(0, 0, 1, 2)
+            placeholder = QTableWidgetItem("(no file loaded)")
+            placeholder.setForeground(Qt.GlobalColor.gray)
+            self._info_table.setItem(0, 0, placeholder)
+            return
+        snapshot = _resolve_run_context(self._path)
+        rows = _info_rows_run_summary(
+            self._path, self._kind, len(self._data), snapshot,
+            self._central_body, self._dynamics_model,
+            self._cr3bp_primaries)
+        if self._kind == "traj":
+            rows += _info_rows_traj(
+                self._data, self._central_body, self._dynamics_model)
+        elif self._kind == "accel":
+            rows += _info_rows_accel(self._data)
+        elif self._kind in ("events", "events_batch"):
+            rows += _info_rows_events(self._data, snapshot)
+        # Diff overlay: only meaningful when the active plot is a diff
+        # spec AND we have a cached aligned pair from `_plot_diff`.
+        if (self._active_spec is not None
+                and self._active_spec.mode == "diff"
+                and self._last_diff is not None):
+            paths, data_a, data_b, was_interp = self._last_diff
+            rows += _info_rows_diff(
+                data_a, data_b, self._active_spec, paths, was_interp)
+        self._populate_info_table(rows)
+
+    def _populate_info_table(self,
+                             rows: "list[tuple[str, str | None]]") -> None:
+        """Render the (label, value) rows into the QTableWidget. A
+        `value is None` row is a section header: spanned across both
+        columns, bold font, alt-row colouring suppressed via the
+        widget-level alternating-row setting (which still applies to
+        regular rows for readability)."""
+        self._info_table.setRowCount(len(rows))
+        header_font = QFont(self._info_table.font())
+        header_font.setBold(True)
+        for r, (label, value) in enumerate(rows):
+            if value is _SECTION:
+                item = QTableWidgetItem(label)
+                item.setFont(header_font)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                self._info_table.setItem(r, 0, item)
+                self._info_table.setSpan(r, 0, 1, 2)
+            else:
+                label_item = QTableWidgetItem(label)
+                value_item = QTableWidgetItem(value)
+                self._info_table.setItem(r, 0, label_item)
+                self._info_table.setItem(r, 1, value_item)
+        self._info_table.resizeRowsToContents()
 
     def _copy_table_selection(self) -> None:
         """Dump the current table selection to the clipboard as TSV.
@@ -3307,6 +3752,11 @@ class AnalysisPanel(QWidget):
         # has never been opened).
         self._refresh_scene_dialog_bodies()
 
+        # Switching file invalidates the cached diff payload: the
+        # `_last_diff` arrays were aligned against a different pair
+        # and would surface stale rows in the Info tab.
+        self._last_diff = None
+
         # Rebuild the plot tree for the new kind. Auto-render the first
         # plot only when the Plot tab is currently active; if the user
         # is looking at the Table tab we leave the Plot view empty
@@ -3318,6 +3768,10 @@ class AnalysisPanel(QWidget):
             if first is not None:
                 self._plot_tree.setCurrentItem(first)
                 self._on_plot_tree_clicked(first, 0)
+        # Refresh the Info tab from the new file's data + snapshot.
+        # Cheap (no plotting), so we do it unconditionally even when
+        # the Info tab is currently in the background.
+        self._refresh_info_tab()
 
     # ------------------------------------------------------------------
     # Plot tree management
@@ -3389,10 +3843,18 @@ class AnalysisPanel(QWidget):
         self._active_spec = spec
         # Sun-arrow row only makes sense once a 3D scene is up.
         self._sun_widget.setVisible(spec.dim == "3d")
+        # Leaving a diff spec invalidates the cached pair -- the next
+        # diff click will repopulate. Done up front so the Info tab
+        # refresh below sees a consistent (spec, diff-cache) pair.
+        if spec.mode != "diff":
+            self._last_diff = None
         if spec.mode == "diff":
             self._plot_diff(spec)
         else:
             self._plot_active()
+        # Info tab: refresh whenever the active spec changes so the
+        # diff overlay rows appear / disappear with the plot selection.
+        self._refresh_info_tab()
 
     def _refresh_tile_button(self) -> None:
         """Live counter + enable gate for the Tile button. The button
@@ -4068,6 +4530,11 @@ class AnalysisPanel(QWidget):
             info += f"\n{note}"
         self._info_label.setText(info)
         self._info_label.setStyleSheet("")
+        # Cache the aligned pair so `_refresh_info_tab` can compute
+        # |Δr| / |Δv| / RIC stats without re-reading the files. The
+        # caller (`_on_plot_tree_clicked`) refreshes the Info tab
+        # after dispatch, so we only set the payload here.
+        self._last_diff = (paths, data_a, data_b, was_interp)
 
     def _plot_active(self) -> None:
         """Dispatch the active PlotSpec (last leaf clicked in the
