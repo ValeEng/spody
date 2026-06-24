@@ -99,9 +99,18 @@ experience but does not require to run:
   sphere stays flat-grey. When the Moon appears as a *third
   body* in an Earth-centred scene, this is also the texture
   that paints its body-fixed marker so the Moon is still
-  recognisable at its true ~384,000 km distance.
+  recognisable at its true ~384,000 km distance;
+- the Solar System Scope Milky Way 8K star map
+  (equirectangular JPEG, ~6 MB, CC BY 4.0). When present and the
+  *Show starfield* toggle in the Scene options dialog is
+  enabled, the 3D Analysis scene replaces the dark background
+  with a real star map. The texture is re-projected on first use
+  to align with the ICRF axes (catalogue stored in galactic
+  coords; SpOdy chains a J2000 ICRF&rarr;galactic rotation before
+  the lookup so the bulge ends up at ICRF -Y), with the rotated
+  copy cached on disk for instant subsequent loads.
 
-The two textures are asked for on demand by clicking **Download**
+The three textures are asked for on demand by clicking **Download**
 on their respective cards &mdash; the *Download all missing*
 button intentionally leaves them alone so a fresh install does
 not pay the download cost unless the user wants the textures.

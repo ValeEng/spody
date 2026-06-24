@@ -25,18 +25,21 @@ Earth, the latter with IAU 2006/2000A_R06 + IERS EOP for the
 inertial-to-ITRS rotation), two **dynamics models** selected per
 TOML (`high_fidelity`, the full force-model integrator, and
 `cr3bp`, the synodic-rotating Circular Restricted 3-Body Problem),
-event detection (always-on multi-body IMPACT with sub-millisecond
-Hermite + Brent localisation, opt-in ECLIPSE), TOML schema
-validation, per-force acceleration breakdown, run-folder layout
-with timestamp-prefixed snapshot + outputs, and a PySide6 desktop
-frontend covering Setup wizard, TOML editor with syntax-aware
-autocompletion, embedded runner, and a full Analysis tab (Plot /
-Table split, batch-event impact maps in 2D equirectangular +
-Mollweide projections + density heatmap, 3D body-textured impact
-scene with body-fixed + ICRF triads, diff-RIC plots, Jacobi-
-constant conservation for CR3BP). Releases ship signed-sha256
-bundles for Windows / Linux x86_64 / macOS arm64 plus a 14-
-chapter user manual PDF.
+**two flavours of initial state** (Cartesian or Keplerian
+elements referenced to the central body / one of the CR3BP
+primaries), event detection (always-on multi-body IMPACT with
+sub-millisecond Hermite + Brent localisation, opt-in ECLIPSE),
+TOML schema validation, per-force acceleration breakdown, run-
+folder layout with timestamp-prefixed snapshot + outputs, and a
+PySide6 desktop frontend covering Setup wizard, TOML editor with
+syntax-aware autocompletion, embedded runner, and a full Analysis
+tab (Plot / Table split, per-plot Export CSV, optional
+equirectangular star-map background on the 3D scene, batch-event
+impact maps in 2D equirectangular + Mollweide projections +
+density heatmap, 3D body-textured impact scene with body-fixed +
+ICRF triads, diff-RIC plots, Jacobi-constant conservation for
+CR3BP). Releases ship signed-sha256 bundles for Windows / Linux
+x86_64 / macOS arm64 plus a 14-chapter user manual PDF.
 
 The library underneath (`spody-core`) is validated against SPICE
 LRO POD ephemerides (sub-km position drift over the 6-day window,
@@ -172,6 +175,12 @@ Ordered roughly by what unlocks the most for users.
       integrator) and `cr3bp` (Circular Restricted 3-Body Problem
       in synodic rotating frame, today's curated pair is Earth-Moon
       via the `[cr3bp]` section)
+- [x] **Two initial-state flavours**: Cartesian (the legacy
+      `[initial_state].position_km` + `velocity_kms`) and Keplerian
+      (six classical elements + `reference_body` selector;
+      converted to Cartesian by the engine, and to the synodic
+      frame for CR3BP runs where the reference body is one of the
+      two primaries)
 - [x] `spody convert` CLI: `harmonics_icgem` (ICGEM .gfc → engine
       .tab format), `sp3` (IGS SP3 precise orbits → SpOdy
       reference binary, multi-file concat), `glonass` /
@@ -220,17 +229,26 @@ Ordered roughly by what unlocks the most for users.
       - Duration unit combo (`s | min | h | days`)
       - Embedded terminal pane streaming `spody`'s stdout/stderr live
       - **Analysis tab**: Plot / Table split, file tree grouped by
-        run folder (fully recursive scan), batch-event impact
-        views (time-to-impact histogram, survival timeline,
-        equirect + Mollweide lat/lon maps, density heatmap, 3D
-        body-textured scene with body-fixed + ICRF frame triads),
-        diff-RIC trajectory plots, CR3BP Jacobi-constant
-        conservation, per-primary osculating orbital elements for
-        CR3BP runs (primary selector lives in the Scene options
-        dialog)
+        run folder (fully recursive scan), per-plot
+        **Export CSV** action (every `Line2D` on the active
+        figure, one section per subplot; tile and overlay views
+        supported), batch-event impact views (time-to-impact
+        histogram, survival timeline, equirect + Mollweide
+        lat/lon maps, density heatmap, 3D body-textured scene
+        with body-fixed + ICRF frame triads), diff-RIC trajectory
+        plots, CR3BP Jacobi-constant conservation, per-primary
+        osculating orbital elements for CR3BP runs (primary
+        selector lives in the Scene options dialog), optional
+        **3D star-map background** (Solar System Scope Milky Way
+        8K, ICRF-aligned via on-the-fly re-projection; toggle in
+        the Scene options dialog, persisted across sessions);
+        **camera pan / zoom preserved** across re-renders of the
+        same file
       - Settings dialog for persisted asset paths
 - [x] **`spopy` Python package**: pure-NumPy DE440 reader + ICRF&lt;-&gt;
-      Moon PA rotations, bit-identical to spody-core
+      Moon PA rotations + Keplerian&harr;Cartesian + CR3BP
+      synodic&harr;primary-inertial conversions, bit-identical to
+      spody-core for the forward direction
 - [x] **Release pipeline**: tag-triggered GitHub Actions workflow
       builds PyInstaller bundles for Win64 / Linux x86_64 / macOS
       arm64, computes sha256 sidecars, and drafts a GitHub release

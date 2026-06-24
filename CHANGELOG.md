@@ -78,6 +78,40 @@ Two large slices landed on top of v0.1.3-beta:
   Successful runs launched from a WIP unlink the draft (its
   content has just been snapshotted into the new run folder)
   and auto-load the "starting file" the WIP was derived from.
+- **Keplerian initial state.** `[initial_state]` accepts an
+  optional `kind = "keplerian"` switch that takes the six
+  classical orbital elements (`semi_major_axis_km`, `eccentricity`,
+  `inclination_deg`, `raan_deg`, `arg_periapsis_deg`, `anomaly_deg`
+  with `anomaly_type = "true" | "mean"`) plus a `reference_body`
+  selector. HF runs default `reference_body = "central"`; CR3BP
+  runs require `"primary_1"` or `"primary_2"` and the engine
+  chains the synodic-frame transformation so the Keplerian state
+  around one primary lands in the integrator's synodic frame.
+  Cartesian (`kind = "cartesian"`, the default) parses unchanged.
+  The GUI form swaps blocks live with automatic conversion in
+  either direction via the new `spopy.kepler` /  `spopy.cr3bp`
+  modules, so flipping the selector keeps the user's input.
+- **Plot options dialog + Export CSV.** A `Plot options&hellip;`
+  button rides on the matplotlib toolbar row in the Analysis tab.
+  Today it hosts a single Export CSV action that dumps every
+  `Line2D` on the active figure (single, overlay, tile modes
+  supported) as a `.csv` with one section per subplot; wait
+  cursor + status line during the write, auto-close on success.
+- **3D starfield background.** A `Show starfield` toggle in the
+  Scene-options dialog replaces the dark background with an
+  equirectangular star map wrapped via `vtkSkybox.Sphere`. The
+  asset (Solar System Scope Milky Way 8K, CC BY 4.0) ships
+  through the Setup wizard alongside the Moon / Earth textures
+  and is re-projected on first use so the catalogue lines up with
+  the ICRF axes (pole = +Z, RA=0 = +X) &mdash; the wizard image is
+  in galactic coordinates, so the conversion chains a standard
+  ICRF&rarr;galactic rotation (Liu et al. 2011) before sampling.
+  The rotated copy is cached on disk; the toggle state is
+  persisted in QSettings.
+- **3D camera-pose preservation.** Re-renders of the SAME file
+  (Scene-options toggle, animation refresh) keep the user's
+  pan / zoom; only a switch to a different file triggers the
+  ResetCamera auto-fit.
 
 ### Changed
 
@@ -104,6 +138,15 @@ Two large slices landed on top of v0.1.3-beta:
   shared top-bar field is the single source of truth. A small
   **Refresh** button stays next to the file tree for manual
   re-scans after dropping bins in by hand.
+
+### Fixed
+
+- **Sun arrow / third-body markers missing at first render.** The
+  per-body filter treated an empty `scene_options.show_bodies`
+  set as "hide every body", which was the dataclass default
+  before the user opened the Scene-options dialog. The Analysis
+  panel now seeds the set from the loaded snapshot's
+  `force_model.third_bodies` before the first 3D dispatch.
 
 ## v0.1.3-beta &mdash; 2026-06-22
 

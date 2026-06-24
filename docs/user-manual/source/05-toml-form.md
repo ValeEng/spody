@@ -267,6 +267,39 @@ underlying CR3BP schema details &mdash; barycenter offsets,
 omega derivation, impact-event auto-wiring &mdash; live in
 chapter 6.
 
+## Switching the initial-state flavour
+
+The `[initial_state]` section carries a `kind` combo above the
+field block with two choices:
+
+- **`cartesian`** (the default) shows the legacy
+  `position_km` + `velocity_kms` vec3 widgets.
+- **`keplerian`** shows the six classical orbital elements
+  (`semi_major_axis_km`, `eccentricity`, `inclination_deg`,
+  `raan_deg`, `arg_periapsis_deg`, `anomaly_deg` with an
+  `anomaly_type = "true" | "mean"` combo), plus a
+  `reference_body` combo that picks **which** inertial frame the
+  elements live in. Under HF the only option is `central`
+  (= the central body); under CR3BP the choices become
+  `primary_1` and `primary_2` (the dialog defaults to neither, so
+  the user picks explicitly which primary anchors the orbit).
+
+Flipping the combo runs a **best-effort live conversion in either
+direction** so the values you just typed are not thrown away. The
+converter pulls the right &mu; (central body's GM for HF, primary's
+GM for CR3BP) plus the synodic-frame geometry (omega + barycenter
+offsets) and chains them through the `spopy.kepler` /
+`spopy.cr3bp` helpers. Empty / unparseable fields make the
+conversion silently bail (the destination block stays at whatever
+it was holding); a conversion that succeeds fills every field of
+the new block in one shot.
+
+The engine applies the same converter at parse time, so a
+hand-written TOML with `kind = "keplerian"` produces a bit-
+identical Cartesian state regardless of which side wrote it.
+The underlying schema lives in chapter 6, section *kind =
+"keplerian"*.
+
 ## Validating with the engine
 
 The **Validate** button at the top of the form runs the engine's

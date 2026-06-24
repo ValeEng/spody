@@ -32,7 +32,9 @@ of the main-window chapter &mdash; not in the tab itself):
     - inside the **Plot** tab: an **animation bar** that appears
       only when the active plot is 3D (chapter 9 covers it),
       followed by the **canvas** (matplotlib for 2D plots, VTK
-      for 3D);
+      for 3D). The matplotlib toolbar carries a **Plot
+      options&hellip;** button on its right edge for the 2D plot
+      &mdash; today's actions are listed under *Plot options* below;
     - inside the **Table** tab: a `QTableView` over the loaded
       record array, populated whenever you click a file (see
       section *The Table tab* below);
@@ -209,6 +211,54 @@ message. **3D plots** are filtered out and the count of skipped
 3D plots is reported in the info label. The hard cap is **12
 subplots** to keep the result legible; selecting more triggers a
 warning and aborts the tile.
+
+## Plot options (Export CSV, &hellip;)
+
+The **Plot options&hellip;** button on the matplotlib toolbar opens
+a small non-modal dialog that hosts per-plot actions on the
+currently-displayed 2D figure. Today it exposes a single action:
+
+**Export CSV** dumps every `Line2D` on the active figure (single,
+overlay and tile modes are all supported) as a `.csv` file. One
+section per subplot is written, separated by blank lines and a
+comment header carrying the subplot title; lines that share an
+x-array collapse to a single `x` column plus one column per series,
+others get paired `x_<label>, y_<label>` columns. Scatter / fill /
+heatmap layers (impact maps, density plots, the 3D scene) carry
+no `Line2D` and are skipped. The dialog shows a *Saving to&hellip;*
+status during the write and auto-closes on success; errors stay
+visible so the user can adjust the destination.
+
+The button is hidden while the active plot is 3D &mdash; the 3D
+canvas uses VTK, not matplotlib, and its own Scene-options dialog
+(animation bar) covers the per-scene controls.
+
+## 3D scene options &mdash; starfield background
+
+The Scene options dialog (animation bar on the 3D canvas, see
+chapter 9) has a **Show starfield** checkbox that swaps the dark
+background for an equirectangular star map. The asset (Solar
+System Scope Milky Way 8K, CC BY 4.0) ships through the Setup
+wizard alongside the Moon and Earth textures; until it is
+downloaded the checkbox stays disabled with an explanatory
+tooltip.
+
+On first activation, SpOdy re-projects the wizard image into the
+ICRF axes the scene uses (pole = +Z, vernal equinox = +X). The
+shipped texture is in galactic coordinates (image centre = Sgr A*),
+so the re-projection chains a standard ICRF&rarr;galactic rotation
+before the (l, b) lookup &mdash; without it the bulge would land in
+the wrong patch of sky and breach the "looks right when overlaid
+with the ICRF triad" sanity test. The rotated copy is cached on
+disk next to the source as `<stem>_icrf<ext>` so subsequent runs
+are instant. Toggle state is persisted in QSettings, so the next
+session opens to the same background.
+
+The skybox lives on the FAR (background) renderer with `vtkSkybox.
+Sphere` projection. The shader forces depth = 1 (far plane), so
+spacecraft trajectories, central body, third-body markers and
+triads all render in front of it correctly regardless of zoom
+level.
 
 ## Picking in the 3D viewer
 
