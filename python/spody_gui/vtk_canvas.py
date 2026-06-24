@@ -179,6 +179,117 @@ class _AnimArrowHandle:
     arrow_actor: vtkActor
 
 
+def _ensure_icrf_aligned_skybox(src: Path) -> Path:
+    """Re-project an equirectangular star map so that vtkSkybox.Sphere
+    samples it in ICRF orientation: looking toward +X_ICRF shows the
+    RA=0 patch (vernal equinox), looking toward -Y_ICRF shows the
+    Milky Way bulge (Sgr A* at RA~270), looking toward +Z_ICRF shows
+    the North Celestial Pole (Polaris).
+
+    vtkSkybox.Sphere's fragment shader hard-codes a (pole=+Y, RA=0=-Z)
+    convention and ignores both SetUserTransform (uses model-space
+    vertex positions, not world) and SetFloorPlane / SetFloorRight
+    (those only affect Floor projection). The only clean fix is to
+    rotate the pixels themselves so the shader's sampling
+    convention, when interpreted in ICRF world coords, lands on the
+    right star.
+
+    The rotated copy is cached on disk next to the source as
+    `<stem>_icrf<ext>`; subsequent calls return the cache directly
+    when it is newer than the source. ~1-2 s the first time for an
+    8K image, instant after that. Pillow + numpy do all the work;
+    no VTK calls here so the function is import-cheap.
+
+    Falls back to returning the source path on any failure (PIL
+    missing, source unreadable, write permission denied) so the
+    skybox still renders, just misaligned."""
+    src = Path(src)
+    if not src.is_file():
+        return src
+    dst = src.with_name(f"{src.stem}_icrf{src.suffix}")
+    try:
+        if dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime:
+            return dst
+    except OSError:
+        return src
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return src
+
+    try:
+        img = np.asarray(Image.open(src).convert("RGB"))
+    except (OSError, ValueError):
+        return src
+    H, W = img.shape[:2]
+
+    # Output pixel grids (u_new in [0,1) horizontal, v_new in [0,1) vertical).
+    u_new = (np.arange(W) + 0.5) / W
+    v_new = (np.arange(H) + 0.5) / H
+
+    # vtkSkybox shader: u = atan2(d.x, d.z)/2pi + 0.5
+    #                   v = 0.5 - asin(d.y)/pi
+    # Invert to find the world direction d the shader is sampling for
+    # each (u_new, v_new):
+    #   d.y = sin((0.5 - v) * pi)  = cos(v * pi)
+    #   phi = atan2(d.x, d.z)      = (u - 0.5) * 2pi
+    #   d.x = cos(asin(d.y)) * sin(phi),  d.z = cos(asin(d.y)) * cos(phi)
+    phi    = (u_new - 0.5) * 2.0 * np.pi          # (W,)
+    dy     = np.cos(v_new * np.pi)                # (H,) -- sin((0.5-v)*pi)
+    cos_lat = np.sqrt(np.maximum(0.0, 1.0 - dy * dy))  # (H,)
+    sin_p  = np.sin(phi)                          # (W,)
+    cos_p  = np.cos(phi)                          # (W,)
+    dx     = cos_lat[:, None] * sin_p[None, :]    # (H, W)
+    dz     = cos_lat[:, None] * cos_p[None, :]    # (H, W)
+    dy2    = np.broadcast_to(dy[:, None], (H, W))
+
+    # The Solar System Scope (and most photographic Milky Way) star
+    # maps are stored in GALACTIC coordinates: the bulge sits at the
+    # IMAGE CENTRE (u=0.5, v=0.5), NOT at RA=270 / Dec=-29. So we
+    # rotate the shader's world direction (ICRF) into galactic coords
+    # before computing the image lookup.
+    #
+    # R_icrf_to_gal is the standard J2000 ICRS -> Galactic rotation
+    # (Liu et al. 2011, derived from Hipparcos pole / centre):
+    #   d_gal = R @ d_icrf
+    R_ICRF_TO_GAL = np.array([
+        [-0.0548755604, -0.8734370902, -0.4838350155],
+        [+0.4941094279, -0.4448296300, +0.7469822445],
+        [-0.8676661490, -0.1980763734, +0.4559837762],
+    ])
+    # Apply to every pixel direction (we have d as three (H,W) arrays).
+    gx = (R_ICRF_TO_GAL[0, 0] * dx +
+          R_ICRF_TO_GAL[0, 1] * dy2 +
+          R_ICRF_TO_GAL[0, 2] * dz)
+    gy = (R_ICRF_TO_GAL[1, 0] * dx +
+          R_ICRF_TO_GAL[1, 1] * dy2 +
+          R_ICRF_TO_GAL[1, 2] * dz)
+    gz = (R_ICRF_TO_GAL[2, 0] * dx +
+          R_ICRF_TO_GAL[2, 1] * dy2 +
+          R_ICRF_TO_GAL[2, 2] * dz)
+    # Galactic (l, b) from the rotated direction.
+    l_gal = np.arctan2(gy, gx)        # [-pi, pi]
+    b_gal = np.arcsin(np.clip(gz, -1.0, 1.0))
+
+    # Image convention (Solar System Scope style, l=0 at image centre):
+    #   u_src = l / (2pi) + 0.5     (so u=0.5 = bulge)
+    #   v_src = 0.5 - b / pi
+    u_src = ((l_gal / (2.0 * np.pi)) + 0.5) % 1.0
+    v_src = 0.5 - b_gal / np.pi
+
+    src_x = np.clip((u_src * W).astype(np.int32), 0, W - 1)
+    src_y = np.clip((v_src * H).astype(np.int32), 0, H - 1)
+    new_img = img[src_y, src_x]
+
+    try:
+        Image.fromarray(new_img).save(
+            dst, quality=92 if src.suffix.lower() in (".jpg", ".jpeg") else None)
+    except OSError:
+        return src
+    return dst
+
+
 class VtkCanvas(QWidget):
     """Qt widget hosting a single VTK renderer. Stateless wrt to which
     file is currently shown -- `clear_scene` followed by add_*() calls
@@ -236,11 +347,26 @@ class VtkCanvas(QWidget):
         style.SetDefaultRenderer(self._renderer)
         self._interactor.SetInteractorStyle(style)
 
-        # Slave the far camera to the top camera. ModifiedEvent fires
-        # on every position/focal/up/angle change (interactor drag,
-        # ResetCamera, SetFocalPoint, ...). The sync writes only to
-        # the FAR camera and the FAR renderer, so the observer never
-        # loops back to itself.
+        # Share ONE camera object between FRONT (layer 1) and FAR
+        # (layer 0). Both renderers see exactly the same pose at the
+        # same instant -- no sync lag, no separate ModifiedEvent
+        # observer to keep them in step. The previous design used two
+        # cameras with a Modified-driven copy, but that one-frame lag
+        # showed up as a wobbling / scaling skybox on FAR when only
+        # the skybox lived there (no third-body markers to "anchor"
+        # the bbox-driven clipping reset). Sharing the camera makes
+        # the FAR view always coherent with the FRONT view, which is
+        # what the user perceives anyway.
+        self._renderer_far.SetActiveCamera(
+            self._renderer.GetActiveCamera())
+        # Trackball interactions (dolly / zoom) implicitly recompute
+        # the camera's clipping range via VTK's resetCameraClippingRange
+        # hooks, which use FRONT's bbox (Earth + trajectory ~10000 km).
+        # That narrow far plane clips out the FAR layer's far-away
+        # decoration markers (Sun at ~150M km). We re-widen the far
+        # plane on every camera Modified to ~5e8 km, so zooming in does
+        # not make the body spheres disappear. The flag guards against
+        # the recursion of writing to the very camera we observe.
         self._syncing_cameras = False
         self._renderer.GetActiveCamera().AddObserver(
             "ModifiedEvent", self._on_top_camera_modified)
@@ -362,7 +488,16 @@ class VtkCanvas(QWidget):
         flat dark background)."""
         if self._skybox_texture is None or self._skybox_actor is not None:
             return
-        reader = self._make_image_reader(self._skybox_texture)
+        # Re-project the equirectangular star map into vtkSkybox.Sphere's
+        # native convention so RA=0 lines up with ICRF +X and the
+        # north celestial pole lines up with ICRF +Z. vtkSkybox bakes
+        # its own (pole=+Y, RA=0=-Z) convention into the shader and
+        # ignores both SetUserTransform and SetFloorPlane/Right for the
+        # Sphere projection, so the only clean fix is to physically
+        # rotate the texture pixels and feed the rotated image in.
+        # One-time cost (~1-2 s for an 8K image), cached on disk.
+        aligned = _ensure_icrf_aligned_skybox(self._skybox_texture)
+        reader = self._make_image_reader(aligned)
         if reader is None:
             return
         reader.Update()
@@ -373,6 +508,11 @@ class VtkCanvas(QWidget):
         skybox = vtkSkybox()
         skybox.SetTexture(texture)
         skybox.SetProjection(vtkSkybox.Sphere)
+        # NOTE: SetFloorPlane / SetFloorRight are deliberately NOT set
+        # here. vtkSkybox's Sphere projection ignores them (they only
+        # affect Floor projection mode); the ICRF alignment is done by
+        # rotating the texture pixels themselves in
+        # `_ensure_icrf_aligned_skybox` above.
         # Exclude the skybox geometry from the FAR renderer's bbox so
         # ResetCameraClippingRange (called from _sync_far_camera on
         # every camera nudge) does not clamp the near/far planes around
@@ -1564,22 +1704,46 @@ class VtkCanvas(QWidget):
             self._syncing_cameras = False
 
     def _sync_far_camera(self) -> None:
-        """Copy the top camera's pose (position + focal point + view
-        up + view angle + parallel scale) to the far camera, then
-        let the far renderer recompute its own clipping range from
-        the bodies' bbox."""
-        top_cam = self._renderer.GetActiveCamera()
-        far_cam = self._renderer_far.GetActiveCamera()
-        far_cam.SetPosition(*top_cam.GetPosition())
-        far_cam.SetFocalPoint(*top_cam.GetFocalPoint())
-        far_cam.SetViewUp(*top_cam.GetViewUp())
-        far_cam.SetViewAngle(top_cam.GetViewAngle())
-        far_cam.SetParallelScale(top_cam.GetParallelScale())
-        self._renderer_far.ResetCameraClippingRange()
+        """Legacy shim: FAR and FRONT now share one vtkCamera object
+        (see __init__). There is nothing left to copy across cameras;
+        we just widen the shared clipping range so the FAR layer's
+        decoration markers (Sun arrow ~150M km, etc.) survive the
+        FRONT renderer's tight ResetCameraClippingRange. The near
+        plane stays at whatever the FRONT bbox produced so
+        Earth-surface z-precision is preserved."""
+        cam = self._renderer.GetActiveCamera()
+        near, far = cam.GetClippingRange()
+        if far < 5.0e8:
+            cam.SetClippingRange(near, 5.0e8)
 
     def render(self) -> None:
         """Trigger a repaint. Call once after a batch of add_* calls."""
         self._render_window.Render()
+
+    def capture_camera_pose(self) -> dict:
+        """Snapshot the current camera pose into a plain-Python dict.
+        Used by the analysis panel to preserve the user's zoom / pan
+        across scene rebuilds that are NOT a fresh file load (toggling
+        Scene options, animation re-renders, ...)."""
+        cam = self._renderer.GetActiveCamera()
+        return {
+            "position":   cam.GetPosition(),
+            "focal":      cam.GetFocalPoint(),
+            "up":         cam.GetViewUp(),
+            "view_angle": cam.GetViewAngle(),
+            "parallel":   cam.GetParallelScale(),
+        }
+
+    def restore_camera_pose(self, pose: dict) -> None:
+        """Push a `capture_camera_pose` snapshot back onto the camera.
+        Bypasses ResetCamera, so a re-render after a scene-options
+        toggle keeps the user wherever they had panned/zoomed to."""
+        cam = self._renderer.GetActiveCamera()
+        cam.SetPosition(*pose["position"])
+        cam.SetFocalPoint(*pose["focal"])
+        cam.SetViewUp(*pose["up"])
+        cam.SetViewAngle(pose["view_angle"])
+        cam.SetParallelScale(pose["parallel"])
 
     # ------------------------------------------------------------------
     # Picking

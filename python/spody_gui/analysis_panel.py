@@ -2778,6 +2778,12 @@ class AnalysisPanel(QWidget):
         # _on_scene_options_changed. The dialog itself is opened from
         # the animation bar's "Scene..." button (see wiring below).
         self._scene_options = SceneOptions()
+        # Tracks the file path the 3D canvas was last rendered against.
+        # When a re-render targets the same file (Scene-options toggle,
+        # animation restart, ...), we preserve the user's camera pan /
+        # zoom; only a switch to a different file triggers the
+        # ResetCamera auto-fit again.
+        self._last_3d_path: "Path | None" = None
         # Restore persistent toggles from Settings. show_starfield is
         # the only one persisted today; the rest stay at dataclass
         # defaults until the user touches them in the dialog.
@@ -3290,6 +3296,11 @@ class AnalysisPanel(QWidget):
         # mirroring CR3BP_PAIRS in src/toml_input.c.
         self._dynamics_model   = self._resolve_dynamics_model_from_snapshot()
         self._cr3bp_primaries  = self._resolve_cr3bp_primaries_from_snapshot()
+        # Seed the per-body visibility set from the snapshot's
+        # third_bodies BEFORE the first 3D render, so Sun arrow /
+        # Moon marker / etc. show up without needing the user to
+        # open the Scene-options dialog first.
+        self._seed_show_bodies_from_snapshot()
         # Refresh the Scene-options dialog's body list with whatever
         # `force_model.third_bodies` is declared in this run's TOML
         # (silently no-op when the snapshot is missing or the dialog
@@ -3857,6 +3868,44 @@ class AnalysisPanel(QWidget):
             cr3bp_primaries=self._cr3bp_primaries,
         )
 
+    def _third_bodies_from_snapshot(self) -> list[str]:
+        """Pull `force_model.third_bodies` out of the loaded run's
+        snapshot TOML. Empty list when no snapshot, no [force_model]
+        section, or no [force_model].third_bodies entry. Used both to
+        seed `scene_options.show_bodies` on every load (so the first
+        3D render shows arrows / markers without waiting for the user
+        to open the Scene-options dialog) and to feed the dialog's
+        per-body checkbox list when it does open."""
+        if self._path is None:
+            return []
+        info = _resolve_run_context(self._path)
+        if info is None:
+            return []
+        try:
+            cfg = read_toml(info["toml_path"])
+        except (OSError, ValueError):
+            return []
+        bodies = cfg.get("force_model", {}).get("third_bodies", [])
+        if not isinstance(bodies, list):
+            return []
+        return [b for b in bodies if isinstance(b, str)]
+
+    def _seed_show_bodies_from_snapshot(self) -> None:
+        """When `scene_options.show_bodies` is still empty (fresh
+        session, or a dataclass-default panel that has never had its
+        body list populated), pre-fill it with every third body the
+        snapshot TOML declares. `_add_third_bodies` treats an empty
+        set as 'hide every body' (the user explicitly unchecked them
+        all in the dialog); without this seed, the first 3D render
+        of a new file drops the Sun arrow / Moon marker / etc. even
+        though their checkboxes in the dialog appear ticked the next
+        time the dialog opens. We deliberately do NOT overwrite a
+        non-empty set: the user's explicit hide-all-but-X choice
+        from a previous session must survive."""
+        if self._scene_options.show_bodies:
+            return
+        self._scene_options.show_bodies = set(self._third_bodies_from_snapshot())
+
     def _refresh_scene_dialog_bodies(self) -> None:
         """Push the current run's `force_model.third_bodies` into
         the Scene-options dialog so the per-body checkboxes match,
@@ -3882,22 +3931,8 @@ class AnalysisPanel(QWidget):
             if self._cr3bp_primaries else None)
         self._scene_dialog.set_dynamics_model(
             self._dynamics_model, primary_names)
-        if self._path is None:
-            return
-        info = _resolve_run_context(self._path)
-        if info is None:
-            self._scene_dialog.set_available_bodies([])
-            return
-        try:
-            cfg = read_toml(info["toml_path"])
-        except (OSError, ValueError):
-            self._scene_dialog.set_available_bodies([])
-            return
-        bodies = cfg.get("force_model", {}).get("third_bodies", [])
-        if not isinstance(bodies, list):
-            bodies = []
         self._scene_dialog.set_available_bodies(
-            [b for b in bodies if isinstance(b, str)])
+            self._third_bodies_from_snapshot())
 
     # ------------------------------------------------------------------
     # Picking (Ctrl+left-click on a trajectory in the 3D scene)
@@ -4066,6 +4101,13 @@ class AnalysisPanel(QWidget):
                 self._figure.tight_layout()
                 self._canvas.draw_idle()
             else:  # "3d"
+                # Preserve the user's camera pan / zoom across
+                # re-renders of the SAME file (Scene-options toggle,
+                # animation refresh). Only a fresh file load (or
+                # never-loaded) takes the ResetCamera auto-fit branch.
+                preserve = (self._last_3d_path == self._path
+                            and self._stack.currentIndex() == 1)
+                saved_pose = self._vtk.capture_camera_pose() if preserve else None
                 self._stack.setCurrentIndex(1)
                 self._vtk.set_central_body_texture(self._configured_central_body_texture())
                 self._apply_skybox_to_canvas()
@@ -4074,11 +4116,15 @@ class AnalysisPanel(QWidget):
                     spec.fn(self._vtk, self._data, ctx)
                 else:
                     spec.fn(self._vtk, self._data)
-                # See _on_overlay_selected for why we lock the focal
-                # point at the origin instead of using vanilla
-                # reset_camera() here.
-                self._vtk.reset_camera_on_origin()
+                if saved_pose is not None:
+                    self._vtk.restore_camera_pose(saved_pose)
+                else:
+                    # See _on_overlay_selected for why we lock the focal
+                    # point at the origin instead of using vanilla
+                    # reset_camera() here.
+                    self._vtk.reset_camera_on_origin()
                 self._vtk.render()
+                self._last_3d_path = self._path
             self._sync_anim_bar_to_canvas()
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
             QMessageBox.critical(self, "Plot failed", repr(exc))

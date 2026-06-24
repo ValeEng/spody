@@ -269,10 +269,10 @@ EARTH_TEXTURE = Asset(
 # leaves the legacy dark colour. Body-agnostic (skybox is a scene
 # property, not tied to a central body), so `body=None`.
 STAR_TEXTURE = Asset(
-    name="Star map (Solar System Scope, Milky Way 2K)",
-    url="https://www.solarsystemscope.com/textures/download/2k_stars_milky_way.jpg",
-    relpath="Stars/2k_stars_milky_way.jpg",
-    min_bytes=500_000,
+    name="Star map (Solar System Scope, Milky Way 8K)",
+    url="https://www.solarsystemscope.com/textures/download/8k_stars_milky_way.jpg",
+    relpath="Stars/8k_stars_milky_way.jpg",
+    min_bytes=4_000_000,
     kind="raw",
     required=False,
     category="texture_skybox",
