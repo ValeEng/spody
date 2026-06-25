@@ -50,12 +50,22 @@ typedef enum {
 } SpodyIntegratorType;
 
 typedef enum {
-    SPODY_FRAME_CENTRAL_INERTIAL = 0,   /* HF: ICRF-aligned, central body
+    SPODY_FRAME_CENTRAL_INERTIAL  = 0,  /* HF: ICRF-aligned, central body
                                          * at origin */
-    SPODY_FRAME_SYNODIC_ROTATING = 1    /* CR3BP: barycenter-centred,
+    SPODY_FRAME_SYNODIC_ROTATING  = 1,  /* CR3BP: barycenter-centred,
                                          * rotating with the two
                                          * primaries; +x toward the
                                          * smaller primary */
+    SPODY_FRAME_CENTRAL_BODY_FIXED = 2  /* HF: the central body's body-
+                                         * fixed basis at et_start_s
+                                         * (Earth ITRS, Moon PA). sim_
+                                         * setup rotates the parsed
+                                         * (position, velocity) into the
+                                         * integrator's central_inertial
+                                         * frame via the body's
+                                         * bf_rotation provider; no
+                                         * other downstream stage sees
+                                         * the body-fixed values. */
 } SpodyFrame;
 
 /* How [initial_state] expresses the IC. Default is cartesian so every

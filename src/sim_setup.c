@@ -297,13 +297,42 @@ int spody_build_worker(const InputConfig *cfg,
     }
     w->init_integ = 1;
 
-    /* Initial state. Frame is 'central_inertial' in v0 -- ICRF-aligned
-     * at the central body, which is exactly what the integrator expects,
-     * so no rotation is needed. */
+    /* Initial state. The integrator runs in central_inertial; when
+     * `frame = "central_body_fixed"` was selected the cfg's
+     * position_km / velocity_kms are in the central body's body-
+     * fixed basis at et_start_s, so we rotate them up here via the
+     * same `get_bf_rotation` callback the force-model uses on every
+     * integrator step (Earth ITRS via IAU 2006 + EOP, Moon PA via
+     * the DE-series libration angles). Pure rotation only -- no
+     * omega x r correction; matches the GUI / spopy plotting
+     * convention so values round-trip through both. */
     double y0[6] = {
         cfg->position_km[0],  cfg->position_km[1],  cfg->position_km[2],
         cfg->velocity_kms[0], cfg->velocity_kms[1], cfg->velocity_kms[2]
     };
+    if (cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED) {
+        if (!w->ctx.get_bf_rotation) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "central body '%s' has no body-fixed rotation "
+                    "provider; initial_state.frame = 'central_body_fixed' "
+                    "is not supported for this body",
+                    body->name);
+            goto fail;
+        }
+        double R_icrf_to_bf[3][3], R_bf_to_icrf[3][3];
+        w->ctx.get_bf_rotation(&w->ctx, cfg->et_start_s,
+                                R_icrf_to_bf, R_bf_to_icrf);
+        double r_bf[3] = { y0[0], y0[1], y0[2] };
+        double v_bf[3] = { y0[3], y0[4], y0[5] };
+        for (int i = 0; i < 3; ++i) {
+            y0[i]     = R_bf_to_icrf[i][0] * r_bf[0]
+                      + R_bf_to_icrf[i][1] * r_bf[1]
+                      + R_bf_to_icrf[i][2] * r_bf[2];
+            y0[i + 3] = R_bf_to_icrf[i][0] * v_bf[0]
+                      + R_bf_to_icrf[i][1] * v_bf[1]
+                      + R_bf_to_icrf[i][2] * v_bf[2];
+        }
+    }
     if (spody_set_integrator_state(&w->integ, 0.0, y0) != SPODY_INTEG_OK) {
         spody_error_set(err, SPODY_ERR_INTERNAL,
                 "spody_set_integrator_state failed");

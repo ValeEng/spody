@@ -291,14 +291,18 @@ static int parse_central_body(const char *name, SpodyCentralBody *out,
 
 static int parse_frame(const char *name, SpodyFrame *out, SpodyError *err) {
     if (strcmp(name, "central_inertial") == 0) {
-        *out = SPODY_FRAME_CENTRAL_INERTIAL; return SPODY_OK;
+        *out = SPODY_FRAME_CENTRAL_INERTIAL;  return SPODY_OK;
     }
     if (strcmp(name, "synodic_rotating") == 0) {
-        *out = SPODY_FRAME_SYNODIC_ROTATING; return SPODY_OK;
+        *out = SPODY_FRAME_SYNODIC_ROTATING;  return SPODY_OK;
+    }
+    if (strcmp(name, "central_body_fixed") == 0) {
+        *out = SPODY_FRAME_CENTRAL_BODY_FIXED; return SPODY_OK;
     }
     spody_error_set(err, SPODY_ERR_BAD_VALUE,
             "initial_state.frame = '%s' is not supported "
-            "(supported: 'central_inertial', 'synodic_rotating')", name);
+            "(supported: 'central_inertial', 'synodic_rotating', "
+            "'central_body_fixed')", name);
     return SPODY_ERR_BAD_VALUE;
 }
 
@@ -645,10 +649,12 @@ static int finalize_keplerian_initial_state(InputConfig *cfg, SpodyError *err) {
         mu_ref = (cfg->kep_ref_body == SPODY_REF_BODY_PRIMARY_2)
                  ? cfg->cr3bp_mu2 : cfg->cr3bp_mu1;
     } else {  /* high_fidelity */
-        if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL) {
+        if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL
+                && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED) {
             spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                    "initial_state.frame must be 'central_inertial' for "
-                    "Keplerian input under dynamics_model = 'high_fidelity'");
+                    "initial_state.frame must be 'central_inertial' or "
+                    "'central_body_fixed' for Keplerian input under "
+                    "dynamics_model = 'high_fidelity'");
             return SPODY_ERR_BAD_VALUE;
         }
         if (cfg->kep_ref_body != SPODY_REF_BODY_CENTRAL) {
@@ -1663,11 +1669,17 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
 
     /* From here down: high_fidelity validator. */
 
-    /* Initial state frame must be central_inertial for HF. */
-    if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL) {
+    /* Initial state frame: HF accepts central_inertial (no
+     * transformation) OR central_body_fixed (sim_setup rotates the
+     * parsed values via the central body's bf_rotation provider at
+     * et_start_s, so the downstream integrator still sees a plain
+     * central_inertial state). */
+    if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL
+            && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED) {
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "initial_state.frame must be 'central_inertial' "
-                "when dynamics_model = 'high_fidelity'");
+                "initial_state.frame must be 'central_inertial' or "
+                "'central_body_fixed' when dynamics_model = "
+                "'high_fidelity'");
         return SPODY_ERR_BAD_VALUE;
     }
 

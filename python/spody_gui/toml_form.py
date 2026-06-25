@@ -133,8 +133,13 @@ CENTRAL_BODIES   = known_central_body_names()
 DYNAMICS_MODELS  = ("high_fidelity", "cr3bp")
 # Per-model valid frames -- the [initial_state] frame combo is filtered
 # to the entries valid under the currently-selected dynamics_model.
+# `central_body_fixed` is GUI-only: the user types the [initial_state]
+# vectors (cart or kep angles) in the central body's body-fixed basis
+# (Earth ITRS, Moon PA), and the form rotates them to ICRF at TOML
+# emit so the engine sees plain `central_inertial`. The combo entry
+# is auto-hidden for bodies without a registered orientation provider.
 FRAMES_BY_MODEL: dict[str, tuple[str, ...]] = {
-    "high_fidelity": ("central_inertial",),
+    "high_fidelity": ("central_inertial", "central_body_fixed"),
     "cr3bp":         ("synodic_rotating",),
 }
 # Curated CR3BP primary pairs. Mirror of CR3BP_PAIRS in
@@ -726,13 +731,23 @@ class TomlForm(QWidget):
         top = QFormLayout()
         top.setContentsMargins(0, 0, 0, 0)
         v_outer.addLayout(top)
-        # Frame combo: items are filtered by the active dynamics model
-        # (HF -> central_inertial; CR3BP -> synodic_rotating). Seed with
-        # the HF set; _on_dynamics_model_changed reflows on switch.
+        # Frame combo: items are filtered by the active dynamics model.
+        # HF accepts `central_inertial` (engine-native) or
+        # `central_body_fixed` (GUI-only: the form rotates the typed
+        # values to ICRF at TOML emit so the engine sees
+        # `central_inertial`). CR3BP only allows `synodic_rotating`.
+        # Switching between `central_inertial` and `central_body_fixed`
+        # does a live rotation of the currently typed cart / kep
+        # values (same UX as the cartesian <-> keplerian swap).
         self._add_enum(top, "initial_state.frame", "frame",
                        FRAMES_BY_MODEL["high_fidelity"])
         self._add_enum(top, "initial_state.kind", "kind",
                        ("cartesian", "keplerian"))
+        frame_combo = self._widgets["initial_state.frame"]
+        frame_combo.currentTextChanged.connect(self._on_input_frame_changed)
+        # Tracks the last frame so the converter knows which direction
+        # to rotate. Synced to the combo on every successful swap.
+        self._input_frame_prev: str = "central_inertial"
 
         # --- Cartesian block --------------------------------------------------
         self._init_cart_block = QWidget()
@@ -917,6 +932,9 @@ class TomlForm(QWidget):
                 eop_w.setText(str(data_root / "eop" / "finals2000A.all"))
             if isinstance(iau_w, QLineEdit) and not iau_w.text().strip():
                 iau_w.setText(str(data_root / "iau2006"))
+        # Refresh the input_frame combo: the BF radio's label tracks the
+        # central body's bf_frame_name (ITRS for Earth, PA for Moon).
+        self._refresh_input_frame_availability()
 
     def _build_ephemeris(self) -> QGroupBox:
         g = QGroupBox("[ephemeris]")
@@ -1192,6 +1210,255 @@ class TomlForm(QWidget):
         self._write_vec3("initial_state.position_km",  r)
         self._write_vec3("initial_state.velocity_kms", v)
 
+    def _resolve_bf_rotation(self, et_s: float) -> "np.ndarray | None":
+        """Return R_icrf_to_bf at ET `et_s` for the form's currently
+        selected central body, or None on any failure (missing EOP /
+        ephemeris, unsupported body, CR3BP run). Mirrors the
+        orientation pipeline `central_bodies._earth_orientation` /
+        `_moon_orientation` use at scene-render time, so the BF
+        defined here matches the one the analysis tab shows."""
+        dm_combo = self._widgets.get("simulation.dynamics_model")
+        dyn_model = (dm_combo.currentText()
+                     if isinstance(dm_combo, QComboBox) else "high_fidelity")
+        if dyn_model == "cr3bp":
+            return None
+        cb_combo = self._widgets.get("force_model.central_body")
+        cb_name = (cb_combo.currentText()
+                   if isinstance(cb_combo, QComboBox) else "")
+        from .central_bodies import resolve_central_body
+        spec = resolve_central_body(cb_name)
+        if spec is None or spec.bf_orientation is None:
+            return None
+        # Earth orientation reads EOP from data_dir and ignores its
+        # ephemeris argument; Moon orientation needs the ephemeris.
+        # Build the latter lazily from the form's ephemeris.file
+        # field; cache for subsequent calls in the same session so
+        # switching frames many times does not re-load DE440 every
+        # tick.
+        eph = None
+        if spec.name == "Moon":
+            eph = self._cached_ephemeris_for_form()
+            if eph is None:
+                return None
+        try:
+            import numpy as np
+            return np.asarray(spec.bf_orientation(float(et_s), eph), dtype=float)
+        except Exception:
+            return None
+
+    def _cached_ephemeris_for_form(self):
+        """Lazy + per-session cached spopy.Ephemeris built from the
+        form's `ephemeris.file` widget value. Returns None when the
+        path is empty or unreadable. Used only by the BF-rotation
+        helper -- the engine loads its own copy at sim setup.
+
+        `ephemeris.file` is an `_AssetCombo` (QComboBox subclass)
+        whose visible text is just the basename of the picked file;
+        the absolute path lives in the item's userData and is what
+        the rest of the form (and the TOML emitter) reads via
+        `_widget_value`. Querying `.text()` here used to return the
+        basename and silently fail to find the file on disk."""
+        eph_w = self._widgets.get("ephemeris.file")
+        if isinstance(eph_w, QComboBox):
+            data = eph_w.currentData()
+            path = str(data).strip() if data else ""
+        elif isinstance(eph_w, QLineEdit):
+            path = eph_w.text().strip()
+        else:
+            path = ""
+        if not path:
+            return None
+        # Cache key is the path string; switching ephemeris files in
+        # the form invalidates the cache so the new one is loaded on
+        # the next call.
+        cached = getattr(self, "_form_ephemeris_cache", None)
+        if cached is not None and cached[0] == path:
+            return cached[1]
+        try:
+            from spopy import Ephemeris
+            eph = Ephemeris(path)
+        except (OSError, ValueError, ImportError):
+            self._form_ephemeris_cache = (path, None)
+            return None
+        self._form_ephemeris_cache = (path, eph)
+        return eph
+
+    def _form_et_start(self) -> float | None:
+        """Read simulation.et_start_s from the form, or None when it
+        is empty / unparseable. Used by the BF conversion paths to
+        evaluate R_icrf_to_bf at the run's start epoch."""
+        et_w = self._widgets.get("simulation.et_start_s")
+        if not isinstance(et_w, QLineEdit):
+            return None
+        txt = et_w.text().strip()
+        if not txt:
+            return None
+        try:
+            return float(txt)
+        except ValueError:
+            return None
+
+    def _on_input_frame_changed(self, new_frame: str) -> None:
+        """User flipped the [initial_state].frame combo: when the
+        swap is between `central_inertial` and `central_body_fixed`,
+        rotate the currently typed cart / kep values in place so the
+        displayed numbers reflect the new basis. Other transitions
+        (e.g. dynamics-model reflow that inserts `synodic_rotating`)
+        do not rotate -- only the BF<->ICRF pair is a frame swap on
+        the same physical state.
+
+        When rotation prerequisites are missing (empty et_start_s,
+        unreadable ephemeris for Moon, etc.) we still honour the
+        user's combo flip and pop a one-shot warning explaining what
+        was skipped -- the previous behaviour of silently reverting
+        the combo to its old value made it look like the BF option
+        was broken when actually et_start was just empty."""
+        bf_pair = {"central_inertial", "central_body_fixed"}
+        if (new_frame == self._input_frame_prev
+                or new_frame not in bf_pair
+                or self._input_frame_prev not in bf_pair):
+            self._input_frame_prev = new_frame
+            return
+        et = self._form_et_start()
+        if et is None:
+            QMessageBox.warning(
+                self, "Body-fixed rotation skipped",
+                "Set simulation.et_start_s first so the form knows at "
+                "which epoch to evaluate the body-fixed rotation. The "
+                "frame selector was kept on '" + new_frame + "' but the "
+                "values below have NOT been rotated.")
+            self._input_frame_prev = new_frame
+            return
+        R_icrf_to_bf = self._resolve_bf_rotation(et)
+        if R_icrf_to_bf is None:
+            QMessageBox.warning(
+                self, "Body-fixed rotation unavailable",
+                "Could not evaluate the body-fixed rotation at the "
+                "current et_start_s. For Moon: pick a valid DE-series "
+                "ephemeris in [ephemeris].file. For Earth: make sure "
+                "the EOP file exists under the wizard data dir. The "
+                "frame selector was kept on '" + new_frame + "' but "
+                "the values below have NOT been rotated.")
+            self._input_frame_prev = new_frame
+            return
+        # icrf->bf when going inertial -> body_fixed; transpose for
+        # the reverse. Pure rotation only (no omega x r correction);
+        # matches the Slice-B plot semantics so what you see in BF
+        # plots round-trips through this form unchanged.
+        R = R_icrf_to_bf if new_frame == "central_body_fixed" else R_icrf_to_bf.T
+        kind_combo = self._widgets.get("initial_state.kind")
+        kind = (kind_combo.currentText()
+                if isinstance(kind_combo, QComboBox) else "cartesian")
+        if kind == "cartesian":
+            self._rotate_cart_inplace(R)
+        else:
+            self._rotate_kep_inplace(R)
+        self._input_frame_prev = new_frame
+
+    def _rotate_cart_inplace(self, R: "np.ndarray") -> None:
+        """Rotate the cart widgets' (r, v) values by R. Silent if any
+        component is empty / unparseable."""
+        r = self._read_vec3("initial_state.position_km")
+        v = self._read_vec3("initial_state.velocity_kms")
+        if r is None or v is None:
+            return
+        self._write_vec3("initial_state.position_km",  R @ r)
+        self._write_vec3("initial_state.velocity_kms", R @ v)
+
+    def _rotate_kep_inplace(self, R: "np.ndarray") -> None:
+        """Rotate Keplerian angles by R: kep -> cart -> rotate -> kep.
+        Magnitudes (a, e, i) are basis-independent and round-trip
+        unchanged; RAAN / AOP / ν are recomputed in the new basis.
+        Silent on conversion failure."""
+        import math
+        sma = self._read_float("initial_state.semi_major_axis_km")
+        ecc = self._read_float("initial_state.eccentricity")
+        inc = self._read_float("initial_state.inclination_deg")
+        raan = self._read_float("initial_state.raan_deg")
+        argp = self._read_float("initial_state.arg_periapsis_deg")
+        anom = self._read_float("initial_state.anomaly_deg")
+        if (sma is None or ecc is None or inc is None or raan is None
+                or argp is None or anom is None):
+            return
+        ctx = self._resolve_kep_mu_and_synodic()
+        if ctx is None:
+            return
+        mu_ref, _synodic = ctx
+        anom_combo = self._widgets.get("initial_state.anomaly_type")
+        anom_type = (anom_combo.currentText()
+                     if isinstance(anom_combo, QComboBox) else "true")
+        try:
+            from spopy import (cartesian_to_keplerian, keplerian_to_cartesian,
+                               mean_to_true_anom, true_to_mean_anom)
+            nu = math.radians(anom)
+            if anom_type == "mean":
+                nu = mean_to_true_anom(nu, ecc)
+            r, v = keplerian_to_cartesian(
+                sma, ecc, math.radians(inc), math.radians(raan),
+                math.radians(argp), nu, mu_ref)
+            r_new = R @ r
+            v_new = R @ v
+            el = cartesian_to_keplerian(r_new, v_new, mu_ref)
+        except (ValueError, ZeroDivisionError):
+            return
+        self._write_float("initial_state.semi_major_axis_km", el["sma_km"])
+        self._write_float("initial_state.eccentricity",       el["ecc"])
+        self._write_float("initial_state.inclination_deg",
+                          math.degrees(el["inc_rad"]))
+        self._write_float("initial_state.raan_deg",
+                          math.degrees(el["raan_rad"]))
+        self._write_float("initial_state.arg_periapsis_deg",
+                          math.degrees(el["argp_rad"]))
+        nu_new = el["true_anom_rad"]
+        anom_new = (true_to_mean_anom(nu_new, el["ecc"])
+                    if anom_type == "mean" else nu_new)
+        self._write_float("initial_state.anomaly_deg",
+                          math.degrees(anom_new))
+
+    def _refresh_input_frame_availability(self) -> None:
+        """Single source of truth for the [initial_state].frame combo
+        items. Rebuilds based on dynamics_model + central body:
+
+          - CR3BP                          -> ("synodic_rotating",)
+          - HF + body has BF orientation   -> ("central_inertial",
+                                              "central_body_fixed")
+          - HF + body without BF provider  -> ("central_inertial",)
+
+        The previous selection survives the rebuild when it's still
+        a valid item; otherwise the combo snaps to the first entry
+        and `_input_frame_prev` is reset to match so a subsequent
+        BF<->ICRF flip does not try to rotate from a stale state."""
+        frame_combo = self._widgets.get("initial_state.frame")
+        if not isinstance(frame_combo, QComboBox):
+            return
+        dm_combo = self._widgets.get("simulation.dynamics_model")
+        dyn_model = (dm_combo.currentText()
+                     if isinstance(dm_combo, QComboBox) else "high_fidelity")
+        if dyn_model == "cr3bp":
+            items: tuple[str, ...] = ("synodic_rotating",)
+        else:
+            cb_combo = self._widgets.get("force_model.central_body")
+            cb_name = (cb_combo.currentText()
+                       if isinstance(cb_combo, QComboBox) else "")
+            from .central_bodies import resolve_central_body
+            spec = resolve_central_body(cb_name)
+            bf_available = (spec is not None
+                            and spec.bf_orientation is not None)
+            items = (("central_inertial", "central_body_fixed")
+                     if bf_available else ("central_inertial",))
+        prev = frame_combo.currentText()
+        frame_combo.blockSignals(True)
+        frame_combo.clear()
+        for v in items:
+            frame_combo.addItem(v)
+        idx = frame_combo.findText(prev)
+        if idx >= 0:
+            frame_combo.setCurrentIndex(idx)
+        else:
+            frame_combo.setCurrentIndex(0)
+            self._input_frame_prev = items[0]
+        frame_combo.blockSignals(False)
+
     def _on_dynamics_model_changed(self, model: str) -> None:
         """Reflow the per-model sections + filter the frame combo + grey
         out HF-only optional toggles. HF shows the legacy stack (object
@@ -1207,18 +1474,11 @@ class TomlForm(QWidget):
         self._force_model_group.setVisible(is_hf)
         self._ephemeris_group.setVisible(is_hf)
         self._cr3bp_group.setVisible(not is_hf)
-        # Frame combo: rebuild items + select the default for the model.
-        frame_combo = self._widgets.get("initial_state.frame")
-        if isinstance(frame_combo, QComboBox):
-            valid = FRAMES_BY_MODEL.get(model, ())
-            prev = frame_combo.currentText()
-            frame_combo.blockSignals(True)
-            frame_combo.clear()
-            for v in valid:
-                frame_combo.addItem(v)
-            idx = frame_combo.findText(prev)
-            frame_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            frame_combo.blockSignals(False)
+        # Frame combo is owned exclusively by
+        # `_refresh_input_frame_availability` (called below) -- having
+        # this method ALSO rebuild it caused races where the BF entry
+        # would oscillate in / out of the list across consecutive
+        # dynamics-model and kind swaps.
 
         # reference_body combo: HF only ever uses "central" (implicit
         # central body); CR3BP exposes primary_1 / primary_2 with no
@@ -1256,6 +1516,10 @@ class TomlForm(QWidget):
                 "" if is_hf
                 else "Disabled in CR3BP (no Sun in this model -- "
                      "primary-impact events are wired automatically)")
+        # Input-frame combo: BF only makes sense in HF with a registered
+        # orientation provider; CR3BP runs and bare-central-body specs
+        # silently fall back to inertial.
+        self._refresh_input_frame_availability()
 
     # ------------------------------------------------------------------
     # Output auto-naming
@@ -2583,6 +2847,15 @@ class TomlForm(QWidget):
             flat.pop("output.accelerations_file", None)
             flat.pop("events.eclipse_threshold", None)
 
+        # BF input: from spody 0.2.x the engine understands
+        # `frame = "central_body_fixed"` natively and rotates the
+        # parsed (position, velocity) into the integrator's
+        # central_inertial frame at sim_setup via the central body's
+        # bf_rotation provider. The GUI therefore writes the BF
+        # values + the BF frame name unchanged -- no GUI-side
+        # rotation, no frame override -- so the TOML preserves the
+        # user's BF intent across save / load cycles.
+
         # [initial_state] kind dispatch: drop the inactive block's
         # keys so the emitted TOML matches what the user sees in the
         # form. 'cartesian' is the default; we also drop the `kind`
@@ -2773,6 +3046,13 @@ class TomlForm(QWidget):
                 if idx >= 0:
                     dm_combo.setCurrentIndex(idx)
             self._on_dynamics_model_changed(str(dm_value))
+            # TOML always stores inertial values so the loaded
+            # `frame` will be central_inertial / synodic_rotating;
+            # sync the rotation tracker accordingly so a subsequent
+            # user-driven BF flip rotates from ICRF, not from a stale
+            # in-memory state.
+            self._input_frame_prev = (
+                flat.get("initial_state.frame") or "central_inertial")
 
             # [initial_state].kind also drives visibility: pick it BEFORE
             # the field push so the right block is shown. Default to
