@@ -6,7 +6,19 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
-No changes since v0.2.0-beta.
+### Changed
+
+- **Lossless [initial_state] swaps.** The form's cart&harr;kep
+  and ICRF&harr;BF swaps used to chain spopy conversions on
+  every click; after a handful of back-and-forth flips the
+  displayed numbers drifted at the ULP / 1e-12 level. A new
+  four-representation cache (one entry per `(kind, frame)`
+  combo, populated from the visible block on every
+  `editingFinished`) makes toggles a plain lookup: zero
+  in-loop conversions, bit-for-bit round-trips across repeated
+  flips. The cache invalidates wholesale when something the
+  conversion depends on changes (et_start_s, central_body,
+  dynamics_model, anomaly_type, reference_body, ephemeris.file).
 
 ## v0.2.0-beta &mdash; 2026-06-25
 

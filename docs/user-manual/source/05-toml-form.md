@@ -294,6 +294,28 @@ conversion silently bail (the destination block stays at whatever
 it was holding); a conversion that succeeds fills every field of
 the new block in one shot.
 
+### Lossless swap cache
+
+The four representations &mdash; `(cartesian, central_inertial)`,
+`(cartesian, central_body_fixed)`, `(keplerian, central_inertial)`,
+`(keplerian, central_body_fixed)` &mdash; are kept in a per-form
+cache that snapshots each finalised edit. Whenever you leave a
+cart / kep field (focus loss or Enter), the form treats the
+visible block as the ground truth and derives the other three
+representations from it via spopy. Subsequent toggles of the
+`kind` or `frame` combos then write the cached values verbatim
+&mdash; no further conversion runs at toggle time, so back-and-
+forth flips of either combo round-trip the displayed numbers
+bit-for-bit (no compounding ULP drift the way per-toggle
+conversions would).
+
+The cache is invalidated wholesale by changes to anything the
+underlying conversions depend on: `et_start_s`, `central_body`,
+`dynamics_model`, `anomaly_type`, `reference_body`, the ephemeris
+file. After such a change the very next toggle falls back to the
+old on-the-fly conversion (and seeds the cache from that result,
+so the toggle *after* it lands on the lossless path again).
+
 The engine applies the same converter at parse time, so a
 hand-written TOML with `kind = "keplerian"` produces a bit-
 identical Cartesian state regardless of which side wrote it.
