@@ -216,11 +216,46 @@ message. **3D plots** are filtered out and the count of skipped
 subplots** to keep the result legible; selecting more triggers a
 warning and aborts the tile.
 
-## Plot options (Export CSV, &hellip;)
+## Plot options (Export CSV, Plot frame, &hellip;)
 
 The **Plot options&hellip;** button on the matplotlib toolbar opens
 a small non-modal dialog that hosts per-plot actions on the
-currently-displayed 2D figure. Today it exposes a single action:
+currently-displayed 2D figure. Today it exposes:
+
+### Plot frame (ICRF / body-fixed)
+
+A radio group that picks the basis the plot fns interpret state
+vectors and Keplerian angles in:
+
+- **ICRF (inertial)** &mdash; the integrator's native frame; the
+  default, leaves every plot exactly as before.
+- **Body-fixed** &mdash; the central body's body-fixed basis at
+  the corresponding ET (Earth ITRS via `spopy.icrf_to_itrs`, Moon
+  PA via the DE-series libration angles). The radio's label
+  tracks the body name (`Body-fixed (ITRS)` / `Body-fixed (PA)`).
+  Disabled (greyed back to ICRF) for CR3BP runs and for central
+  bodies without a registered orientation provider.
+
+The selection re-renders the active plot immediately. Affects:
+
+- **State vectors** &mdash; `|r|`, `|v|`, `x, y, z`, `vx, vy, vz`
+  (magnitudes are basis-invariant and only the title suffix
+  changes there).
+- **Orbit shape** &mdash; the XY / XZ / YZ projections trace the
+  ground track in BF (closing after one body rotation) instead
+  of the inertial orbit.
+- **Orbital elements** &mdash; the magnitude triplet (a, e, i)
+  round-trips unchanged across the swap; **RAAN**, **AOP**,
+  **true anomaly** and the e-vs-&omega; phase plot get the
+  rotation baked into the angles (their evolution then reflects
+  the BF basis spinning under the orbit).
+
+Pure rotation only (no &omega; &times; r correction). The same
+convention is used by the `central_body_fixed` initial-state
+frame, so values round-trip cleanly through both the form input
+and the plot view.
+
+### Export CSV
 
 **Export CSV** dumps every `Line2D` on the active figure (single,
 overlay and tile modes are all supported) as a `.csv` file. One
@@ -236,6 +271,18 @@ visible so the user can adjust the destination.
 The button is hidden while the active plot is 3D &mdash; the 3D
 canvas uses VTK, not matplotlib, and its own Scene-options dialog
 (animation bar) covers the per-scene controls.
+
+## 3D UTC overlay
+
+A small text overlay at the bottom-right of the 3D canvas shows
+the UTC corresponding to the current animation tick (the
+spacecraft marker's time on the slider, converted via
+`spody_gui.time_conv.et_to_utc` of `et_start + t_anim_s`).
+Anchored to the viewport via a `vtkTextActor` 2D, so it tracks
+the canvas size; cleared when the canvas leaves 3D or when the
+loaded run has no `et_start_s` (CR3BP, bare `.bin` without
+snapshot). Format is `UTC 2026-06-25T12:34:56.789Z`, fractional
+seconds at millisecond resolution.
 
 ## 3D scene options &mdash; starfield background
 

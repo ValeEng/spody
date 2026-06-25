@@ -27,7 +27,9 @@ TOML (`high_fidelity`, the full force-model integrator, and
 `cr3bp`, the synodic-rotating Circular Restricted 3-Body Problem),
 **two flavours of initial state** (Cartesian or Keplerian
 elements referenced to the central body / one of the CR3BP
-primaries), event detection (always-on multi-body IMPACT with
+primaries; the central-body input can also be expressed in the
+body-fixed basis at the run epoch, ITRS or PA, and the engine
+rotates to ICRF at sim setup), event detection (always-on multi-body IMPACT with
 sub-millisecond Hermite + Brent localisation, opt-in ECLIPSE),
 TOML schema validation, per-force acceleration breakdown, run-
 folder layout with timestamp-prefixed snapshot + outputs, and a
@@ -242,7 +244,15 @@ Ordered roughly by what unlocks the most for users.
         selector lives in the Scene options dialog), optional
         **3D star-map background** (Solar System Scope Milky Way
         8K, ICRF-aligned via on-the-fly re-projection; toggle in
-        the Scene options dialog, persisted across sessions);
+        the Scene options dialog, persisted across sessions),
+        **Plot-frame selector** (ICRF / body-fixed) that re-
+        projects state-vector and Keplerian-angle plots into the
+        central body's BF basis on the fly, **eccentricity vs
+        argument-of-periapsis phase plot**, **UTC overlay** at
+        the 3D-scene bottom-right tracking the playback epoch,
+        rotating 3rd-body textures (continents / mares move with
+        the body's actual ITRS / PA attitude), wait-cursor +
+        "Working: ..." status across long renders;
         **camera pan / zoom preserved** across re-renders of the
         same file; **Info tab** with per-kind key/value summary
         (trajectory: t-range, |r|/|v| ranges, initial+final

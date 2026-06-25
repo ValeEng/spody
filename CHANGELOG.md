@@ -6,24 +6,9 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
-### Added
+No changes since v0.2.0-beta.
 
-- **3rd-body markers spin in 3D scenes.** When a third body has a
-  registered orientation provider (Earth ITRS via `spopy.icrf_to_
-  itrs`, Moon PA via DE440 libration angles), the textured sphere
-  now rotates per-tick alongside its position so the surface
-  features (continents / mares) track the body's actual attitude
-  across the run. Same provider the central body uses; bodies
-  without one (Sun, planets) keep the previous behaviour.
-
-### Fixed
-
-- **Wizard star-map asset min size.** The Solar System Scope 8K
-  Milky Way JPEG (~1.9 MB on disk) was flagged truncated against
-  a wrong 4 MB floor; lowered to 1 MB so the real file passes and
-  a half-finished download still trips.
-
-## v0.2.0-beta &mdash; 2026-06-24
+## v0.2.0-beta &mdash; 2026-06-25
 
 Headline: **CR3BP joins high-fidelity as a selectable dynamics
 model**, and the GUI grows three orthogonal usability slices on
@@ -31,9 +16,16 @@ top of that &mdash; Keplerian initial-state input, full run-folder
 hygiene (timestamp-prefixed files + WIP-TOML protection), and a
 third **Info** tab in the Analysis pane that summarises any loaded
 binary together with the run snapshot. Other notable additions:
-an `Export CSV` action on every 2D plot, an optional ICRF-aligned
-star-map background for the 3D scenes, and the spopy package
-gains `kepler` + `cr3bp` mirrors of the engine helpers.
+the engine grows a `central_body_fixed` initial-state frame so
+the user can type IC directly in ITRS / PA; the Analysis tab gets
+a Plot-options frame selector that re-projects state-vector and
+Keplerian-angle plots into the central body's body-fixed basis;
+a UTC overlay on the 3D scene tracks the playback epoch; a busy
+cursor + status message smooth over long renders; third-body
+markers now spin with their own body-fixed frame; an `Export CSV`
+action lands on every 2D plot; and an optional ICRF-aligned star-
+map background ships for the 3D scenes. The spopy package gains
+`kepler` + `cr3bp` mirrors of the engine helpers.
 
 ### Added
 
@@ -149,6 +141,53 @@ gains `kepler` + `cr3bp` mirrors of the engine helpers.
   *Diff (pick 2 files)* specs the tab appends |&Delta;r| / |&Delta;v|
   max/mean/RMS/final, linear |&Delta;r| growth in km/day, and the
   RIC-frame |&Delta;| breakdown (max + RMS) in A's frame.
+- **`central_body_fixed` initial-state frame.**
+  `[initial_state].frame = "central_body_fixed"` lets the user
+  type the IC (Cartesian or Keplerian-derived) in the central
+  body's body-fixed basis at `et_start_s` (Earth ITRS, Moon PA).
+  `sim_setup` re-uses the same `get_bf_rotation` callback the
+  force model evaluates at every step to lift the IC into the
+  integrator's `central_inertial` frame before the run begins;
+  downstream sees a plain inertial state. The GUI form's frame
+  combo gains the value when the central body has a registered
+  orientation provider (CR3BP and unsupported bodies hide the
+  option); flipping the combo does a live in-place rotation of
+  the typed values via spopy so the displayed numbers track
+  the new basis without losing data.
+- **Analysis Plot-options frame selector.** Plot Options grows
+  a Plot-frame radio (ICRF / body-fixed). State-vector plots
+  (|r|, |v|, x/y/z, vx/vy/vz, XY/XZ/YZ projections) and
+  Keplerian-angle plots (RAAN, AOP, &nu;, e-vs-&omega;) re-
+  render in the selected basis on the fly; magnitudes
+  (a, e, i, |r|, |v|) plot identically in both frames and the
+  title suffix is the only visible change there. CR3BP runs
+  and central bodies without an orientation provider fall back
+  to ICRF.
+- **Eccentricity vs argument of periapsis plot.** A phase-space
+  view under *Orbital elements*: e on Y, &omega; on X. Useful
+  for spotting drift patterns (J2 / 3rd-body) that the per-
+  element curves smooth out across the run.
+- **3D scene UTC overlay.** A `vtkTextActor` 2D anchored at the
+  bottom-right of the 3D canvas shows the UTC corresponding to
+  the current animation tick (`et_start + t_anim_s` converted
+  via `spody_gui.time_conv.et_to_utc`). Updates on every slider
+  / play tick and on right-tab switches; clears when the canvas
+  leaves 3D or the run has no `et_start_s`.
+- **3rd-body markers spin in 3D scenes.** When a third body has
+  a registered orientation provider (Earth ITRS via
+  `spopy.icrf_to_itrs`, Moon PA via DE440 libration angles),
+  the textured sphere now rotates per-tick alongside its
+  position so the surface features (continents / mares) track
+  the body's actual attitude across the run. Same provider the
+  central body uses; bodies without one (Sun, planets) keep
+  the previous behaviour.
+- **Busy-cursor + status message around slow renders.** A
+  reusable `_busy(message)` context manager flips the cursor to
+  the wait shape and writes a "Working: ..." note in the panel
+  info label across file loads, single / diff / tile / overlay
+  dispatches, and the per-body loop in `_add_third_bodies`
+  (periodic `processEvents` keeps the message pump alive).
+  Quick-win against Windows' "Not Responding" label.
 
 ### Changed
 
@@ -184,6 +223,20 @@ gains `kepler` + `cr3bp` mirrors of the engine helpers.
   before the user opened the Scene-options dialog. The Analysis
   panel now seeds the set from the loaded snapshot's
   `force_model.third_bodies` before the first 3D dispatch.
+- **Wrong body orientation on equirectangular planetary
+  textures.** The W/2-column meridian roll that the lunar SVS
+  TIFF already went through is now applied to every body
+  texture (JPEG / PNG / TIFF). Bodies whose published texture
+  places the prime meridian at the image centre (Solar System
+  Scope Earth, ...) used to land 180&deg; off, which only
+  became visible once the 3rd-body markers started spinning
+  (the "lit Australia at 14 UTC" report). Cache filename is
+  `<stem>_uv0.png`; the lunar `<stem>_pa.png` predecessor is
+  ignored on first run.
+- **Wizard star-map asset min size.** The Solar System Scope 8K
+  Milky Way JPEG (~1.9 MB on disk) was flagged truncated
+  against a wrong 4 MB floor; lowered to 1 MB so the real file
+  passes and a half-finished download still trips.
 
 ## v0.1.3-beta &mdash; 2026-06-22
 

@@ -53,7 +53,7 @@ The schema branches on `simulation.dynamics_model`:
 
 | `dynamics_model` | Required sections | Forbidden sections |
 |------------------|-------------------|--------------------|
-| `high_fidelity` (default) | `[simulation]`, exactly one of `[spacecraft]` / `[debris]`, `[initial_state]` with `frame = "central_inertial"`, `[force_model]`, `[ephemeris]`, `[integrator]`, `[output]` | `[cr3bp]` |
+| `high_fidelity` (default) | `[simulation]`, exactly one of `[spacecraft]` / `[debris]`, `[initial_state]` with `frame = "central_inertial"` or `"central_body_fixed"`, `[force_model]`, `[ephemeris]`, `[integrator]`, `[output]` | `[cr3bp]` |
 | `cr3bp` | `[simulation]`, `[cr3bp]`, `[initial_state]` with `frame = "synodic_rotating"`, `[integrator]`, `[output]` | `[spacecraft]`, `[debris]`, `[force_model]`, `[ephemeris]`, `[events]` with `eclipse_threshold`, `[output].accelerations_file` |
 
 The validator rejects mismatches up front (HF without `et_start_s`,
@@ -145,7 +145,7 @@ snapshot TOML on disk) is identical for both.
 
 | Key            | Type            | Default       | Range | Description |
 |----------------|-----------------|---------------|-------|-------------|
-| `frame`        | string          | &mdash;       | `central_inertial` (HF), `synodic_rotating` (CR3BP) | Reference frame. Model-exclusive: `central_inertial` is valid only with `dynamics_model = "high_fidelity"`, `synodic_rotating` only with `cr3bp`. For Keplerian input under CR3BP the elements live in the reference primary's local inertial frame and the engine rotates / translates the resulting state into the synodic frame at `t = 0`; the value of `frame` still has to match the model. |
+| `frame`        | string          | &mdash;       | `central_inertial` or `central_body_fixed` (HF), `synodic_rotating` (CR3BP) | Reference frame. Model-exclusive: only the listed values are valid under each `dynamics_model`. `central_inertial` (HF) leaves the parsed `(position, velocity)` in the integrator's working basis; `central_body_fixed` (HF) interprets the values in the central body's body-fixed basis at `et_start_s` (Earth ITRS, Moon PA) and the engine rotates them to ICRF via the same `bf_rotation` callback the force-model uses on every step, before the run begins &mdash; the downstream integrator still sees a `central_inertial` state. `synodic_rotating` (CR3BP) places the elements in the reference primary's local inertial frame; the engine then rotates / translates them into the synodic frame at `t = 0`. The value of `frame` still has to match the model. |
 | `kind`         | string          | `"cartesian"` | `"cartesian"`, `"keplerian"` | Which set of keys below is consumed. Omit for the legacy Cartesian path. |
 
 ### `kind = "cartesian"` (default)
