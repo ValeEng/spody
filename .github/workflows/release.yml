@@ -110,11 +110,27 @@ jobs:
           gcc --version
           cmake --version
 
-      - name: install chromium (linux)
+      - name: install chrome (linux)
         if: runner.os == 'Linux'
+        # Ubuntu's `chromium-browser` apt package is a snap shim:
+        # apt fakes the install by triggering snapd, which then has
+        # to fetch assertions from the Canonical snapcraft API. That
+        # extra hop made the install flaky on GitHub Actions
+        # ubuntu-latest -- a single HTTP 408 from
+        # api.snapcraft.io broke the v0.2.0-beta build with
+        # 'Process completed with exit code 100'.
+        # Pull Google Chrome's official .deb directly instead: a
+        # straight apt install with all deps resolved by apt itself
+        # (no snapd hop), and build_pdf.py already searches for
+        # `google-chrome` / `chrome` on PATH so nothing else needs
+        # to change.
         run: |
+          set -e
+          wget -q -O /tmp/chrome.deb \
+            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get update -y
-          sudo apt-get install -y chromium-browser
+          sudo apt-get install -y /tmp/chrome.deb
+          rm -f /tmp/chrome.deb
 
       - name: install chrome + libomp (macos)
         if: runner.os == 'macOS'
