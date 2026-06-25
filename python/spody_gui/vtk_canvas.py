@@ -45,6 +45,7 @@ from typing import Callable
 os.environ.setdefault("QT_API", "pyside6")
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
@@ -57,7 +58,7 @@ from vtkmodules.vtkFiltersSources import (
     vtkSphereSource,
     vtkTexturedSphereSource,
 )
-from vtkmodules.vtkIOImage import vtkJPEGReader, vtkPNGReader
+from vtkmodules.vtkIOImage import vtkPNGReader
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
@@ -432,6 +433,56 @@ class VtkCanvas(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._interactor)
 
+        # UTC overlay lives INSIDE the VTK scene (vtkTextActor 2D, on
+        # the FRONT renderer) rather than as a Qt child widget on top
+        # of QVTKRenderWindowInteractor. The Qt-on-top approach left
+        # two artefacts on Windows: a residual 1-px frame around the
+        # pill from the QLabel/QFrame native paint, and a "paint
+        # hole" where leftover pixels from a previous render bled
+        # through the QLabel's screen region during scene swaps. A
+        # vtkTextActor composes through VTK's own pipeline, so it
+        # gets cleared and repainted in lockstep with the rest of the
+        # scene -- no overlay artefacts.
+        # The actor is permanently allocated (text="" initially); the
+        # public API set_overlay_utc_text() flips its visibility +
+        # text in place rather than adding / removing per call.
+        self._utc_overlay_actor = vtkTextActor()
+        self._utc_overlay_actor.SetInput("")
+        utc_prop = self._utc_overlay_actor.GetTextProperty()
+        utc_prop.SetFontFamilyToCourier()
+        utc_prop.SetFontSize(14)
+        utc_prop.SetColor(1.0, 1.0, 1.0)
+        utc_prop.SetBackgroundColor(0.0, 0.0, 0.0)
+        utc_prop.SetBackgroundOpacity(0.55)
+        utc_prop.SetFrame(False)
+        utc_prop.SetJustificationToRight()
+        utc_prop.SetVerticalJustificationToBottom()
+        coord = self._utc_overlay_actor.GetPositionCoordinate()
+        coord.SetCoordinateSystemToNormalizedViewport()
+        # ~10 px inset from the bottom-right corner at typical canvas
+        # sizes. Normalised viewport keeps it pinned across resizes.
+        coord.SetValue(0.99, 0.012)
+        self._utc_overlay_actor.SetVisibility(False)
+        self._renderer.AddActor2D(self._utc_overlay_actor)
+
+    # ------------------------------------------------------------------
+    # UTC overlay (bottom-right of the canvas)
+    # ------------------------------------------------------------------
+    def set_overlay_utc_text(self, text: str) -> None:
+        """Set the UTC string shown in the bottom-right overlay. An
+        empty string hides the overlay. Caller is responsible for
+        formatting (the canvas knows nothing about ET / leap seconds);
+        AnalysisPanel converts `et_start + t_anim_s` via
+        `spody_gui.time_conv.et_to_utc` and pushes the result here on
+        every animation tick. The actor lives inside the VTK scene
+        (top-layer renderer) so it composes through the same pipeline
+        as the rest of the scene -- no native-widget overlay glitches."""
+        if not text:
+            self._utc_overlay_actor.SetVisibility(False)
+            return
+        self._utc_overlay_actor.SetInput(text)
+        self._utc_overlay_actor.SetVisibility(True)
+
     # ------------------------------------------------------------------
     # Scene API
     # ------------------------------------------------------------------
@@ -455,6 +506,14 @@ class VtkCanvas(QWidget):
         self._anim_body = None
         self._central_body_actor = None
         self._install_skybox_actor()
+        # UTC overlay survives scene wipes -- it is a viewport
+        # decoration, not part of the scene. Re-added (idempotent
+        # call; AddActor2D ignores duplicates is NOT true, so we
+        # only re-add when it actually got removed by the wipe
+        # above). Visibility is preserved across the wipe by
+        # re-attaching the same actor.
+        self._utc_overlay_actor.SetVisibility(False)
+        self._renderer.AddActor2D(self._utc_overlay_actor)
 
     # ------------------------------------------------------------------
     # Skybox
@@ -659,67 +718,66 @@ class VtkCanvas(QWidget):
 
     @staticmethod
     def _make_image_reader(path: Path):
-        """Pick a vtk image reader based on the file extension. Returns
-        None if the file is missing or the extension is unsupported --
+        """Pick a vtk image reader for an equirectangular body texture.
+        Returns None if the file is missing, the extension is
+        unsupported, or the meridian-alignment cache can't be built --
         the caller then falls back to the flat-colour sphere.
 
-        TIFFs (e.g. the NASA SVS CGI Moon Kit 2K/4K/8K) are routed
-        through a Pillow-based PNG transcoder: vtkTIFFReader's bundled
-        libtiff chokes on LZW-with-predictor and other variants the
-        SVS files use ('Problem reading the row: 0' on the wire). The
-        transcoded PNG is cached next to the TIFF, so the cost is paid
-        once per texture file and subsequent loads hit the cache."""
+        Every input (JPEG / PNG / TIFF) is routed through the same
+        Pillow-based transcoder that bakes in the W/2 longitude roll
+        (see `_ensure_uv0_meridian_cache`): published equirectangular
+        body maps (NASA SVS, Solar System Scope, ...) place the prime
+        meridian at the *centre* column, while
+        `vtkTexturedSphereSource` maps texture u=0 to the body's
+        local +X. Without the pre-roll the surface lands 180° off,
+        which only became visually obvious once the 3rd-body markers
+        started spinning. TIFF inputs additionally avoid
+        vtkTIFFReader's libtiff variant pitfalls."""
         path = Path(path)
         if not path.is_file():
             return None
         ext = path.suffix.lower()
-        if ext in {".jpg", ".jpeg"}:
-            reader = vtkJPEGReader()
-        elif ext == ".png":
-            reader = vtkPNGReader()
-        elif ext in {".tif", ".tiff"}:
-            png_cache = VtkCanvas._ensure_png_cache(path)
-            if png_cache is None:
-                return None
-            reader = vtkPNGReader()
-            reader.SetFileName(str(png_cache))
-            return reader
-        else:
+        if ext not in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
             return None
-        reader.SetFileName(str(path))
+        png_cache = VtkCanvas._ensure_uv0_meridian_cache(path)
+        if png_cache is None:
+            return None
+        reader = vtkPNGReader()
+        reader.SetFileName(str(png_cache))
         return reader
 
     @staticmethod
-    def _ensure_png_cache(tiff_path: Path) -> Path | None:
-        """Return the path of a VTK-ready PNG transcode of `tiff_path`,
-        creating it via Pillow if missing or stale. Returns None if
-        Pillow is unavailable or the conversion fails -- the caller
-        then drops back to the flat-grey sphere with no further noise.
+    def _ensure_uv0_meridian_cache(src_path: Path) -> Path | None:
+        """Return the path of a VTK-ready PNG transcode of `src_path`,
+        with the prime meridian rolled from the image centre (u=0.5)
+        to the left edge (u=0). Creates the cache via Pillow if
+        missing or stale. Returns None if Pillow is unavailable or
+        the conversion fails -- the caller then drops back to the
+        flat-grey sphere with no further noise.
 
-        The cache is NOT just a format change. NASA SVS (and most
-        published lunar / planetary equirectangular maps) place the
-        prime meridian at the *centre* of the image, i.e. column W/2
-        is lon=0 and column 0 is lon=-180. vtkTexturedSphereSource on
-        the other hand maps the texture's u=0 column onto theta=0 in
-        scene coordinates -- the body's +X axis, which is where the
-        prime meridian *should* land in the PA frame. Painting the
-        SVS file unmodified rotates the surface by 180°.
+        Why the roll: NASA SVS, Solar System Scope, and most published
+        planetary / lunar equirectangular maps place the prime
+        meridian at the *centre* of the image (column W/2 is lon=0,
+        column 0 is lon=-180). vtkTexturedSphereSource on the other
+        hand maps the texture's u=0 column onto theta=0 in scene
+        coordinates -- the body's local +X axis, which is where the
+        prime meridian *should* land in the body-fixed frame. Without
+        the pre-roll the surface lands 180° off, which the spinning
+        3rd-body markers expose as a "lit Australia at 14 UTC" sort
+        of bug.
 
-        The fix is one np.roll by W/2 along the longitude axis at
-        transcode time so the cached PNG has lon=0 at u=0, matching
-        the VTK convention. The cache filename keeps a `_pa` suffix
-        so the rotation it baked in is explicit (and so any earlier
-        cache produced by the v1 code, sitting at `<stem>.png`, is
-        bypassed)."""
-        cache = tiff_path.with_name(tiff_path.stem + "_pa.png")
-        if cache.is_file() and cache.stat().st_mtime >= tiff_path.stat().st_mtime:
+        Cache filename suffix `_uv0` advertises what's baked in (also
+        bypasses any earlier `<stem>.png` cache the v1 code may have
+        left behind, and the lunar `<stem>_pa.png` rename predecessor)."""
+        cache = src_path.with_name(src_path.stem + "_uv0.png")
+        if cache.is_file() and cache.stat().st_mtime >= src_path.stat().st_mtime:
             return cache
         try:
             from PIL import Image
         except ImportError:
             return None
         try:
-            with Image.open(tiff_path) as img:
+            with Image.open(src_path) as img:
                 arr = np.asarray(img.convert("RGB"))
             arr = np.roll(arr, arr.shape[1] // 2, axis=1)
             Image.fromarray(arr).save(cache, format="PNG", optimize=False)

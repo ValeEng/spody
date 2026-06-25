@@ -33,6 +33,7 @@ changed manually with the Change button.
 """
 from __future__ import annotations
 
+import contextlib
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -237,43 +238,59 @@ class PlotSpec:
     Default `("high_fidelity", "cr3bp")` means 'works for both'."""
 
 
-def _plot_traj_r(ax: Axes, d: np.ndarray) -> None:
-    r = np.sqrt(d["x"] ** 2 + d["y"] ** 2 + d["z"] ** 2)
-    ax.plot(d["t"], r)
+def _plot_traj_r(ax: Axes, d: np.ndarray,
+                  ctx: "PlotContext | None" = None) -> None:
+    # |r| is rotation-invariant so the BF / ICRF choice does not
+    # change the curve; calling `_state_in_plot_frame` anyway keeps
+    # the title suffix consistent with the rest of the first-block
+    # plots, so the user can tell at a glance which frame is active.
+    d_view, suffix = _state_in_plot_frame(d, ctx)
+    r = np.sqrt(d_view["x"] ** 2 + d_view["y"] ** 2 + d_view["z"] ** 2)
+    ax.plot(d_view["t"], r)
     ax.set_xlabel("t [s]"); ax.set_ylabel("|r| [km]")
-    ax.set_title("Radial distance"); ax.grid(True, alpha=0.3)
+    ax.set_title(f"Radial distance{suffix}"); ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_v(ax: Axes, d: np.ndarray) -> None:
-    v = np.sqrt(d["vx"] ** 2 + d["vy"] ** 2 + d["vz"] ** 2)
-    ax.plot(d["t"], v)
+def _plot_traj_v(ax: Axes, d: np.ndarray,
+                  ctx: "PlotContext | None" = None) -> None:
+    d_view, suffix = _state_in_plot_frame(d, ctx)
+    v = np.sqrt(d_view["vx"] ** 2 + d_view["vy"] ** 2 + d_view["vz"] ** 2)
+    ax.plot(d_view["t"], v)
     ax.set_xlabel("t [s]"); ax.set_ylabel("|v| [km/s]")
-    ax.set_title("Speed"); ax.grid(True, alpha=0.3)
+    ax.set_title(f"Speed{suffix}"); ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_xyz(ax: Axes, d: np.ndarray) -> None:
+def _plot_traj_xyz(ax: Axes, d: np.ndarray,
+                    ctx: "PlotContext | None" = None) -> None:
+    d_view, suffix = _state_in_plot_frame(d, ctx)
     for name in ("x", "y", "z"):
-        ax.plot(d["t"], d[name], label=name)
+        ax.plot(d_view["t"], d_view[name], label=name)
     ax.set_xlabel("t [s]"); ax.set_ylabel("position [km]")
-    ax.set_title("Position components (inertial)")
+    ax.set_title(f"Position components{suffix or '  (inertial)'}")
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_vxyz(ax: Axes, d: np.ndarray) -> None:
+def _plot_traj_vxyz(ax: Axes, d: np.ndarray,
+                     ctx: "PlotContext | None" = None) -> None:
+    d_view, suffix = _state_in_plot_frame(d, ctx)
     for name in ("vx", "vy", "vz"):
-        ax.plot(d["t"], d[name], label=name)
+        ax.plot(d_view["t"], d_view[name], label=name)
     ax.set_xlabel("t [s]"); ax.set_ylabel("velocity [km/s]")
-    ax.set_title("Velocity components (inertial)")
+    ax.set_title(f"Velocity components{suffix or '  (inertial)'}")
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
 
 
-def _plot_traj_projection(ax: Axes, d: np.ndarray, a: str, b: str) -> None:
-    ax.plot(d[a], d[b], lw=0.8)
-    ax.scatter([d[a][0]],  [d[b][0]],  color="green", s=30, zorder=3, label="t=0")
-    ax.scatter([d[a][-1]], [d[b][-1]], color="red",   s=30, zorder=3, label="end")
+def _plot_traj_projection(ax: Axes, d: np.ndarray, a: str, b: str,
+                           ctx: "PlotContext | None" = None) -> None:
+    d_view, suffix = _state_in_plot_frame(d, ctx)
+    ax.plot(d_view[a], d_view[b], lw=0.8)
+    ax.scatter([d_view[a][0]],  [d_view[b][0]],
+                color="green", s=30, zorder=3, label="t=0")
+    ax.scatter([d_view[a][-1]], [d_view[b][-1]],
+                color="red",   s=30, zorder=3, label="end")
     ax.set_xlabel(f"{a} [km]"); ax.set_ylabel(f"{b} [km]")
     ax.set_aspect("equal", adjustable="datalim")
-    ax.set_title(f"Orbit projection: {a.upper()}{b.upper()}")
+    ax.set_title(f"Orbit projection: {a.upper()}{b.upper()}{suffix}")
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
 
 
@@ -305,6 +322,68 @@ def _orbital_elements(r: np.ndarray, v: np.ndarray, mu: float
         "aop":  np.degrees(el["argp_rad"]),
         "nu":   np.degrees(el["true_anom_rad"]),
     }
+
+
+def _state_in_plot_frame(d: np.ndarray, ctx: "PlotContext | None"
+                          ) -> tuple[np.ndarray, str]:
+    """Return `(d_view, frame_suffix)` where `d_view` is either the
+    original structured array (when plot_frame is 'icrf' or the run
+    doesn't support a body-fixed view) or a rotated copy whose
+    `x,y,z,vx,vy,vz` columns are expressed in the central body's
+    body-fixed basis at the corresponding ET.
+
+    Pure rotation only: `r_bf = R_icrf->bf @ r_icrf` and
+    `v_bf = R_icrf->bf @ v_icrf`. The velocity transformation is NOT
+    the true rotating-frame velocity (which would subtract ω × r);
+    "expressing the inertial state in the BF basis at instant t" is
+    what the orbital-elements code already does for CR3BP per-primary
+    osculating views, and it keeps the plot meaning consistent across
+    state-vector / projection / angles plots.
+
+    Silently degrades to ICRF when:
+      - `plot_frame` is not "bf";
+      - the run is CR3BP (no body-fixed concept applies to the
+        synodic frame -- the [cr3bp] runs already use a non-inertial
+        basis);
+      - the central body has no registered `bf_orientation`;
+      - the per-run snapshot / ephemeris is missing or unreadable.
+    """
+    if ctx is None or getattr(ctx, "plot_frame", "icrf") != "bf":
+        return d, ""
+    if ctx.dynamics_model == "cr3bp":
+        return d, ""
+    if ctx.central_body.bf_orientation is None:
+        return d, ""
+    info = _resolve_run_context(ctx.path)
+    if info is None or info["ephemeris_path"] is None:
+        return d, ""
+    from spopy import Ephemeris
+    try:
+        eph = Ephemeris(str(info["ephemeris_path"]))
+    except (OSError, ValueError):
+        return d, ""
+    et_start = float(info["et_start_s"])
+    # Sample R_icrf_to_bf at every trajectory time; one numpy op per
+    # column instead of a Python loop over `len(d)` keeps the call
+    # cheap on dense trajectories.
+    n = len(d)
+    Rs = np.empty((n, 3, 3), dtype=float)
+    for i in range(n):
+        try:
+            Rs[i] = np.asarray(
+                ctx.central_body.bf_orientation(
+                    et_start + float(d["t"][i]), eph),
+                dtype=float)
+        except (ValueError, IndexError):
+            return d, ""
+    r_icrf = np.stack((d["x"],  d["y"],  d["z"]),  axis=-1)
+    v_icrf = np.stack((d["vx"], d["vy"], d["vz"]), axis=-1)
+    r_bf = np.einsum("nij,nj->ni", Rs, r_icrf)
+    v_bf = np.einsum("nij,nj->ni", Rs, v_icrf)
+    out = d.copy()
+    out["x"],  out["y"],  out["z"]  = r_bf[:, 0],  r_bf[:, 1],  r_bf[:, 2]
+    out["vx"], out["vy"], out["vz"] = v_bf[:, 0],  v_bf[:, 1],  v_bf[:, 2]
+    return out, f"  ({ctx.central_body.bf_frame_name})"
 
 
 def _state_for_elements(d: np.ndarray, ctx: "PlotContext | None"
@@ -343,10 +422,14 @@ def _state_for_elements(d: np.ndarray, ctx: "PlotContext | None"
         r = np.stack((rx, ry, rz), axis=-1)
         v = np.stack((vx_inertial, vy_inertial, vz_inertial), axis=-1)
         return r, v, primary.mu_km3_s2, f"  (rel. to {primary.name})"
-    r = np.stack((d["x"],  d["y"],  d["z"]),  axis=-1)
-    v = np.stack((d["vx"], d["vy"], d["vz"]), axis=-1)
+    # HF: optionally rotate the inertial state into the central body's
+    # body-fixed basis at each sample, so the resulting RAAN / AOP /
+    # ν reflect angles measured relative to the BF X-axis.
+    d_view, suffix = _state_in_plot_frame(d, ctx)
+    r = np.stack((d_view["x"],  d_view["y"],  d_view["z"]),  axis=-1)
+    v = np.stack((d_view["vx"], d_view["vy"], d_view["vz"]), axis=-1)
     mu = ctx.central_body.mu_km3_s2 if ctx is not None else MU_MOON_KM3_S2
-    return r, v, mu, ""
+    return r, v, mu, suffix
 
 
 def _plot_traj_a(ax: Axes, d: np.ndarray,
@@ -393,6 +476,22 @@ def _plot_traj_aop(ax: Axes, d: np.ndarray,
     ax.plot(d["t"], el["aop"])
     ax.set_xlabel("t [s]"); ax.set_ylabel("ω [deg]")
     ax.set_title(f"Argument of periapsis{suffix}"); ax.grid(True, alpha=0.3)
+
+
+def _plot_traj_e_vs_aop(ax: Axes, d: np.ndarray,
+                         ctx: "PlotContext | None" = None) -> None:
+    """e (y) vs argument of periapsis (x), one point per sample with a
+    fine line. Useful as a 'how does the orbit shape drift in
+    (e, ω) space' phase diagram -- circular orbits collapse to a
+    horizontal stripe at low e (ω is then ill-defined and shows the
+    numerical sweep), eccentric orbits trace an arc as ω regresses
+    under J2 / 3rd bodies."""
+    r, v, mu, suffix = _state_for_elements(d, ctx)
+    el = _orbital_elements(r, v, mu)
+    ax.plot(el["aop"], el["e"], lw=0.6)
+    ax.set_xlabel("ω [deg]"); ax.set_ylabel("e")
+    ax.set_title(f"Eccentricity vs argument of periapsis{suffix}")
+    ax.grid(True, alpha=0.3)
 
 
 def _plot_traj_nu(ax: Axes, d: np.ndarray,
@@ -878,6 +977,16 @@ class PlotContext:
     central_body: CentralBodySpec = field(default_factory=default_central_body)
     dynamics_model: str = "high_fidelity"
     cr3bp_primaries: tuple[CR3BPPrimary, ...] = ()
+    # "icrf" (default) plots state vectors and Keplerian angles in the
+    # central-body inertial frame; "bf" rotates the state into the
+    # central body's body-fixed basis (Earth ITRS, Moon PA) via the
+    # registered orientation provider. Magnitudes (|r|, |v|, a, e, i)
+    # are frame-invariant; only angular elements (RAAN, AOP, ν) and
+    # vector components (x/y/z, vx/vy/vz, orbit projections) change.
+    # The selector lives in the Plot-options dialog; CR3BP runs and
+    # bodies without a registered bf_orientation silently fall back
+    # to "icrf" inside `_state_in_plot_frame`.
+    plot_frame: str = "icrf"
 
 
 def _find_run_input_toml(events_path: Path) -> Path | None:
@@ -1782,6 +1891,11 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
             continue
         color = _BODY_COLORS.get(name, (0.85, 0.85, 0.85))
         pts_icrf = np.empty((n, 3), dtype=float)
+        # Periodic event-loop pump for the cursor + status to stay
+        # responsive when N is large (e.g. multi-day batch with a
+        # dense trajectory): batched every 512 samples, cheap enough
+        # to be invisible on the hot path but enough to keep
+        # Windows from labelling the window "Not Responding".
         for i in range(n):
             try:
                 pts_icrf[i] = eph.position(central_naif, naif,
@@ -1791,6 +1905,8 @@ def _add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
                 # skip the whole body rather than draw a half-orbit.
                 pts_icrf = None  # type: ignore[assignment]
                 break
+            if (i & 0x1FF) == 0:
+                QApplication.processEvents()
         if pts_icrf is None:
             continue
         # 1) Body sphere + orbital arc at true (or compressed) scale
@@ -2348,9 +2464,9 @@ def _overlay_3d_orbit(canvas: VtkCanvas,
 # Inline lambdas wrapping `_plot_traj_projection` for the XY / XZ / YZ
 # variants -- kept as named locals so they can be reused by their
 # matching overlay helpers.
-_p_xy = lambda ax, d: _plot_traj_projection(ax, d, "x", "y")
-_p_xz = lambda ax, d: _plot_traj_projection(ax, d, "x", "z")
-_p_yz = lambda ax, d: _plot_traj_projection(ax, d, "y", "z")
+_p_xy = lambda ax, d, ctx=None: _plot_traj_projection(ax, d, "x", "y", ctx)
+_p_xz = lambda ax, d, ctx=None: _plot_traj_projection(ax, d, "x", "z", ctx)
+_p_yz = lambda ax, d, ctx=None: _plot_traj_projection(ax, d, "y", "z", ctx)
 
 
 # Plot registry, grouped by file kind. Categories drive the visual
@@ -2367,24 +2483,24 @@ PLOTS: dict[str, list[PlotSpec]] = {
         # be illegible).
         PlotSpec("Radial distance |r|",         "2d", _plot_traj_r,
                  overlay_fn=_make_2d_overlay(_plot_traj_r),
-                 category="State vectors"),
+                 category="State vectors", mode="context"),
         PlotSpec("Speed |v|",                   "2d", _plot_traj_v,
                  overlay_fn=_make_2d_overlay(_plot_traj_v),
-                 category="State vectors"),
+                 category="State vectors", mode="context"),
         PlotSpec("Position x, y, z",            "2d", _plot_traj_xyz,
-                 category="State vectors"),
+                 category="State vectors", mode="context"),
         PlotSpec("Velocity vx, vy, vz",         "2d", _plot_traj_vxyz,
-                 category="State vectors"),
+                 category="State vectors", mode="context"),
         # ----- Orbit shape --------------------------------------------
         PlotSpec("XY projection",               "2d", _p_xy,
                  overlay_fn=_make_2d_overlay(_p_xy),
-                 category="Orbit shape"),
+                 category="Orbit shape", mode="context"),
         PlotSpec("XZ projection",               "2d", _p_xz,
                  overlay_fn=_make_2d_overlay(_p_xz),
-                 category="Orbit shape"),
+                 category="Orbit shape", mode="context"),
         PlotSpec("YZ projection",               "2d", _p_yz,
                  overlay_fn=_make_2d_overlay(_p_yz),
-                 category="Orbit shape"),
+                 category="Orbit shape", mode="context"),
         PlotSpec("3D orbit + central body",     "3d", _plot_traj_3d_orbit,
                  overlay_fn=_overlay_3d_orbit,
                  mode="context",
@@ -2415,6 +2531,10 @@ PLOTS: dict[str, list[PlotSpec]] = {
                  category="Orbital elements", mode="context"),
         PlotSpec("True anomaly  ν",             "2d", _plot_traj_nu,
                  overlay_fn=_make_2d_overlay(_plot_traj_nu),
+                 category="Orbital elements", mode="context"),
+        PlotSpec("Eccentricity vs argument of periapsis",
+                 "2d", _plot_traj_e_vs_aop,
+                 overlay_fn=_make_2d_overlay(_plot_traj_e_vs_aop),
                  category="Orbital elements", mode="context"),
         # ----- CR3BP --------------------------------------------------
         # Jacobi-constant conservation is the rigorous CR3BP integrator
@@ -3154,6 +3274,13 @@ class AnalysisPanel(QWidget):
         # by Plot / Overlay so both share one notion of "active plot".
         self._active_spec: PlotSpec | None = None
 
+        # Plot frame: "icrf" (default) or "bf"; threaded into the
+        # PlotContext on every dispatch so state-vector / projection
+        # / Keplerian-angle plots can rotate their data into the
+        # central body's body-fixed basis when the user picks BF in
+        # the Plot-options dialog.
+        self._plot_frame: str = "icrf"
+
         # Scene-options state lives on the panel; the dialog mutates
         # it in place. Every toggle ends up driving a re-render via
         # _on_scene_options_changed. The dialog itself is opened from
@@ -3696,26 +3823,28 @@ class AnalysisPanel(QWidget):
         ovl_ctx = (self._build_plot_context(items[0][0])
                    if items else None)
         try:
-            if spec.dim == "2d":
-                self._stack.setCurrentIndex(0)
-                self._figure.clear()
-                ax = self._figure.add_subplot(111)
-                spec.overlay_fn(ax, items, ovl_ctx)
-                self._figure.tight_layout()
-                self._canvas.draw_idle()
-            else:  # "3d"
-                self._stack.setCurrentIndex(1)
-                self._vtk.set_central_body_texture(self._configured_central_body_texture())
-                self._apply_skybox_to_canvas()
-                self._vtk.clear_scene()
-                spec.overlay_fn(self._vtk, items, ovl_ctx)
-                # Pin the rotation pivot on the central body so mouse-
-                # drag rotation keeps the Moon centred even when the
-                # auto-fit bbox is pulled off-axis by the third-body
-                # markers (Sun ~50000 km off to one side, etc.).
-                self._vtk.reset_camera_on_origin()
-                self._vtk.render()
-            self._sync_anim_bar_to_canvas()
+            with self._busy(f"overlaying {len(items)} files ({spec.label})"):
+                if spec.dim == "2d":
+                    self._stack.setCurrentIndex(0)
+                    self._figure.clear()
+                    ax = self._figure.add_subplot(111)
+                    spec.overlay_fn(ax, items, ovl_ctx)
+                    self._figure.tight_layout()
+                    self._canvas.draw_idle()
+                else:  # "3d"
+                    self._stack.setCurrentIndex(1)
+                    self._vtk.set_central_body_texture(self._configured_central_body_texture())
+                    self._apply_skybox_to_canvas()
+                    self._vtk.clear_scene()
+                    spec.overlay_fn(self._vtk, items, ovl_ctx)
+                    # Pin the rotation pivot on the central body so
+                    # mouse-drag rotation keeps the Moon centred even
+                    # when the auto-fit bbox is pulled off-axis by the
+                    # third-body markers (Sun ~50000 km off to one
+                    # side, etc.).
+                    self._vtk.reset_camera_on_origin()
+                    self._vtk.render()
+                self._sync_anim_bar_to_canvas()
         except Exception as exc:  # noqa: BLE001 -- surface anything to user
             QMessageBox.critical(self, "Overlay failed", repr(exc))
             return
@@ -3739,11 +3868,12 @@ class AnalysisPanel(QWidget):
                 "(expected magic SPDYOUT_, SPDYACC_, or SPDYEVT_)."
             )
             return
-        try:
-            data = _READERS[kind](path)
-        except (OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Read failed", str(exc))
-            return
+        with self._busy(f"loading {path.name}"):
+            try:
+                data = _READERS[kind](path)
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, "Read failed", str(exc))
+                return
 
         self._path = path
         self._kind = kind
@@ -3778,6 +3908,11 @@ class AnalysisPanel(QWidget):
         # (silently no-op when the snapshot is missing or the dialog
         # has never been opened).
         self._refresh_scene_dialog_bodies()
+        # Update the Plot-options dialog's BF radio: enables / disables
+        # based on whether the new run's central body has an
+        # orientation provider, and updates the BF label ("ITRS" /
+        # "PA" / ...). No-op when the dialog hasn't been opened yet.
+        self._refresh_plot_options_bf_availability()
 
         # Switching file invalidates the cached diff payload: the
         # `_last_diff` arrays were aligned against a different pair
@@ -3875,10 +4010,15 @@ class AnalysisPanel(QWidget):
         # refresh below sees a consistent (spec, diff-cache) pair.
         if spec.mode != "diff":
             self._last_diff = None
-        if spec.mode == "diff":
-            self._plot_diff(spec)
-        else:
-            self._plot_active()
+        # Every dispatch is wrapped in a busy context so 3D scene
+        # builds with many third bodies and large-batch diffs paint
+        # the wait cursor + status message instead of letting Windows
+        # flip the title bar to 'Not Responding'.
+        with self._busy(f"rendering '{spec.label}'"):
+            if spec.mode == "diff":
+                self._plot_diff(spec)
+            else:
+                self._plot_active()
         # Info tab: refresh whenever the active spec changes so the
         # diff overlay rows appear / disappear with the plot selection.
         self._refresh_info_tab()
@@ -3991,28 +4131,33 @@ class AnalysisPanel(QWidget):
                else None)
 
         try:
-            self._stack.setCurrentIndex(0)
-            self._figure.clear()
-            for i, spec in enumerate(specs):
-                ax = self._figure.add_subplot(rows, cols, i + 1)
-                if mode == "diff":
-                    spec.fn(ax, data_a, data_b)
-                elif spec.mode == "context":
-                    spec.fn(ax, self._data, ctx)
-                else:
-                    spec.fn(ax, self._data)
-                # Shrink labels in tile mode -- matplotlib's default
-                # sizes are calibrated for a single full-canvas plot.
-                ax.title.set_size("small")
-                ax.tick_params(labelsize="small")
-                ax.xaxis.label.set_size("small")
-                ax.yaxis.label.set_size("small")
-                # Legends already use fontsize='small' or 'best'; nothing
-                # to do for plots that don't add one.
-            if subtitle:
-                self._figure.suptitle(subtitle, fontsize="small")
-            self._figure.tight_layout()
-            self._canvas.draw_idle()
+            with self._busy(f"tiling {n} plots"):
+                self._stack.setCurrentIndex(0)
+                self._figure.clear()
+                for i, spec in enumerate(specs):
+                    ax = self._figure.add_subplot(rows, cols, i + 1)
+                    if mode == "diff":
+                        spec.fn(ax, data_a, data_b)
+                    elif spec.mode == "context":
+                        spec.fn(ax, self._data, ctx)
+                    else:
+                        spec.fn(ax, self._data)
+                    # Shrink labels in tile mode -- matplotlib's default
+                    # sizes are calibrated for a single full-canvas plot.
+                    ax.title.set_size("small")
+                    ax.tick_params(labelsize="small")
+                    ax.xaxis.label.set_size("small")
+                    ax.yaxis.label.set_size("small")
+                    # Legends already use fontsize='small' or 'best';
+                    # nothing to do for plots that don't add one.
+                    # Pump the event loop between subplots so a slow
+                    # tile (e.g. 12 batch plots) still updates the
+                    # cursor / message without freezing the title bar.
+                    QApplication.processEvents()
+                if subtitle:
+                    self._figure.suptitle(subtitle, fontsize="small")
+                self._figure.tight_layout()
+                self._canvas.draw_idle()
         except ValueError as exc:
             # Bubbled up from a plot fn (e.g. degenerate orbital
             # element math); kept as a clean message rather than a
@@ -4073,7 +4218,68 @@ class AnalysisPanel(QWidget):
         if self._stack.currentIndex() != 1:
             return
         self._vtk.set_animation_time(t_s)
+        # Push the UTC corresponding to (et_start + t_s) into the
+        # bottom-right overlay so the user can spot-check what wall-
+        # clock instant the marker is at. Snapshot lookup is cheap
+        # (cached in `_resolve_run_context`), but degrade gracefully
+        # when no snapshot is present (bare .bin loaded ad-hoc).
+        self._refresh_utc_overlay(t_s)
         self._vtk.render()
+
+    @contextlib.contextmanager
+    def _busy(self, message: str):
+        """Wait-cursor + info-label progress note around a slow op.
+        Quick-win against Windows' 'Not Responding' label: any
+        operation > ~1 s that runs on the main thread (file loads,
+        3D scene builds, batch tile renders, third-body ephemeris
+        loops) gets visible feedback. `processEvents()` is called on
+        entry so the cursor + message paint before the work starts;
+        on exit the cursor is unconditionally restored even when the
+        wrapped block raises. If the wrapped block did NOT overwrite
+        the info-label (e.g. a 3D scene render that has nothing
+        post-success to say), the "Working" string is cleared
+        instead of being left as visual debris."""
+        prev_text       = self._info_label.text()
+        prev_stylesheet = self._info_label.styleSheet()
+        busy_text       = f"Working: {message}…"
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self._info_label.setText(busy_text)
+        self._info_label.setStyleSheet("color: #888;")
+        QApplication.processEvents()
+        try:
+            yield
+        finally:
+            QApplication.restoreOverrideCursor()
+            # Only sweep the label if nobody else touched it — the
+            # "swept" state is the pre-busy text + style, so a
+            # dispatcher that printed its own status (e.g. "Diff:
+            # A=... B=...") sees its message survive.
+            if self._info_label.text() == busy_text:
+                self._info_label.setText(prev_text)
+                self._info_label.setStyleSheet(prev_stylesheet)
+            QApplication.processEvents()
+
+    def _refresh_utc_overlay(self, t_s: float) -> None:
+        """Convert (et_start + t_s) to a UTC ISO string and push it
+        into the VtkCanvas overlay. No-op (clears the overlay) when
+        no snapshot / et_start is available."""
+        if self._path is None:
+            self._vtk.set_overlay_utc_text("")
+            return
+        info = _resolve_run_context(self._path)
+        if info is None:
+            self._vtk.set_overlay_utc_text("")
+            return
+        try:
+            from .time_conv import et_to_utc, format_utc_iso
+            dt = et_to_utc(float(info["et_start_s"]) + float(t_s))
+            # Three fractional digits = millisecond resolution: enough
+            # for any orbital regime spody propagates, and short
+            # enough that the overlay box stays small.
+            self._vtk.set_overlay_utc_text(
+                "UTC " + format_utc_iso(dt, fractional_digits=3))
+        except Exception:
+            self._vtk.set_overlay_utc_text("")
 
     def _sync_anim_bar_to_canvas(self) -> None:
         """Show / hide / range the playback bar after every 3D render.
@@ -4094,13 +4300,20 @@ class AnalysisPanel(QWidget):
                 self._can_export_active_plot_csv())
         if self._stack.currentIndex() != 1:
             self._anim_bar.setVisible(False)
+            # Drop the UTC overlay too: it's a 3D-only widget and a
+            # leftover string on a 2D switch would mislead.
+            self._vtk.set_overlay_utc_text("")
             return
         self._anim_bar.setVisible(True)
         rng = self._vtk.animation_time_range()
         if rng is None:
             self._anim_bar.set_enabled(False)
+            self._vtk.set_overlay_utc_text("")
         else:
             self._anim_bar.set_time_range(*rng)
+            # Seed the overlay at t_min so the UTC is visible before
+            # the user has nudged the slider for the first time.
+            self._refresh_utc_overlay(rng[0])
 
     # ------------------------------------------------------------------
     # Scene options dialog -- non-modal, mutates self._scene_options
@@ -4175,12 +4388,47 @@ class AnalysisPanel(QWidget):
             self._plot_options_dialog = PlotOptionsDialog(parent=self)
             self._plot_options_dialog.exportCsvRequested.connect(
                 self._export_active_plot_csv)
+            self._plot_options_dialog.plotFrameChanged.connect(
+                self._on_plot_frame_changed)
         self._plot_options_dialog.set_export_enabled(
             self._can_export_active_plot_csv())
+        self._plot_options_dialog.set_frame(self._plot_frame)
+        self._refresh_plot_options_bf_availability()
         self._plot_options_dialog.clear_status()
         self._plot_options_dialog.show()
         self._plot_options_dialog.raise_()
         self._plot_options_dialog.activateWindow()
+
+    def _on_plot_frame_changed(self, frame: str) -> None:
+        """User flipped the frame radio: persist on the panel and
+        re-render the active plot so the new frame takes effect
+        immediately without a manual file-tree click."""
+        if frame not in ("icrf", "bf"):
+            return
+        if self._plot_frame == frame:
+            return
+        self._plot_frame = frame
+        # The Info tab does not consume the plot frame today, so just
+        # re-render the canvas. _on_plot_tree_clicked rebuilds the
+        # PlotContext (which reads self._plot_frame) so the choice
+        # threads through every context-mode plot in the registry.
+        current = self._plot_tree.currentItem()
+        if current is not None and current.data(0, _SPEC_ROLE) is not None:
+            self._on_plot_tree_clicked(current, 0)
+
+    def _refresh_plot_options_bf_availability(self) -> None:
+        """Push the BF-availability state into the Plot-options
+        dialog: BF is available only for HF runs whose central body
+        has a registered `bf_orientation` (Earth / Moon today). The
+        dialog greys out the BF radio and falls back to ICRF when
+        unavailable."""
+        if self._plot_options_dialog is None:
+            return
+        available = (
+            self._dynamics_model != "cr3bp"
+            and self._central_body.bf_orientation is not None)
+        bf_label = self._central_body.bf_frame_name if available else ""
+        self._plot_options_dialog.set_bf_available(available, bf_label)
 
     def _can_export_active_plot_csv(self) -> bool:
         """True iff the matplotlib figure currently shows a 2D plot
@@ -4355,6 +4603,7 @@ class AnalysisPanel(QWidget):
             central_body=self._central_body,
             dynamics_model=self._dynamics_model,
             cr3bp_primaries=self._cr3bp_primaries,
+            plot_frame=self._plot_frame,
         )
 
     def _third_bodies_from_snapshot(self) -> list[str]:

@@ -27,10 +27,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
@@ -41,10 +44,14 @@ class PlotOptionsDialog(QDialog):
 
     Mirrors `SceneOptionsDialog` in spirit -- a small always-on-top
     floating widget the user can leave open while flipping between
-    plots. Today it exposes Export CSV only; future per-plot toggles
-    (axis scaling, marker on/off, downsampling, ...) land here too."""
+    plots. Today it exposes Export CSV and the frame selector
+    (ICRF / body-fixed) for state-vector and Keplerian-angle plots."""
 
     exportCsvRequested = Signal()
+    # Emitted when the user flips the frame radio. Payload is one of
+    # "icrf" / "bf"; AnalysisPanel stores the choice and re-renders
+    # the active plot.
+    plotFrameChanged   = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -55,6 +62,28 @@ class PlotOptionsDialog(QDialog):
         intro = QLabel(
             "Options for the currently displayed 2D plot.")
         intro.setWordWrap(True)
+
+        # ---- Frame selector (ICRF / body-fixed) ----------------------
+        # Affects state-vector plots in the first block (|r|, |v|, x/y/z,
+        # vx/vy/vz, orbit XY/XZ/YZ projections) and the Keplerian
+        # angle plots (RAAN, AOP, ν, e-vs-ω). Invariant quantities
+        # (a, e, i, |r|, |v|) plot identically in both frames; only the
+        # title suffix changes there. CR3BP runs and central bodies
+        # without a registered body-fixed orientation get the BF radio
+        # auto-disabled by `set_bf_available` so the choice gracefully
+        # collapses to ICRF.
+        frame_box = QGroupBox("Plot frame")
+        self._rb_icrf = QRadioButton("ICRF (inertial)")
+        self._rb_bf   = QRadioButton("Body-fixed")
+        self._rb_icrf.setChecked(True)
+        self._frame_group = QButtonGroup(self)
+        self._frame_group.addButton(self._rb_icrf)
+        self._frame_group.addButton(self._rb_bf)
+        self._rb_icrf.toggled.connect(self._on_frame_radio_toggled)
+        self._rb_bf.toggled.connect(self._on_frame_radio_toggled)
+        frame_lay = QVBoxLayout(frame_box)
+        frame_lay.addWidget(self._rb_icrf)
+        frame_lay.addWidget(self._rb_bf)
 
         self._btn_export_csv = QPushButton("Export CSV...")
         self._btn_export_csv.setToolTip(
@@ -76,6 +105,7 @@ class PlotOptionsDialog(QDialog):
 
         lay = QVBoxLayout(self)
         lay.addWidget(intro)
+        lay.addWidget(frame_box)
         lay.addLayout(row)
         lay.addWidget(self._status)
         lay.addStretch(1)
@@ -96,3 +126,52 @@ class PlotOptionsDialog(QDialog):
 
     def clear_status(self) -> None:
         self._status.setText("")
+
+    # ------------------------------------------------------------------
+    # Frame selector
+    # ------------------------------------------------------------------
+    def _on_frame_radio_toggled(self, _checked: bool) -> None:
+        """Both radios fire toggled (one True, one False). Emit only
+        once per user click by gating on the ICRF radio's checked
+        state -- and only when the radios are user-facing (i.e. the
+        BF option is enabled; otherwise the user did not actually
+        flip anything intentionally)."""
+        if not self._rb_bf.isEnabled() and not self._rb_icrf.isEnabled():
+            return
+        sender = self.sender()
+        # Avoid double emit (one for the unchecked, one for the checked).
+        if sender is not None and not sender.isChecked():
+            return
+        self.plotFrameChanged.emit(self.frame())
+
+    def frame(self) -> str:
+        """Current frame selection: "icrf" or "bf"."""
+        return "bf" if self._rb_bf.isChecked() else "icrf"
+
+    def set_frame(self, frame: str) -> None:
+        """Set the radio without firing `plotFrameChanged` (the panel
+        uses this to seed the dialog state to match the panel state
+        on first open). Blocks signals around the radio writes."""
+        target = self._rb_bf if frame == "bf" else self._rb_icrf
+        # blockSignals on the buttons (NOT the group) so the toggled
+        # signal does not bounce out and trigger a redundant render.
+        for rb in (self._rb_icrf, self._rb_bf):
+            rb.blockSignals(True)
+        target.setChecked(True)
+        for rb in (self._rb_icrf, self._rb_bf):
+            rb.blockSignals(False)
+
+    def set_bf_available(self, available: bool, bf_label: str = "") -> None:
+        """Enable / disable the body-fixed radio based on whether the
+        loaded run has a registered orientation provider for its
+        central body. `bf_label` is the body-fixed frame name (e.g.
+        "ITRS" / "PA"), shown as the BF radio's text so the user
+        knows which BF they are picking. When disabled, the BF radio
+        is greyed out and (if currently checked) flipped back to
+        ICRF so the panel sees a consistent state."""
+        text = f"Body-fixed ({bf_label})" if bf_label else "Body-fixed"
+        self._rb_bf.setText(text)
+        self._rb_bf.setEnabled(available)
+        if not available and self._rb_bf.isChecked():
+            self._rb_icrf.setChecked(True)
+            self.plotFrameChanged.emit("icrf")
