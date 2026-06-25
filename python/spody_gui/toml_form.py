@@ -420,6 +420,22 @@ class TomlForm(QWidget):
         # text as float vs leave as string.
         self._float_keys: set[str] = set()
 
+        # [initial_state] representation cache. Key: (kind, frame)
+        # tuple covering the four (cartesian / keplerian) x (central_
+        # inertial / central_body_fixed) combinations. Value: a dict
+        # mapping widget keys to their values for that representation,
+        # or absent when the corresponding representation has not been
+        # computed (or failed to compute). Populated on every
+        # `editingFinished` event of the IC widgets: the current
+        # visible block is the ground truth, the other 3 are computed
+        # from it via spopy (one conversion deep per representation),
+        # cached, and re-used unchanged by kind / frame toggles --
+        # avoiding the cascading ULP drift the old toggle-time
+        # conversion suffered after a few back-and-forth flips.
+        # Invalidated wholesale by changes to et_start_s,
+        # central_body, dynamics_model, reference_body, anomaly_type.
+        self._ic_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
         # Float keys whose QLineEdit value is rendered in a user-picked
         # unit (the unit combo lives in _scaled_unit_combos[key]). The
         # TOML still carries the SI value; _widget_value multiplies by
@@ -564,6 +580,16 @@ class TomlForm(QWidget):
 
         dm_combo = self._widgets["simulation.dynamics_model"]
         dm_combo.currentTextChanged.connect(self._on_dynamics_model_changed)
+        # et_start_s drives R_icrf_to_bf; touching it invalidates the
+        # cached BF / inertial cross-derivations so the next toggle
+        # re-derives from the current visible block. dyn_model also
+        # invalidates because cr3bp flips which mu / synodic chain
+        # _ic_block_to_cart_inertial picks.
+        et_w = self._widgets.get("simulation.et_start_s")
+        if isinstance(et_w, QLineEdit):
+            et_w.editingFinished.connect(self._invalidate_ic_cache)
+        dm_combo.currentTextChanged.connect(
+            lambda _t: self._invalidate_ic_cache())
         return g
 
     def _add_et_with_utc(self, layout: QFormLayout, key: str,
@@ -785,6 +811,36 @@ class TomlForm(QWidget):
         # Wire the kind combo: on change, convert (best-effort) and swap.
         kind_combo = self._widgets["initial_state.kind"]
         kind_combo.currentTextChanged.connect(self._on_init_kind_changed)
+        # Wire editingFinished on every cart / kep widget so each
+        # finalised edit recomputes the four-representation cache.
+        # Sub-table inside the form-level _ic_cache so toggles between
+        # (kind, frame) become lossless lookups rather than chained
+        # spopy conversions that drift after a few flips.
+        for vec_key in ("initial_state.position_km",
+                         "initial_state.velocity_kms"):
+            trio = self._widgets.get(vec_key)
+            if isinstance(trio, tuple):
+                for le in trio:
+                    le.editingFinished.connect(self._on_ic_field_finished)
+        for k_key in ("initial_state.semi_major_axis_km",
+                       "initial_state.eccentricity",
+                       "initial_state.inclination_deg",
+                       "initial_state.raan_deg",
+                       "initial_state.arg_periapsis_deg",
+                       "initial_state.anomaly_deg"):
+            w = self._widgets.get(k_key)
+            if isinstance(w, QLineEdit):
+                w.editingFinished.connect(self._on_ic_field_finished)
+        # Anomaly type and reference body re-interpret the cached
+        # keplerian numbers, so flipping either invalidates the
+        # cache wholesale (the user has to touch a field to repopulate
+        # -- same UX as today, but consistent).
+        for combo_key in ("initial_state.anomaly_type",
+                           "initial_state.reference_body"):
+            combo = self._widgets.get(combo_key)
+            if isinstance(combo, QComboBox):
+                combo.currentTextChanged.connect(
+                    lambda _t: self._invalidate_ic_cache())
         return g
 
     def _build_cr3bp(self) -> QGroupBox:
@@ -899,6 +955,8 @@ class TomlForm(QWidget):
         self._fm_force_form = f
         cb_combo = self._widgets["force_model.central_body"]
         cb_combo.currentTextChanged.connect(self._on_central_body_changed)
+        cb_combo.currentTextChanged.connect(
+            lambda _t: self._invalidate_ic_cache())
         self._on_central_body_changed(cb_combo.currentText())
         return g
 
@@ -946,6 +1004,12 @@ class TomlForm(QWidget):
             f, "ephemeris.file", "file",
             category="ephemeris", body_key=None,
         )
+        # Lunar BF rotation reads from this ephemeris; swapping
+        # ephemerides invalidates the cached BF representations.
+        eph_combo = self._widgets.get("ephemeris.file")
+        if isinstance(eph_combo, QComboBox):
+            eph_combo.currentIndexChanged.connect(
+                lambda _i: self._invalidate_ic_cache())
         return g
 
     def _build_integrator(self) -> QGroupBox:
@@ -1027,24 +1091,286 @@ class TomlForm(QWidget):
     # [initial_state] kind swap (cartesian <-> keplerian)
     # ------------------------------------------------------------------
     def _on_init_kind_changed(self, kind: str) -> None:
-        """Try a best-effort in-place conversion of the just-vacated
-        block into the newly-active one, then toggle visibility. Silent
-        on conversion failure (empty / unparseable source fields, mu
-        unresolvable, ...): the destination block stays at whatever it
-        was holding so the user can fill it in by hand.
+        """Swap visibility between the cart / kep blocks. Tries the
+        IC cache first (the four-representation snapshot kept in
+        sync by `_on_ic_field_finished`): a cache hit writes the
+        destination block verbatim, with NO spopy conversion at
+        toggle time -- so back-and-forth flips no longer accumulate
+        ULP drift. Falls back to the legacy on-the-fly conversion
+        when the cache is empty for the destination view (first
+        toggle of the session, or after an invalidating change).
 
-        During load the conversion is skipped (the loader populates the
-        destination block from the TOML directly); only the visibility
-        toggle still runs so the right block is on screen."""
+        During load the conversion is skipped (the loader populates
+        the destination block from the TOML directly); only the
+        visibility toggle still runs so the right block is on screen."""
         is_kep = (kind == "keplerian")
         if not self._loading:
-            if is_kep:
-                self._convert_cart_to_kep()
-            else:
-                self._convert_kep_to_cart()
+            # Toggle handlers NEVER re-seed the cache (re-seeding
+            # here would re-derive the destination view through
+            # cart_inertial every time, defeating the whole point
+            # of the cache -- BF<->ICRF<->BF would still drift two
+            # conversions per round-trip). The cache is filled by
+            # editingFinished only; if there's no cached entry for
+            # the destination view we fall back to legacy
+            # conversion + repopulate the cache once from that.
+            _, current_frame = self._ic_current_view()
+            if not self._apply_ic_cache_to_widgets(kind, current_frame):
+                if is_kep:
+                    self._convert_cart_to_kep()
+                else:
+                    self._convert_kep_to_cart()
+                # Capture the freshly-converted destination block
+                # so subsequent toggles round-trip cleanly. The
+                # visibility flip below has not happened yet -- we
+                # use an explicit view rather than _ic_current_view
+                # because the just-written widgets ARE the new
+                # destination block.
+                self._seed_ic_cache_from_view((kind, current_frame))
         self._init_cart_block.setVisible(not is_kep)
         self._init_kep_block.setVisible(is_kep)
         self._touch()
+
+    # ------------------------------------------------------------------
+    # [initial_state] four-representation cache
+    # ------------------------------------------------------------------
+    # Toggles between (cartesian / keplerian) x (central_inertial /
+    # central_body_fixed) used to chain spopy conversions on every
+    # click, which accumulated ULP noise after a few back-and-forth
+    # flips. With the cache, every finalised edit re-derives all four
+    # representations once and the toggle handlers just look up the
+    # destination view -- no further conversions, no compounding drift.
+
+    _IC_VARIANTS: tuple[tuple[str, str], ...] = (
+        ("cartesian", "central_inertial"),
+        ("cartesian", "central_body_fixed"),
+        ("keplerian", "central_inertial"),
+        ("keplerian", "central_body_fixed"),
+    )
+
+    _IC_CART_KEYS = (
+        "initial_state.position_km",
+        "initial_state.velocity_kms",
+    )
+    _IC_KEP_KEYS = (
+        "initial_state.semi_major_axis_km",
+        "initial_state.eccentricity",
+        "initial_state.inclination_deg",
+        "initial_state.raan_deg",
+        "initial_state.arg_periapsis_deg",
+        "initial_state.anomaly_deg",
+    )
+
+    def _invalidate_ic_cache(self) -> None:
+        """Drop every cached IC representation. Triggered by changes
+        to settings the cached values depend on (et_start_s,
+        central_body, dynamics_model, anomaly_type, reference_body).
+        The next finalised edit repopulates."""
+        self._ic_cache.clear()
+
+    def _on_ic_field_finished(self) -> None:
+        """User finished editing a cart / kep field (focus loss or
+        Enter): the currently-visible block is the ground truth, so
+        re-derive every other representation from it and snapshot
+        all four into `_ic_cache`. No-op during load (the legacy
+        load path writes the widgets directly and we don't want a
+        partial intermediate state to overwrite the loaded values
+        in the cache)."""
+        if self._loading:
+            return
+        self._seed_ic_cache_from_visible()
+
+    def _ic_current_view(self) -> tuple[str, str]:
+        """Return the (kind, frame) of the currently visible block,
+        defaulting to the legacy ('cartesian', 'central_inertial')
+        when the combos are not yet built."""
+        kind_combo  = self._widgets.get("initial_state.kind")
+        frame_combo = self._widgets.get("initial_state.frame")
+        kind  = (kind_combo.currentText()
+                 if isinstance(kind_combo, QComboBox) else "cartesian")
+        frame = (frame_combo.currentText()
+                 if isinstance(frame_combo, QComboBox)
+                 else "central_inertial")
+        return kind, frame
+
+    def _snapshot_ic_block(self, kind: str) -> dict | None:
+        """Read the kep / cart widgets for `kind` and return a dict
+        of `{widget_key: parsed_value}`, or None when any required
+        field is empty / unparseable (the cache stays as it was)."""
+        if kind == "cartesian":
+            r = self._read_vec3("initial_state.position_km")
+            v = self._read_vec3("initial_state.velocity_kms")
+            if r is None or v is None:
+                return None
+            return {
+                "initial_state.position_km":  [float(x) for x in r],
+                "initial_state.velocity_kms": [float(x) for x in v],
+            }
+        # Keplerian
+        out: dict[str, float] = {}
+        for k in self._IC_KEP_KEYS:
+            v = self._read_float(k)
+            if v is None:
+                return None
+            out[k] = float(v)
+        return out
+
+    def _ic_block_to_cart_inertial(self, block: dict, kind: str, frame: str
+                                    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Convert `block` (in the given (kind, frame)) to canonical
+        cartesian-inertial via spopy. Returns (r, v) or None on
+        failure (missing mu, missing et_start, missing rotation
+        provider, degenerate kep)."""
+        import math
+        import numpy as np
+        if kind == "cartesian":
+            r = np.asarray(block["initial_state.position_km"],  dtype=float)
+            v = np.asarray(block["initial_state.velocity_kms"], dtype=float)
+        else:
+            ctx = self._resolve_kep_mu_and_synodic()
+            if ctx is None:
+                return None
+            mu_ref, _synodic = ctx
+            anom_combo = self._widgets.get("initial_state.anomaly_type")
+            anom_type = (anom_combo.currentText()
+                         if isinstance(anom_combo, QComboBox) else "true")
+            try:
+                from spopy import keplerian_to_cartesian, mean_to_true_anom
+                nu = math.radians(block["initial_state.anomaly_deg"])
+                if anom_type == "mean":
+                    nu = mean_to_true_anom(nu, block["initial_state.eccentricity"])
+                r, v = keplerian_to_cartesian(
+                    block["initial_state.semi_major_axis_km"],
+                    block["initial_state.eccentricity"],
+                    math.radians(block["initial_state.inclination_deg"]),
+                    math.radians(block["initial_state.raan_deg"]),
+                    math.radians(block["initial_state.arg_periapsis_deg"]),
+                    nu, mu_ref)
+                r = np.asarray(r, dtype=float)
+                v = np.asarray(v, dtype=float)
+            except (ValueError, ZeroDivisionError):
+                return None
+        if frame == "central_body_fixed":
+            et = self._form_et_start()
+            if et is None:
+                return None
+            R_icrf_to_bf = self._resolve_bf_rotation(et)
+            if R_icrf_to_bf is None:
+                return None
+            R_bf_to_icrf = R_icrf_to_bf.T
+            r = R_bf_to_icrf @ r
+            v = R_bf_to_icrf @ v
+        return r, v
+
+    def _ic_block_from_cart_inertial(self, r: "np.ndarray", v: "np.ndarray",
+                                      kind: str, frame: str) -> dict | None:
+        """Inverse of `_ic_block_to_cart_inertial`: build the
+        (kind, frame) block dict from canonical cartesian-inertial.
+        None when prerequisites are missing for the destination
+        (mu / et_start / rotation provider) or kep extraction
+        fails."""
+        import math
+        import numpy as np
+        if frame == "central_body_fixed":
+            et = self._form_et_start()
+            if et is None:
+                return None
+            R_icrf_to_bf = self._resolve_bf_rotation(et)
+            if R_icrf_to_bf is None:
+                return None
+            r_dst = R_icrf_to_bf @ r
+            v_dst = R_icrf_to_bf @ v
+        else:
+            r_dst = np.asarray(r, dtype=float)
+            v_dst = np.asarray(v, dtype=float)
+        if kind == "cartesian":
+            return {
+                "initial_state.position_km":  [float(x) for x in r_dst],
+                "initial_state.velocity_kms": [float(x) for x in v_dst],
+            }
+        ctx = self._resolve_kep_mu_and_synodic()
+        if ctx is None:
+            return None
+        mu_ref, _synodic = ctx
+        try:
+            from spopy import cartesian_to_keplerian, true_to_mean_anom
+            el = cartesian_to_keplerian(r_dst, v_dst, mu_ref)
+        except (ValueError, ZeroDivisionError):
+            return None
+        anom_combo = self._widgets.get("initial_state.anomaly_type")
+        anom_type = (anom_combo.currentText()
+                     if isinstance(anom_combo, QComboBox) else "true")
+        nu = float(el["true_anom_rad"])
+        anom = (true_to_mean_anom(nu, float(el["ecc"]))
+                if anom_type == "mean" else nu)
+        return {
+            "initial_state.semi_major_axis_km": float(el["sma_km"]),
+            "initial_state.eccentricity":       float(el["ecc"]),
+            "initial_state.inclination_deg":    math.degrees(float(el["inc_rad"])),
+            "initial_state.raan_deg":           math.degrees(float(el["raan_rad"])),
+            "initial_state.arg_periapsis_deg":  math.degrees(float(el["argp_rad"])),
+            "initial_state.anomaly_deg":        math.degrees(anom),
+        }
+
+    def _seed_ic_cache_from_visible(self) -> None:
+        """Re-derive all four IC representations from the currently
+        visible block (defined by `_ic_current_view`) and store them
+        in `_ic_cache`. Use the explicit-view variant
+        `_seed_ic_cache_from_view` when the caller knows the source
+        view is NOT what `_ic_current_view` would report (typically
+        a toggle handler where the combo has already moved to the
+        destination)."""
+        self._seed_ic_cache_from_view(self._ic_current_view())
+
+    def _seed_ic_cache_from_view(self, view: tuple[str, str]) -> None:
+        """Snapshot the `view = (kind, frame)` block (visible or
+        not -- we read the kind's widgets directly), then derive
+        the other three representations from it via spopy and cache
+        all four. Silent on incomplete / unparseable / degenerate
+        source: the cache stays as it was."""
+        kind, frame = view
+        src = self._snapshot_ic_block(kind)
+        if src is None:
+            return
+        # Wipe so a stale entry doesn't survive a re-seed where the
+        # other-3 conversions fail.
+        self._ic_cache.clear()
+        self._ic_cache[(kind, frame)] = src
+        ri_vi = self._ic_block_to_cart_inertial(src, kind, frame)
+        if ri_vi is None:
+            return
+        ri, vi = ri_vi
+        for (k, f) in self._IC_VARIANTS:
+            if (k, f) == (kind, frame):
+                continue
+            block = self._ic_block_from_cart_inertial(ri, vi, k, f)
+            if block is not None:
+                self._ic_cache[(k, f)] = block
+
+    def _apply_ic_cache_to_widgets(self, kind: str, frame: str) -> bool:
+        """Write the cached (kind, frame) representation into the
+        cart / kep widgets without going through spopy. Returns True
+        on hit + write, False when the cache has no entry for that
+        view (the caller then falls back to the legacy convert-on-
+        toggle path). Signal-blocking is done at the widget level
+        so the textChanged-driven `_touch` still fires (the user's
+        intent IS modification)."""
+        block = self._ic_cache.get((kind, frame))
+        if block is None:
+            return False
+        if kind == "cartesian":
+            r = block.get("initial_state.position_km")
+            v = block.get("initial_state.velocity_kms")
+            if r is None or v is None:
+                return False
+            self._write_vec3("initial_state.position_km",  r)
+            self._write_vec3("initial_state.velocity_kms", v)
+        else:
+            for k in self._IC_KEP_KEYS:
+                v = block.get(k)
+                if v is None:
+                    return False
+                self._write_float(k, float(v))
+        return True
 
     def _resolve_kep_mu_and_synodic(self) -> tuple[float, dict] | None:
         """Look up the reference-body mu (+ CR3BP geometry when needed)
@@ -1319,6 +1645,20 @@ class TomlForm(QWidget):
                 or self._input_frame_prev not in bf_pair):
             self._input_frame_prev = new_frame
             return
+        # Toggle handlers NEVER re-seed the cache: each re-seed
+        # would re-derive the destination via cart_inertial and
+        # ICRF<->BF<->ICRF would still drift two conversions per
+        # round-trip. The cache is filled by editingFinished (and
+        # by the legacy-fallback path below); a cache hit here
+        # writes the destination verbatim -- zero in-loop
+        # conversions, lossless across repeated flips.
+        kind, _ = self._ic_current_view()
+        if self._apply_ic_cache_to_widgets(kind, new_frame):
+            self._input_frame_prev = new_frame
+            return
+        # Cache miss: fall back to the legacy in-place rotation, and
+        # if the prerequisites are missing surface a one-shot warning
+        # so the user knows what to fix.
         et = self._form_et_start()
         if et is None:
             QMessageBox.warning(
@@ -1346,13 +1686,16 @@ class TomlForm(QWidget):
         # matches the Slice-B plot semantics so what you see in BF
         # plots round-trips through this form unchanged.
         R = R_icrf_to_bf if new_frame == "central_body_fixed" else R_icrf_to_bf.T
-        kind_combo = self._widgets.get("initial_state.kind")
-        kind = (kind_combo.currentText()
-                if isinstance(kind_combo, QComboBox) else "cartesian")
         if kind == "cartesian":
             self._rotate_cart_inplace(R)
         else:
             self._rotate_kep_inplace(R)
+        # The legacy fallback mutated the visible block; capture
+        # the freshly-rotated destination view into the cache so a
+        # subsequent toggle hits the lossless path. The combo
+        # already moved to `new_frame`, so _ic_current_view() is
+        # correct here.
+        self._seed_ic_cache_from_visible()
         self._input_frame_prev = new_frame
 
     def _rotate_cart_inplace(self, R: "np.ndarray") -> None:
@@ -3127,6 +3470,13 @@ class TomlForm(QWidget):
         self.clear_modified()
         # Preview was suppressed during _loading; sync it now.
         self._refresh_preview()
+        # Seed the IC four-representation cache from the freshly-
+        # loaded values so the first kind / frame toggle benefits
+        # from the lossless lookup path (and we don't pay the spopy
+        # conversion on a click that the user perceives as
+        # navigation, not computation).
+        self._invalidate_ic_cache()
+        self._seed_ic_cache_from_visible()
         if self._validate_badge.text():
             self._validate_badge.setText("")
 
