@@ -858,7 +858,14 @@ class TomlForm(QWidget):
         self._add_enum(f, "cr3bp.primary_2", "primary_2",
                        tuple(sorted({p2 for _, p2 in CR3BP_PAIRS})))
         p1_combo = self._widgets["cr3bp.primary_1"]
+        p2_combo = self._widgets["cr3bp.primary_2"]
         p1_combo.currentTextChanged.connect(self._on_cr3bp_primary_1_changed)
+        # primary_2 also feeds the altitude-crossing valid-body list;
+        # _on_cr3bp_primary_1_changed already refreshes it for p1
+        # changes (and for the cascaded p2 narrow-down inside that
+        # handler), so we only need a separate hook for a direct p2 pick.
+        p2_combo.currentTextChanged.connect(
+            lambda _t: self._refresh_altcross_body_options())
         self._on_cr3bp_primary_1_changed(p1_combo.currentText())
         return g
 
@@ -877,6 +884,10 @@ class TomlForm(QWidget):
         idx = combo.findText(prev)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
+        # Primary change flows into the altitude-crossing body combo's
+        # valid-name set under CR3BP (the only two bodies the engine
+        # can resolve are the two primaries).
+        self._refresh_altcross_body_options()
 
     def _build_force_model(self) -> QGroupBox:
         g = QGroupBox("[force_model]")
@@ -993,6 +1004,9 @@ class TomlForm(QWidget):
         # Refresh the input_frame combo: the BF radio's label tracks the
         # central body's bf_frame_name (ITRS for Earth, PA for Moon).
         self._refresh_input_frame_availability()
+        # Altitude-crossing rows reference body by name; central body
+        # change is one of the inputs the valid-bodies list depends on.
+        self._refresh_altcross_body_options()
 
     def _build_ephemeris(self) -> QGroupBox:
         g = QGroupBox("[ephemeris]")
@@ -1863,6 +1877,9 @@ class TomlForm(QWidget):
         # orientation provider; CR3BP runs and bare-central-body specs
         # silently fall back to inertial.
         self._refresh_input_frame_availability()
+        # Altitude-crossing body combos: HF allows central + thirds,
+        # CR3BP allows only the two primaries; rebuild every row.
+        self._refresh_altcross_body_options()
 
     # ------------------------------------------------------------------
     # Output auto-naming
@@ -1914,7 +1931,12 @@ class TomlForm(QWidget):
         g = QGroupBox("[events]  (optional)")
         v = QVBoxLayout(g)
 
-        self._events_check = QCheckBox("Enable [events]  (eclipse detection)")
+        # Eclipse sub-section -- gated by the legacy `_events_check` so
+        # round-trip with TOMLs that only set eclipse_threshold stays
+        # bit-identical. Altitude crossings live alongside, ungated:
+        # the engine accepts them independently of eclipse (CR3BP even
+        # rejects eclipse but allows altitude crossings).
+        self._events_check = QCheckBox("Enable eclipse detection")
         self._events_check.toggled.connect(self._on_events_toggled)
         self._events_check.toggled.connect(lambda _: self._touch())
         v.addWidget(self._events_check)
@@ -1924,6 +1946,51 @@ class TomlForm(QWidget):
         self._add_float(f, "events.eclipse_threshold", "eclipse_threshold (0..1)")
         v.addWidget(self._events_box)
         self._events_box.setVisible(False)
+
+        # Altitude crossings sub-section, collapsible. One row per
+        # `[[events.altitude_crossing]]` entry; empty table = nothing
+        # emitted. Body combo options auto-refresh when the central
+        # body / third bodies / CR3BP primaries change so a stale row
+        # is spotted before Validate complains.
+        self._altcross_check = QCheckBox("Enable altitude crossings")
+        self._altcross_check.toggled.connect(self._on_altcross_toggled)
+        self._altcross_check.toggled.connect(lambda _: self._touch())
+        v.addWidget(self._altcross_check)
+
+        self._altcross_box = QWidget()
+        ac_v = QVBoxLayout(self._altcross_box)
+        ac_v.setContentsMargins(0, 0, 0, 0)
+        ac_v.addWidget(QLabel(
+            "[[events.altitude_crossing]]  -- fires on ascending AND descending:"))
+        self._altcross_table = QTableWidget(0, 4)
+        self._altcross_table.setHorizontalHeaderLabels(
+            ["body", "altitude_km", "action", "refined"])
+        self._altcross_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.Stretch)
+        self._altcross_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.Stretch)
+        self._altcross_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Stretch)
+        self._altcross_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeToContents)
+        self._altcross_table.verticalHeader().setVisible(False)
+        self._altcross_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._altcross_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._altcross_table.setMinimumHeight(120)
+        ac_v.addWidget(self._altcross_table)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        self._altcross_add_btn = QPushButton("+ Add crossing")
+        self._altcross_add_btn.clicked.connect(self._on_altcross_add_row)
+        self._altcross_del_btn = QPushButton("- Remove selected")
+        self._altcross_del_btn.clicked.connect(self._on_altcross_remove_row)
+        btn_row.addWidget(self._altcross_add_btn)
+        btn_row.addWidget(self._altcross_del_btn)
+        btn_row.addStretch(1)
+        ac_v.addLayout(btn_row)
+        v.addWidget(self._altcross_box)
+        self._altcross_box.setVisible(False)
         return g
 
     def _build_batch(self) -> QGroupBox:
@@ -2384,6 +2451,14 @@ class TomlForm(QWidget):
                 row_layouts.append(rl)
             cb = QCheckBox(name)
             cb.toggled.connect(self._touch)
+            # The third-body list feeds the [[events.altitude_crossing]]
+            # body combo's valid-name set; toggling a body has to refresh
+            # every row so a now-checked body becomes pickable (and a
+            # now-unchecked one shows up as a stale entry to fix). Safe
+            # to call from the construction loop because the helper
+            # short-circuits when the table doesn't exist yet.
+            cb.toggled.connect(
+                lambda _checked: self._refresh_altcross_body_options())
             boxes[name] = cb
             row_layouts[-1].addWidget(cb)
         # Pad the last partial row.
@@ -2405,6 +2480,203 @@ class TomlForm(QWidget):
 
     def _on_events_toggled(self, checked: bool) -> None:
         self._events_box.setVisible(checked)
+
+    def _on_altcross_toggled(self, checked: bool) -> None:
+        self._altcross_box.setVisible(checked)
+
+    # ------------------------------------------------------------------
+    # [[events.altitude_crossing]] table
+    # ------------------------------------------------------------------
+    _ALTCROSS_ACTIONS = ("log", "stop", "log_and_stop")
+
+    def _altcross_valid_bodies(self) -> list[str]:
+        """Return the list of body names a [[events.altitude_crossing]]
+        row may reference under the current dynamics_model. HF: central
+        body + checked third bodies; CR3BP: the two primaries. Empty
+        names are skipped (early in construction the combos may not
+        have a selection yet)."""
+        dm = self._widgets.get("simulation.dynamics_model")
+        dyn_model = (dm.currentText()
+                     if isinstance(dm, QComboBox) else "high_fidelity")
+        if dyn_model == "cr3bp":
+            out: list[str] = []
+            for k in ("cr3bp.primary_1", "cr3bp.primary_2"):
+                w = self._widgets.get(k)
+                if isinstance(w, QComboBox):
+                    name = w.currentText().strip()
+                    if name and name not in out:
+                        out.append(name)
+            return out
+        out = []
+        cb = self._widgets.get("force_model.central_body")
+        if isinstance(cb, QComboBox):
+            name = cb.currentText().strip()
+            if name:
+                out.append(name)
+        tb = self._widgets.get("force_model.third_bodies")
+        if isinstance(tb, dict):
+            for name, box in tb.items():
+                if box.isChecked() and name not in out:
+                    out.append(name)
+        return out
+
+    def _make_altcross_body_combo(self, current: str = "") -> QComboBox:
+        combo = QComboBox()
+        for b in self._altcross_valid_bodies():
+            combo.addItem(b)
+        if current:
+            idx = combo.findText(current)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            else:
+                # Keep the stale name in the list so a load of a TOML
+                # whose body is no longer in the current model still
+                # shows what was there (the validator will flag it).
+                combo.addItem(current)
+                combo.setCurrentIndex(combo.count() - 1)
+        combo.currentTextChanged.connect(lambda _t: self._touch())
+        return combo
+
+    def _make_altcross_action_combo(self, current: str = "log") -> QComboBox:
+        combo = QComboBox()
+        for a in self._ALTCROSS_ACTIONS:
+            combo.addItem(a)
+        idx = combo.findText(current)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.currentTextChanged.connect(lambda _t: self._touch())
+        return combo
+
+    def _make_altcross_refined_widget(self, current: bool = True) -> QWidget:
+        # Center the checkbox in its cell. A bare QCheckBox docks to
+        # the top-left of the cell which looks odd in a row of combos.
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setAlignment(Qt.AlignCenter)
+        cb = QCheckBox()
+        cb.setChecked(bool(current))
+        cb.toggled.connect(lambda _b: self._touch())
+        lay.addWidget(cb)
+        wrap.setProperty("altcross_checkbox", cb)
+        return wrap
+
+    def _altcross_refined_value(self, wrap: QWidget) -> bool:
+        cb = wrap.property("altcross_checkbox")
+        return bool(cb.isChecked()) if isinstance(cb, QCheckBox) else True
+
+    def _altcross_append_row(self, body: str = "", altitude_km: float = 0.0,
+                              action: str = "log", refined: bool = True) -> None:
+        """Append one configured row (combo bodies + altitude QLineEdit +
+        action combo + refined checkbox). Defaults are picked so a
+        fresh row is immediately editable: the body combo lands on the
+        first valid body, action on `log`, refined on True."""
+        row = self._altcross_table.rowCount()
+        self._altcross_table.insertRow(row)
+        self._altcross_table.setCellWidget(row, 0,
+                self._make_altcross_body_combo(body))
+        alt_edit = QLineEdit("" if altitude_km <= 0.0 else repr(float(altitude_km)))
+        alt_edit.setPlaceholderText("km > 0")
+        alt_edit.textChanged.connect(lambda _t: self._touch())
+        self._altcross_table.setCellWidget(row, 1, alt_edit)
+        self._altcross_table.setCellWidget(row, 2,
+                self._make_altcross_action_combo(action))
+        self._altcross_table.setCellWidget(row, 3,
+                self._make_altcross_refined_widget(refined))
+
+    def _on_altcross_add_row(self) -> None:
+        self._altcross_append_row()
+        self._touch()
+
+    def _on_altcross_remove_row(self) -> None:
+        idx = self._altcross_table.currentRow()
+        if idx < 0:
+            return
+        self._altcross_table.removeRow(idx)
+        self._touch()
+
+    def _refresh_altcross_body_options(self) -> None:
+        """Rebuild every body combo in the table to reflect the current
+        valid-body list (central + third bodies under HF, primaries
+        under CR3BP). Preserves each row's current text -- a name no
+        longer in the list is added back as a stray item so loaded
+        TOMLs that referenced a now-removed body still display what
+        was there (the validator will reject it explicitly)."""
+        if not hasattr(self, "_altcross_table"):
+            return
+        bodies = self._altcross_valid_bodies()
+        for row in range(self._altcross_table.rowCount()):
+            combo = self._altcross_table.cellWidget(row, 0)
+            if not isinstance(combo, QComboBox):
+                continue
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            for b in bodies:
+                combo.addItem(b)
+            if current:
+                idx = combo.findText(current)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                elif bodies:
+                    combo.addItem(current)
+                    combo.setCurrentIndex(combo.count() - 1)
+            combo.blockSignals(False)
+
+    def _altcross_table_to_list(self) -> list[dict]:
+        """Serialise table -> list of dicts for emission under
+        `events.altitude_crossing`. Skips rows that have no body or
+        an unparseable altitude_km (so a half-filled row never makes
+        it into the TOML without flagging anything; the Validate
+        action will catch missing rows separately)."""
+        out: list[dict] = []
+        for row in range(self._altcross_table.rowCount()):
+            body_combo = self._altcross_table.cellWidget(row, 0)
+            alt_edit   = self._altcross_table.cellWidget(row, 1)
+            act_combo  = self._altcross_table.cellWidget(row, 2)
+            ref_wrap   = self._altcross_table.cellWidget(row, 3)
+            if not isinstance(body_combo, QComboBox): continue
+            if not isinstance(alt_edit,   QLineEdit): continue
+            if not isinstance(act_combo,  QComboBox): continue
+            body = body_combo.currentText().strip()
+            if not body:
+                continue
+            try:
+                alt = float(alt_edit.text().strip())
+            except ValueError:
+                continue
+            entry: dict = {
+                "body":        body,
+                "altitude_km": alt,
+                "action":      act_combo.currentText(),
+            }
+            refined = self._altcross_refined_value(ref_wrap)
+            # Only emit `refined` when it differs from the default
+            # (true) so unchanged round-trips stay byte-identical with
+            # legacy TOMLs that never wrote the key.
+            if not refined:
+                entry["refined"] = False
+            out.append(entry)
+        return out
+
+    def _apply_loaded_altitude_crossings(self, entries: list) -> None:
+        """Clear the table and repopulate from a loaded list of dicts
+        (the engine schema). Silent on type mismatches inside an entry;
+        invalid entries simply do not produce a row (the Validate
+        action surfaces the missing/typo'd field next time)."""
+        self._altcross_table.setRowCount(0)
+        if not isinstance(entries, list):
+            return
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            body    = str(entry.get("body", "")).strip()
+            try:
+                alt = float(entry.get("altitude_km", 0.0))
+            except (TypeError, ValueError):
+                alt = 0.0
+            action  = str(entry.get("action", "log")).strip() or "log"
+            refined = bool(entry.get("refined", True))
+            self._altcross_append_row(body, alt, action, refined)
 
     def _on_batch_toggled(self, checked: bool) -> None:
         self._batch_box.setVisible(checked)
@@ -3259,6 +3531,19 @@ class TomlForm(QWidget):
 
         result = _explode_dotted(flat)
 
+        # [[events.altitude_crossing]] comes from the dynamic table,
+        # not from a flat widget key. Emit only when the user has
+        # explicitly enabled the section: skip both when the checkbox
+        # is off (so a hidden table doesn't leak rows the user can't
+        # see) and when the table happens to be empty. Bypasses the
+        # `_events_check` gate -- altitude crossings are accepted by
+        # the engine independently of eclipse_threshold (CR3BP even
+        # forbids eclipse while still allowing alt crossings).
+        if self._altcross_check.isChecked():
+            ac_list = self._altcross_table_to_list()
+            if ac_list:
+                result.setdefault("events", {})["altitude_crossing"] = ac_list
+
         # [batch.columns] comes from the dynamic table, not from a flat
         # widget key; inject it only when batch is enabled and at least
         # one column has a target assigned.
@@ -3450,6 +3735,18 @@ class TomlForm(QWidget):
                     continue   # unknown key; emitter would round-trip via flatten too
                 self._set_widget_value(key, w, value)
 
+            # [[events.altitude_crossing]] is a dynamic array-of-tables;
+            # the flat-load pass skips it (the array is not a single
+            # widget value). Populate the table from the raw `data`
+            # directly + auto-check the enable box so the user sees
+            # the loaded rows. Missing / empty key -> stays disabled.
+            ac_list = data.get("events", {}).get("altitude_crossing", [])
+            if not isinstance(ac_list, list):
+                ac_list = []
+            self._apply_loaded_altitude_crossings(ac_list)
+            self._altcross_check.setChecked(bool(ac_list))
+            self._on_altcross_toggled(bool(ac_list))
+
             # [batch.columns] is dynamic: first scan the freshly-loaded
             # cases_file to populate the rows, then apply the loaded
             # column->target mappings on top.
@@ -3519,6 +3816,9 @@ class TomlForm(QWidget):
             self._on_srp_param_toggled()
             self._events_check.setChecked(False)
             self._on_events_toggled(False)
+            self._altcross_check.setChecked(False)
+            self._on_altcross_toggled(False)
+            self._altcross_table.setRowCount(0)
             self._batch_check.setChecked(False)
             self._on_batch_toggled(False)
             self._batch_columns_table.setRowCount(0)
