@@ -901,27 +901,120 @@ static int parse_output(toml_table_t *root, const char *toml_dir,
     return SPODY_OK;
 }
 
+/* Map "log" / "stop" / "log_and_stop" to the spody_event_action enum
+ * value (0/1/2). Anything else -> -1 + error. The string-to-int hop
+ * keeps spody_events.h out of toml_input.h. */
+static int parse_event_action(const char *s, int *out) {
+    if (strcmp(s, "log") == 0)          { *out = 0; return 0; }
+    if (strcmp(s, "stop") == 0)         { *out = 1; return 0; }
+    if (strcmp(s, "log_and_stop") == 0) { *out = 2; return 0; }
+    *out = -1;
+    return -1;
+}
+
+/* Parse the [[events.altitude_crossing]] array-of-tables. Each entry
+ * adds one AltitudeCrossingSpec to cfg->altitude_crossings. Body
+ * name resolution + dynamics-model compatibility check happen later
+ * in spody_validate_input (where the central body / third body
+ * list / CR3BP primaries are all known). */
+static int parse_altitude_crossings(toml_table_t *events_tab,
+                                     InputConfig *cfg, SpodyError *err) {
+    cfg->n_altitude_crossings = 0;
+    toml_array_t *arr = toml_array_in(events_tab, "altitude_crossing");
+    if (!arr) return SPODY_OK;
+
+    int n = toml_array_nelem(arr);
+    if (n == 0) return SPODY_OK;
+    if (n > SPODY_MAX_ALTITUDE_CROSSINGS) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[[events.altitude_crossing]] has %d entries, cap is %d",
+                n, SPODY_MAX_ALTITUDE_CROSSINGS);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    for (int i = 0; i < n; ++i) {
+        toml_table_t *t = toml_table_at(arr, i);
+        if (!t) {
+            spody_error_set(err, SPODY_ERR_BAD_TYPE,
+                    "[[events.altitude_crossing]] entry %d is not a table", i);
+            return SPODY_ERR_BAD_TYPE;
+        }
+        AltitudeCrossingSpec *ac = &cfg->altitude_crossings[i];
+
+        int rc;
+        if ((rc = req_string(t, "events.altitude_crossing", "body",
+                              ac->body_name, sizeof ac->body_name, err))) return rc;
+        if ((rc = req_double(t, "events.altitude_crossing", "altitude_km",
+                              &ac->altitude_km, err))) return rc;
+        if (!(ac->altitude_km > 0.0)) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "events.altitude_crossing[%d].altitude_km must be > 0 (got %g);"
+                    " use SPODY_EVENT_KIND_IMPACT for surface impacts",
+                    i, ac->altitude_km);
+            return SPODY_ERR_BAD_VALUE;
+        }
+
+        /* action: optional, default "log" (the natural choice for
+         * monitoring a set of altitude bands -- propagation keeps
+         * going so all bands have a chance to fire). */
+        char action_name[16];
+        int has_action = 0;
+        if ((rc = opt_string(t, "action", action_name, sizeof action_name,
+                              &has_action))) return rc;
+        ac->action = 0;  /* LOG */
+        if (has_action) {
+            if (parse_event_action(action_name, &ac->action) != 0) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "events.altitude_crossing[%d].action = '%s' is not"
+                        " supported (expected 'log', 'stop', or 'log_and_stop')",
+                        i, action_name);
+                return SPODY_ERR_BAD_VALUE;
+            }
+        }
+
+        /* refined: optional bool, default true. The toggle is
+         * essentially free in steady state -- Brent runs only at the
+         * actual crossing step -- but it's exposed for users who
+         * profile and want step-size-precision triggers instead. */
+        ac->refined = 1;
+        toml_datum_t d = toml_bool_in(t, "refined");
+        if (d.ok) ac->refined = d.u.b ? 1 : 0;
+    }
+
+    cfg->n_altitude_crossings = n;
+    return SPODY_OK;
+}
+
 /* Optional [events] section. IMPACT is always on and needs no config;
- * eclipse is opt-in. If the section is present, `eclipse_threshold` is
- * required inside it (fraction in [0, 1]); the occulter defaults to the
- * central body. Absent section -> eclipse disabled. */
+ * eclipse is opt-in (`events.eclipse_threshold` fraction in [0,1]);
+ * altitude crossings are opt-in array-of-tables. Absent section ->
+ * only the always-on IMPACT runs. */
 static int parse_events(toml_table_t *root, InputConfig *cfg, SpodyError *err) {
     cfg->eclipse_event_enabled = 0;
     cfg->eclipse_threshold     = 0.0;
+    cfg->n_altitude_crossings  = 0;
 
     toml_table_t *t = toml_table_in(root, "events");
     if (!t) return SPODY_OK;   /* no [events] -> only the always-on IMPACT */
 
     int rc;
-    if ((rc = req_double(t, "events", "eclipse_threshold",
-                         &cfg->eclipse_threshold, err))) return rc;
-    if (cfg->eclipse_threshold < 0.0 || cfg->eclipse_threshold > 1.0) {
-        spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "events.eclipse_threshold must be in [0, 1] (got %g)",
-                cfg->eclipse_threshold);
-        return SPODY_ERR_BAD_VALUE;
+
+    /* eclipse_threshold is optional now that altitude crossings share
+     * the section: if it's absent we just leave eclipse disabled. */
+    toml_datum_t et = toml_double_in(t, "eclipse_threshold");
+    toml_datum_t eti = toml_int_in(t, "eclipse_threshold");
+    if (et.ok || eti.ok) {
+        cfg->eclipse_threshold = et.ok ? et.u.d : (double)eti.u.i;
+        if (cfg->eclipse_threshold < 0.0 || cfg->eclipse_threshold > 1.0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "events.eclipse_threshold must be in [0, 1] (got %g)",
+                    cfg->eclipse_threshold);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        cfg->eclipse_event_enabled = 1;
     }
-    cfg->eclipse_event_enabled = 1;
+
+    if ((rc = parse_altitude_crossings(t, cfg, err))) return rc;
     return SPODY_OK;
 }
 
@@ -1664,6 +1757,23 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                     "dynamics_model = 'cr3bp' (no Sun in this model)");
             return SPODY_ERR_BAD_VALUE;
         }
+        /* CR3BP altitude crossings: body must be one of the two
+         * primaries (the only bodies whose synodic position is
+         * known to the engine via the fixed cr3bp_x1 / cr3bp_x2
+         * caches). Anything else has no resolvable position. */
+        for (int i = 0; i < cfg->n_altitude_crossings; ++i) {
+            const AltitudeCrossingSpec *ac = &cfg->altitude_crossings[i];
+            int matches_p1 = (strcmp(ac->body_name, cfg->cr3bp_primary_1) == 0);
+            int matches_p2 = (strcmp(ac->body_name, cfg->cr3bp_primary_2) == 0);
+            if (!matches_p1 && !matches_p2) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "events.altitude_crossing[%d].body = '%s' must be"
+                        " one of the CR3BP primaries ('%s' or '%s')",
+                        i, ac->body_name,
+                        cfg->cr3bp_primary_1, cfg->cr3bp_primary_2);
+                return SPODY_ERR_BAD_VALUE;
+            }
+        }
         return SPODY_OK;
     }
 
@@ -1800,6 +1910,45 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                         "force_model.third_bodies has duplicate '%s'",
                         cfg->third_body_names[i]);
                 return SPODY_ERR_BAD_VALUE;
+            }
+        }
+    }
+
+    /* Altitude crossings (HF): each body must be the central body OR
+     * one of the configured third bodies. Anything else has no
+     * position resolvable by the runtime. The body's radius is
+     * pulled from the body table at build_events time; we require it
+     * to be > 0 here so a known-but-radiusless body (debris, etc.)
+     * is rejected up front rather than silently dropped. */
+    {
+        const SpodyCentralBodySpec *cb = spody_central_body_get(cfg->central_body);
+        for (int i = 0; i < cfg->n_altitude_crossings; ++i) {
+            const AltitudeCrossingSpec *ac = &cfg->altitude_crossings[i];
+            int is_central = (cb && strcmp(ac->body_name, cb->name) == 0);
+            int is_third = 0;
+            for (int j = 0; j < cfg->n_third_bodies; ++j) {
+                if (strcmp(ac->body_name, cfg->third_body_names[j]) == 0) {
+                    is_third = 1;
+                    break;
+                }
+            }
+            if (!is_central && !is_third) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "events.altitude_crossing[%d].body = '%s' must be the"
+                        " central body ('%s') or one of force_model.third_bodies",
+                        i, ac->body_name, cb ? cb->name : "?");
+                return SPODY_ERR_BAD_VALUE;
+            }
+            if (!is_central) {
+                double r_km = 0.0;
+                if (spody_lookup_third_body(ac->body_name, NULL, NULL, &r_km) != 0
+                        || r_km <= 0.0) {
+                    spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                            "events.altitude_crossing[%d].body = '%s' has no"
+                            " known physical radius -- altitude is undefined",
+                            i, ac->body_name);
+                    return SPODY_ERR_BAD_VALUE;
+                }
             }
         }
     }

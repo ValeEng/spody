@@ -48,6 +48,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "central_body.h"        /* spody_central_body_get (alt crossings) */
 #include "spody_events.h"        /* SpodyEvent, EventRecord, refined check */
 #include "spody_forcemodels.h"   /* ForceBreakdown, spody_force_breakdown  */
 #include "toml_input.h"          /* spody_lookup_body_by_naif              */
@@ -261,9 +262,9 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
     *out_events = NULL;
     *out_n      = 0;
 
-    /* CR3BP branch: two IMPACT-at-point events, one per primary, with
-     * the primary's standard radius as the trigger threshold. No third
-     * bodies, no eclipse (validator rejects it). */
+    /* CR3BP branch: two IMPACT-at-point events (one per primary) plus
+     * any [[events.altitude_crossing]] entries referencing those
+     * primaries. No third bodies, no eclipse (validator rejects). */
     if (cfg->dynamics_model == SPODY_DYN_CR3BP) {
         int p1_naif = 0, p2_naif = 0;
         double r1_km = 0.0, r2_km = 0.0;
@@ -273,7 +274,8 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
                     "cr3bp primary name not resolvable to a body (internal)");
             return SPODY_ERR_INTERNAL;
         }
-        SpodyEvent *ev = (SpodyEvent *)calloc(2, sizeof *ev);
+        int cap = 2 + cfg->n_altitude_crossings;
+        SpodyEvent *ev = (SpodyEvent *)calloc((size_t)cap, sizeof *ev);
         if (!ev) {
             spody_error_set(err, SPODY_ERR_INTERNAL,
                     "out of memory allocating cr3bp event array");
@@ -285,12 +287,26 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
                                              SPODY_EVENT_ACTION_LOG_AND_STOP);
         ev[1] = spody_event_impact_at_point(p2_naif, ref2, r2_km,
                                              SPODY_EVENT_ACTION_LOG_AND_STOP);
+        int n = 2;
+        for (int i = 0; i < cfg->n_altitude_crossings; ++i) {
+            const AltitudeCrossingSpec *ac = &cfg->altitude_crossings[i];
+            int    matches_p1 = (strcmp(ac->body_name, cfg->cr3bp_primary_1) == 0);
+            const double *ref = matches_p1 ? ref1 : ref2;
+            int    naif       = matches_p1 ? p1_naif : p2_naif;
+            double body_r     = matches_p1 ? r1_km   : r2_km;
+            ev[n] = spody_event_altitude_crossing_at_point(
+                    naif, ref, body_r, ac->altitude_km,
+                    (spody_event_action)ac->action);
+            ev[n].refined = ac->refined;
+            n++;
+        }
         *out_events = ev;
-        *out_n      = 2;
+        *out_n      = n;
         return SPODY_OK;
     }
 
-    int cap = 1 + w->n_third + (cfg->eclipse_event_enabled ? 1 : 0);
+    int cap = 1 + w->n_third + (cfg->eclipse_event_enabled ? 1 : 0)
+              + cfg->n_altitude_crossings;
     SpodyEvent *ev = (SpodyEvent *)calloc((size_t)cap, sizeof *ev);
     if (!ev) {
         spody_error_set(err, SPODY_ERR_INTERNAL,
@@ -321,6 +337,30 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
         ev[n] = spody_event_eclipse(w->ctx.naif_central, w->ctx.R_central,
                                     cfg->eclipse_threshold,
                                     SPODY_EVENT_ACTION_LOG);
+        n++;
+    }
+
+    /* [[events.altitude_crossing]]: one ALT_CROSSING event per spec.
+     * Body is the central body OR one of the configured third bodies
+     * (validator guarantees this). Body radius is looked up from the
+     * body table so the engine has the threshold = R_body + altitude_km. */
+    for (int i = 0; i < cfg->n_altitude_crossings; ++i) {
+        const AltitudeCrossingSpec *ac = &cfg->altitude_crossings[i];
+        int    naif  = 0;
+        double r_km  = 0.0;
+        const SpodyCentralBodySpec *cb = spody_central_body_get(cfg->central_body);
+        if (cb && strcmp(ac->body_name, cb->name) == 0) {
+            naif = cb->naif;
+            r_km = cb->radius_km;
+        } else if (spody_lookup_third_body(ac->body_name, &naif, NULL, &r_km) != 0
+                   || r_km <= 0.0) {
+            /* Validator already gates this, but defensive: skip rather
+             * than wire an event that would never fire correctly. */
+            continue;
+        }
+        ev[n] = spody_event_altitude_crossing(naif, r_km, ac->altitude_km,
+                                               (spody_event_action)ac->action);
+        ev[n].refined = ac->refined;
         n++;
     }
 

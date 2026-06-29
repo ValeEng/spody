@@ -91,10 +91,27 @@ typedef enum {
     SPODY_ANOMALY_MEAN = 1
 } SpodyAnomalyKind;
 
-#define SPODY_MAX_THIRD_BODIES   8
-#define SPODY_MAX_BODY_NAME      16
-#define SPODY_MAX_SIM_NAME      128
-#define SPODY_MAX_PATH         1024
+#define SPODY_MAX_THIRD_BODIES        8
+#define SPODY_MAX_ALTITUDE_CROSSINGS 32   /* [[events.altitude_crossing]] cap */
+#define SPODY_MAX_BODY_NAME          16
+#define SPODY_MAX_SIM_NAME          128
+#define SPODY_MAX_PATH             1024
+
+/* One [[events.altitude_crossing]] entry. Built by parse_events;
+ * fed verbatim into build_events in sim_run.c (one SpodyEvent per
+ * spec). action / refined are stored as plain ints because the
+ * spody_event_* enums live in spody-core's spody_events.h and this
+ * header should not pull spody-core public types. The mapping is:
+ *   action  : 0 = LOG, 1 = STOP, 2 = LOG_AND_STOP
+ *             (spody_event_action enum in spody-core).
+ *   refined : 1 = Brent + dense output (default), 0 = end-of-step
+ *             (step-size precision; opt-out for catalog-style runs). */
+typedef struct {
+    char    body_name[SPODY_MAX_BODY_NAME];   /* central or third / cr3bp primary */
+    double  altitude_km;
+    int     action;
+    int     refined;
+} AltitudeCrossingSpec;
 
 /* --------------------------------------------------------------------------
  * Override-target field descriptor.
@@ -285,6 +302,14 @@ typedef struct {
     /* [events] -- IMPACT is always on (no config). Eclipse is opt-in. */
     int    eclipse_event_enabled; /* 1 if [events].eclipse_threshold was set */
     double eclipse_threshold;     /* fraction in [0,1]; crossing fires the event */
+
+    /* [[events.altitude_crossing]] -- recurring altitude triggers.
+     * Each entry adds one SpodyEvent with kind = ALT_CROSSING that
+     * fires on every sign change of (|r_sat - r_body| - body_radius -
+     * altitude_km), so ascending and descending crossings are both
+     * logged. Fixed array; cap is generous for typical use cases. */
+    AltitudeCrossingSpec altitude_crossings[SPODY_MAX_ALTITUDE_CROSSINGS];
+    int                  n_altitude_crossings;
 
     /* [batch] -- NULL if absent in the TOML, heap-allocated otherwise.
      * Released by spody_free_input. */
