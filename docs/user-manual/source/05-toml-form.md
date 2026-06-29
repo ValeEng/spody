@@ -141,9 +141,15 @@ behind a checkbox:
   expose the sub-form; inside it a second pair of radios chooses
   between `area_m2` (with `A/m = area / mass`) and `am_srp`
   (the ratio specified directly).
-- **`[events]`** &mdash; opt-in eclipse detection through
-  `eclipse_threshold`. The threshold field is gated behind the
-  *Enable [events]* checkbox.
+- **`[events]`** &mdash; two independent opt-in sub-sections,
+  each behind its own checkbox: *Enable eclipse detection*
+  exposes the `eclipse_threshold` field, *Enable altitude
+  crossings* exposes a body / altitude_km / action / refined
+  table with Add / Remove buttons. The body combo per row tracks
+  the model's valid bodies (central + checked third bodies in HF,
+  the two primaries in CR3BP) and rebuilds automatically when
+  any of those change. The two features are independent &mdash;
+  CR3BP forbids eclipse but accepts altitude crossings.
 - **`[batch]`** &mdash; the multi-case sweep block. Enable the
   *Enable [batch]* checkbox to expose the batch-specific form
   (name, output directory, thread count, cases CSV, column mapping

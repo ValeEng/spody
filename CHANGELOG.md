@@ -6,6 +6,26 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
+### Added
+
+- **Altitude-crossing events.** New
+  `[[events.altitude_crossing]]` array-of-tables registers any
+  number of altitude triggers, each measured against the central
+  body or any third body (HF) / one of the two primaries (CR3BP).
+  Fires on **every sign change** of `|r_sat - r_body| -
+  body_radius - altitude_km`, so the same band logs both the
+  ascending and the descending crossing of one orbit. Per-event
+  refinement is on by default (Brent + dense output,
+  sub-microsecond localisation inside the accepted step) and can
+  be opted out with `refined = false` for catalog-style runs with
+  many bands. Action is `log` by default and accepts `stop` /
+  `log_and_stop`. Direction is recoverable post-hoc from the
+  radial velocity at trigger. The form gains a collapsible
+  `Enable altitude crossings` panel under `[events]` (parallel
+  to the existing eclipse toggle) with a body / altitude /
+  action / refined table and Add / Remove buttons; body combos
+  auto-track the model's valid bodies.
+
 ### Changed
 
 - **Lossless [initial_state] swaps.** The form's cart&harr;kep
@@ -19,6 +39,10 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   flips. The cache invalidates wholesale when something the
   conversion depends on changes (et_start_s, central_body,
   dynamics_model, anomaly_type, reference_body, ephemeris.file).
+- `[events]` no longer requires `eclipse_threshold` when
+  present; the section now hosts the
+  `[[events.altitude_crossing]]` array alongside eclipse, and
+  either feature can be enabled independently.
 
 ## v0.2.0-beta &mdash; 2026-06-25
 

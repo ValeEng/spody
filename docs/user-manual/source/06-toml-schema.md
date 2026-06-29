@@ -305,17 +305,56 @@ folders.
 
 ## `[events]` (optional)
 
-Opt-in event detection. Present only when the *Enable [events]*
-checkbox is ticked.
+Opt-in event detection. Two independent sub-sections, each gated by
+its own form checkbox:
+
+### `eclipse_threshold` &mdash; eclipse detection (HF only)
 
 | Key                  | Type  | Default | Range    | Description |
 |----------------------|-------|---------|----------|-------------|
 | `eclipse_threshold`  | float | &mdash; | `[0, 1]` | Sunlight-fraction crossing that fires an eclipse event. `0` = enter umbra (start of total eclipse); `1` = full sunlight (end of any eclipse); `0.5` = penumbra midpoint. |
 
-Impact events are always detected regardless of this section: any
-trajectory that crosses a central-body or third-body surface (mean
-radius) produces an IMPACT record. The `[events]` section only
-controls the opt-in eclipse detection.
+Rejected under `dynamics_model = "cr3bp"` (no Sun in the model).
+
+### `[[events.altitude_crossing]]` &mdash; altitude triggers
+
+Array of tables; one entry per altitude band the user wants logged.
+Fires on *every* sign change of `|r_sat - r_body| - body_radius -
+altitude_km`, so the same band logs both the ascending and the
+descending crossing of one orbit. Direction is recoverable from the
+radial velocity at trigger (`v_trigger · r̂_trigger`).
+
+| Key            | Type   | Default | Range    | Description |
+|----------------|--------|---------|----------|-------------|
+| `body`         | string | &mdash; | &ndash;  | Body to measure altitude from. HF: the central body or any entry in `force_model.third_bodies`. CR3BP: one of `cr3bp.primary_1` / `cr3bp.primary_2`. |
+| `altitude_km`  | float  | &mdash; | `> 0`    | Target altitude above the body's mean radius (km). Use the always-on IMPACT detector for surface contact (`altitude_km = 0` is rejected). |
+| `action`       | string | `"log"` | `"log"`, `"stop"`, `"log_and_stop"` | Behaviour on trigger. `log` keeps the propagation going (the natural choice for monitoring several bands); `stop` ends the run silently; `log_and_stop` does both. |
+| `refined`      | bool   | `true`  | &mdash;  | When `true` (default), Brent + dense-output localises the trigger sub-microsecond inside the accepted step. When `false`, the trigger lands at the end of the accepted step (step-size precision). Refinement is essentially free in steady state &mdash; Brent only runs at the actual sign-change step &mdash; but the toggle is exposed for catalog-style runs with many bands. |
+
+Example:
+
+```toml
+[[events.altitude_crossing]]
+body        = "Earth"
+altitude_km = 500
+action      = "log"
+
+[[events.altitude_crossing]]
+body        = "Earth"
+altitude_km = 1000
+
+[[events.altitude_crossing]]
+body        = "Moon"
+altitude_km = 100
+action      = "log_and_stop"
+```
+
+### Always-on IMPACT detection
+
+Any trajectory that crosses a central-body or third-body surface
+(mean radius) produces an IMPACT record regardless of the `[events]`
+section. The section only controls the opt-in eclipse and altitude
+detection above.
 
 ## `[batch]` (optional)
 

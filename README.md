@@ -197,8 +197,10 @@ Ordered roughly by what unlocks the most for users.
       binary `ForceBreakdown` records; ~3% overhead at 1-minute cadence
       on LRO)
 - [x] Event detection: always-on multi-body IMPACT (stop) + opt-in
-      ECLIPSE (`[events].eclipse_threshold`, recurring), sub-
-      millisecond Hermite + Brent localisation
+      ECLIPSE (`[events].eclipse_threshold`, recurring) + opt-in
+      ALT_CROSSING (`[[events.altitude_crossing]]`, ascending +
+      descending, per-event refinement opt-out), all with sub-
+      microsecond Hermite + Brent localisation
 - [x] Two object schemas: `[spacecraft]` (mass + area) and `[debris]`
       (A/m only, mass-irrelevant); mutually exclusive at parse with
       mode-tagged batch targets
@@ -287,7 +289,7 @@ Ordered roughly by what unlocks the most for users.
       and Earth
 - [ ] More CR3BP primary pairs (today's curated pair is
       Earth-Moon only)
-- [ ] More event kinds: altitude crossings, apsides
+- [ ] More event kinds: apsides (altitude crossings shipped)
 - [ ] Binary `.spody` variant of `cases_file` (CSV-only today)
 - [ ] Engine-side rotating-frame handler so RIC / LVLH cases CSVs no
       longer need the GUI to pre-rotate them
