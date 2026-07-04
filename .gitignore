@@ -124,3 +124,7 @@ data/
 # are ad-hoc tools used during development and not part of the shipped
 # product.
 tools/
+
+# Local-only end-to-end test workspace (analogous to spody-core tvb/):
+# personal correctness/accuracy material, intentionally unversioned.
+tests/
