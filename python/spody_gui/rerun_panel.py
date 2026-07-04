@@ -97,7 +97,7 @@ class _CaseRow:
 def _resolve_against_snapshot(raw: str, snapshot_dir: Path) -> Path | None:
     """Resolve a possibly-relative path string from the snapshot TOML
     against the snapshot dir's parent ladder. Mirrors the resolution
-    logic in `analysis_panel._resolve_ephemeris_path`: the snapshot is
+    logic in `analysis.context.resolve_ephemeris_path`: the snapshot is
     a verbatim copy of the source TOML, so its relative paths were
     written against the *original* file's dir, which is typically two
     levels above the snapshot folder."""
