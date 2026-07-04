@@ -338,6 +338,7 @@ spody/
 │   └── spody_gui.spec        # PyInstaller spec, one-folder mode
 ├── docs/
 │   ├── user-manual/          # 14-chapter Markdown + build_pdf.py + committed PDF
+│   ├── developer-guide.md    # system map, conventions, extension recipes
 │   └── RELEASES.md           # release protocol notes
 ├── CHANGELOG.md
 ├── CMakeLists.txt

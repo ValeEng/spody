@@ -16,7 +16,7 @@
 
     catalog     declarative tables (enums, tooltips, validators,
                 units, output naming) mirroring the engine schema
-    widgets     field factories (+ layout helpers, _AssetCombo)
+    widgets     field factories (+ layout helpers, AssetCombo)
     sections    one builder per TOML section
     visibility  XOR groups + dynamic batch table
     roundtrip   dict <-> widgets (+ dotted-key helpers)

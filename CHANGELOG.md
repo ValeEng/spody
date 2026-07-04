@@ -28,6 +28,32 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Maintainability refactor (engine + GUI), behavior-preserving.**
+  spody-core grows `spody_time.{h,c}` as the single home of the
+  calendar/time-scale helpers (Meeus Gregorian&rarr;JD, the
+  leap-second chain, ET&rarr;UTC MJD) that were previously
+  copy-pasted across the GNSS converters and the EOP/atmosphere
+  readers; `spody_const.h` is cleaned up (single J2000 name,
+  `JD_MJD_EPOCH`, centralized GPS week constants). GLONASS TOCs and
+  the ERA UT1 bridge now use the exact leap chain at any post-1972
+  epoch instead of the fixed post-2017 offset (bit-identical for
+  post-2017 data). On the Python side `spody_gui/constants.py`
+  becomes the single reading point of `spody_const.h` &mdash; parsed
+  in dev checkouts *and* in PyInstaller bundles (the header now
+  ships inside the bundle) &mdash; and the Python leap table lives
+  only in `spopy.eop.LEAP_TABLE_MJD`. The two GUI monoliths are
+  split into packages with stable extension points:
+  `spody_gui/analysis/` (PlotSpec registry &mdash; a new view is one
+  function + one spec entry) and `spody_gui/form/` (declarative
+  catalog + one builder per TOML section, composed as mixins).
+  Verified by an identical assembled plot registry, a lossless
+  form round-trip, and a byte-identical 7-day Earth propagation
+  against the pre-refactor engine.
+- **New developer guide.** `docs/developer-guide.md` documents the
+  system map, build recipes, coding conventions (naming, constants,
+  license headers) and step-by-step extension recipes (new TOML
+  section, analysis view, event kind, central body, force model).
+
 - **Lossless [initial_state] swaps.** The form's cart&harr;kep
   and ICRF&harr;BF swaps used to chain spopy conversions on
   every click; after a handful of back-and-forth flips the
