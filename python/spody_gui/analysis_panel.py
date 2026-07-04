@@ -86,6 +86,7 @@ from spody_io import (
 # package but not re-exported by spody_io.__init__; import directly so
 # _detect_kind can tell the two events formats apart.
 from spody_io.headers import SPODY_EVTB_MAGIC
+from . import constants
 from .settings import SettingsStore
 from .toml_io import read_toml
 from .animation_bar import AnimationBar
@@ -1740,22 +1741,11 @@ _BODY_COLORS: dict[str, tuple[float, float, float]] = {
     "Neptune": (0.30, 0.40, 0.85),
 }
 
-# Physical mean radii in km. Source: NASA planetary fact sheet. Used
-# to derive the displayed marker radius via `_body_marker_radius_km`;
-# also handy for any future feature that wants to apply a body
-# texture at the same proportional scale.
-_BODY_RADIUS_PHYS_KM: dict[str, float] = {
-    "Mercury": 2440.0,
-    "Venus":   6052.0,
-    "Earth":   6371.0,
-    "Moon":    1737.4,
-    "Mars":    3390.0,
-    "Jupiter": 69911.0,
-    "Saturn":  58232.0,
-    "Uranus":  25362.0,
-    "Neptune": 24622.0,
-    "Sun":     695700.0,
-}
+# Physical mean radii in km, read from spody_const.h through the
+# constants module (same values the engine uses). Used to derive the
+# displayed marker radius via `_body_marker_radius_km`; also handy for
+# any future feature that wants a body texture at proportional scale.
+_BODY_RADIUS_PHYS_KM: dict[str, float] = dict(constants.BODY_RADIUS_KM)
 
 # Power-law distance compression knob. 1.0 = identity (true physical
 # distances). Now that VtkCanvas uses Cesium-style multi-frustum
@@ -4567,12 +4557,12 @@ class AnalysisPanel(QWidget):
         # `spec is not None` keeps the GUI graceful in the interim.
         if spec1 is None or spec2 is None:
             return ()
-        # Look up L from the same constant the engine uses
-        # (EARTH_MOON_DISTANCE_KM in spody_const.h). Hardcoded to the
-        # single registered pair until more pairs land.
+        # L comes from the same constant the engine uses
+        # (EARTH_MOON_DISTANCE_KM in spody_const.h, via constants.py).
+        # Gated to the single registered pair until more pairs land.
         if {name1, name2} != {"Earth", "Moon"}:
             return ()
-        L_km = 384400.0
+        L_km = constants.EARTH_MOON_DISTANCE_KM
         mu1 = spec1.mu_km3_s2
         mu2 = spec2.mu_km3_s2
         mu_tot = mu1 + mu2

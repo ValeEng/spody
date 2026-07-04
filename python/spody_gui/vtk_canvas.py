@@ -87,7 +87,7 @@ import vtkmodules.vtkRenderingFreeType    # noqa: F401 -- side-effect import
 # Mean radius of the Moon in km. Kept here for backwards-compat
 # with callers that imported it (analysis_panel, scene_options
 # documentation). Authoritative source is now spody_const.h,
-# parsed by `central_bodies._load_spody_const`; if you change the
+# parsed by `constants._load_spody_const`; if you change the
 # value, change it there.
 #
 # Local import to avoid a hard analysis_panel -> vtk_canvas

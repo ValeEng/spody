@@ -39,6 +39,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from . import constants
 from .central_bodies import known_central_body_names
 
 if TYPE_CHECKING:
@@ -152,10 +153,11 @@ CR3BP_PAIRS: tuple[tuple[str, str], ...] = (
 # Primary-primary separation (km) for each curated pair. Needed by the
 # Keplerian <-> Cartesian swap in [initial_state] under CR3BP so the
 # GUI can call spopy.inertial_to_synodic without going back to the
-# engine. Mirrors EARTH_MOON_DISTANCE_KM in spody-core's spody_const.h
-# and the lookup_cr3bp_pair table in src/toml_input.c.
+# engine. Read from EARTH_MOON_DISTANCE_KM in spody-core's
+# spody_const.h (via constants.py), the same #define behind the
+# lookup_cr3bp_pair table in src/toml_input.c.
 _CR3BP_L_KM: dict[tuple[str, str], float] = {
-    ("Earth", "Moon"): 384400.0,
+    ("Earth", "Moon"): constants.EARTH_MOON_DISTANCE_KM,
 }
 INTEGRATORS      = ("rkdp45",)
 OUTPUT_MODES     = ("fixed", "step")

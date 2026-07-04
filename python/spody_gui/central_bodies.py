@@ -53,74 +53,21 @@ other bodies the engine grows orientation providers for.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
-
-# ----------------------------------------------------------------------
-# Read spody-core constants (single source of truth)
-# ----------------------------------------------------------------------
-# spody-core/include/spody_const.h hosts the canonical MOON_MU,
-# MOON_RADIUS, EARTH_MU, EARTH_RADIUS values used by the C engine.
-# We parse the simple `#define NAME number[/* comment */]` lines here
-# so the Python side never drifts from the engine. Fallback values
-# below are used when the .h isn't reachable (e.g. a PyInstaller
-# bundle that ships only Python sources); these duplicates are
-# clearly marked and any drift would be caught by the matching tvb
-# regression tests.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_SPODY_CONST_H = (_REPO_ROOT / "external" / "spody-core" /
-                    "include" / "spody_const.h")
-
-# Plain-number define pattern: tolerates trailing comments and `// `
-# notes after the value, but does NOT try to evaluate expressions
-# (so derived macros like `ET_FROM_JD(jd)` are skipped automatically
-# by the regex's failure to match).
-_DEFINE_RE = re.compile(
-    r"^\s*#define\s+(\w+)\s+([-+]?[\d.]+(?:[eE][-+]?\d+)?)\s*(?:/[/*].*)?$"
+# Physical constants come from the single GUI-side reading point of
+# spody-core's spody_const.h (see constants.py: header parsing with
+# clearly-marked fallbacks). Re-exported here because VtkCanvas and
+# older call sites import them from this module.
+from .constants import (
+    EARTH_MU_KM3_S2,
+    EARTH_RADIUS_KM,
+    MOON_MU_KM3_S2,
+    MOON_RADIUS_KM,
 )
-
-
-def _load_spody_const() -> dict[str, float]:
-    """Parse all `#define NAME <float>` entries in spody_const.h.
-    Returns an empty dict when the file isn't found (PyInstaller
-    bundle, broken submodule, ...); callers fall back to
-    hardcoded values."""
-    if not _SPODY_CONST_H.is_file():
-        return {}
-    out: dict[str, float] = {}
-    for line in _SPODY_CONST_H.read_text(encoding="utf-8").splitlines():
-        m = _DEFINE_RE.match(line)
-        if m:
-            try:
-                out[m.group(1)] = float(m.group(2))
-            except ValueError:
-                continue
-    return out
-
-
-_CONST = _load_spody_const()
-
-
-def _const(name: str, fallback: float) -> float:
-    """Look up a `#define` from spody_const.h, fall back to the
-    hardcoded value when the .h isn't available. Logs nothing --
-    the fallback path is expected in PyInstaller-bundled installs."""
-    return _CONST.get(name, fallback)
-
-
-# Re-export the central-body radius constant (used by VtkCanvas as
-# the legacy default for add_central_body). When this module is the
-# source of truth, vtk_canvas.MOON_RADIUS_KM stays in sync via the
-# constant below.
-MOON_RADIUS_KM = _const("MOON_RADIUS", 1737.4)
-MOON_MU_KM3_S2 = _const("MOON_MU",     4902.8005821478)
-EARTH_RADIUS_KM = _const("EARTH_RADIUS", 6378.1366)
-EARTH_MU_KM3_S2 = _const("EARTH_MU",     398600.4415)
 
 
 # Orientation provider type:

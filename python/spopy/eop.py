@@ -19,11 +19,13 @@ leap_seconds), same linear interpolation across daily-stepped records.
 Used by `spopy.earth_orientation.icrf_to_itrs` to assemble the IAU
 2006/2000A_R06 rotation matrix at the GUI's interactive query speed,
 without spawning subprocesses or loading the C engine as a shared
-library. Adding a new leap second is one entry in `_LEAP_TABLE`.
+library. Adding a new leap second is one entry in `LEAP_TABLE_MJD`
+(the single Python-side copy; spody_gui.time_conv derives its
+calendar-date boundaries from it).
 
 The values returned by `MappedEOP.interpolate` are bit-equivalent to
 the C engine's `spody_interpolate_eop` (cross-checked at MJD 60324
-against `spody-core/tvb/tests/test_eop_load.c`).
+against the C engine's EOP loader).
 """
 from __future__ import annotations
 
@@ -36,9 +38,12 @@ import numpy as np
 # Leap-second table: (MJD_UTC at which leap second is INTRODUCED,
 # cumulative TAI - UTC in seconds after that introduction).
 # Source: IERS Bulletin C history.
-# Mirrors spody-core's `_leap_table` in src/spody_eop.c.
+# THE single Python-side copy, mirroring spody-core's `leap_table`
+# in src/spody_time.c. When IERS announces a new leap second, update
+# that C table and this one; every other Python consumer (including
+# spody_gui.time_conv) derives from here.
 # ----------------------------------------------------------------------
-_LEAP_TABLE: tuple[tuple[float, float], ...] = (
+LEAP_TABLE_MJD: tuple[tuple[float, float], ...] = (
     (41317.0, 10.0),  # 1972-01-01 -- first IERS-defined entry
     (41499.0, 11.0),  # 1972-07-01
     (41683.0, 12.0),  # 1973-01-01
@@ -69,8 +74,8 @@ _LEAP_TABLE: tuple[tuple[float, float], ...] = (
     (57754.0, 37.0),  # 2017-01-01 -- current value as of 2026
 )
 
-_LEAP_MJDS = np.array([row[0] for row in _LEAP_TABLE])
-_LEAP_TAI_MINUS_UTC = np.array([row[1] for row in _LEAP_TABLE])
+_LEAP_MJDS = np.array([row[0] for row in LEAP_TABLE_MJD])
+_LEAP_TAI_MINUS_UTC = np.array([row[1] for row in LEAP_TABLE_MJD])
 
 # Constants. SECONDS_PER_DAY and JD_J2000 mirror spody-core's
 # `SECONDSxDAY` and `JD_J2000` in spody_const.h.

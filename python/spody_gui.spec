@@ -72,6 +72,11 @@ datas = [
     ("../examples/debris_demo/README.md",    "examples/debris_demo"),
     ("../examples/lro_6day/input.toml",      "examples/lro_6day"),
     ("../examples/lro_6day/README.md",       "examples/lro_6day"),
+    # spody-core's constants header: spody_gui/constants.py parses it
+    # at runtime (sys._MEIPASS/spody-core/spody_const.h) so bundled
+    # installs read the exact values the engine was built from instead
+    # of the Python fallback copies.
+    ("../external/spody-core/include/spody_const.h", "spody-core"),
 ]
 
 # User manual PDF -- shipped under docs/ next to spody-gui.exe so

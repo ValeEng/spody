@@ -40,10 +40,9 @@ Reference: NAIF SPICE Toolkit (see project memo
 the published ones in naif0012.tls, derived by NAIF from
 high-precision planetary ephemerides.
 
-The leap-seconds table below is the modern post-1972 IERS Bulletin C
-list (37 leap seconds as of 2017-01-01, none scheduled at the time of
-writing). Updating is a one-line edit when a new leap second is
-announced.
+The leap-second boundaries are derived from the single Python-side
+table in `spopy.eop.LEAP_TABLE_MJD` (itself a mirror of spody-core's
+src/spody_time.c); a new leap second is one edit there, none here.
 """
 from __future__ import annotations
 
@@ -51,40 +50,17 @@ import datetime
 import math
 import re
 
+from spopy.eop import LEAP_TABLE_MJD
 
-# (year, month, day, total_TAI-UTC_after_this_UTC_midnight). Source:
-# NIST leap-seconds list, also bundled inside the NAIF LSK kernel
-# (naif0012.tls). Pre-1972 dates use UT1/UTC steered offsets that are
-# not relevant here; spody is built for post-1972 epochs.
-_LEAP_SECONDS: tuple[tuple[int, int, int, int], ...] = (
-    (1972, 1, 1, 10),
-    (1972, 7, 1, 11),
-    (1973, 1, 1, 12),
-    (1974, 1, 1, 13),
-    (1975, 1, 1, 14),
-    (1976, 1, 1, 15),
-    (1977, 1, 1, 16),
-    (1978, 1, 1, 17),
-    (1979, 1, 1, 18),
-    (1980, 1, 1, 19),
-    (1981, 7, 1, 20),
-    (1982, 7, 1, 21),
-    (1983, 7, 1, 22),
-    (1985, 7, 1, 23),
-    (1988, 1, 1, 24),
-    (1990, 1, 1, 25),
-    (1991, 1, 1, 26),
-    (1992, 7, 1, 27),
-    (1993, 7, 1, 28),
-    (1994, 7, 1, 29),
-    (1996, 1, 1, 30),
-    (1997, 7, 1, 31),
-    (1999, 1, 1, 32),
-    (2006, 1, 1, 33),
-    (2009, 1, 1, 34),
-    (2012, 7, 1, 35),
-    (2015, 7, 1, 36),
-    (2017, 1, 1, 37),
+
+# UTC calendar boundaries of the leap-second steps, derived from the
+# canonical MJD table. MJD 0 = 1858-11-17 00:00 UTC; the entries are
+# exact midnights, so the timedelta conversion is lossless.
+_MJD_EPOCH_UTC = datetime.datetime(
+    1858, 11, 17, tzinfo=datetime.timezone.utc)
+_LEAP_SECONDS: tuple[tuple[datetime.datetime, int], ...] = tuple(
+    (_MJD_EPOCH_UTC + datetime.timedelta(days=mjd), int(tai_utc))
+    for mjd, tai_utc in LEAP_TABLE_MJD
 )
 
 # TAI - UTC at J2000. Used as the reference offset so that delta_leaps
@@ -109,9 +85,7 @@ _SEC_PER_DAY = 86400.0
 def _leap_seconds_at(dt_utc: datetime.datetime) -> int:
     """TAI - UTC in effect at the given UTC datetime."""
     n = 10  # pre-1972 floor; only matters for very old epochs
-    for y, m, d, total in _LEAP_SECONDS:
-        boundary = datetime.datetime(y, m, d, 0, 0, 0,
-                                     tzinfo=datetime.timezone.utc)
+    for boundary, total in _LEAP_SECONDS:
         if dt_utc >= boundary:
             n = total
         else:
