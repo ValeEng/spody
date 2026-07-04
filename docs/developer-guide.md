@@ -221,6 +221,20 @@ atmosphere callback declared in `spody_atmosphere.h`.
 - `simulation.et_start_s` is TDB seconds past J2000; the GUI's UTC
   field converts through the SPICE `deltet` algorithm in
   `time_conv.py` — don't introduce a second conversion path.
+- **Two ET→UTC chains coexist by design, with different fidelity.**
+  The form's `time_conv` includes the TDB−TT periodic term (SPICE
+  `deltet`, amplitude ±1.657 ms) so `et_start_s` is true TDB. The
+  engine's `spody_et_to_mjd_utc` (and its bit-identical mirror
+  `spopy.eop`) *neglects* TDB−TT when deriving UTC for EOP lookup
+  and the ERA argument. Consequence: up to ±1.657 ms of UT1 error →
+  ~25 mas of ERA → ~0.8 m at LEO radius, ~3.2 m at GPS radius in the
+  Earth-fixed rotation, worst-case phase. This cancels in the
+  current validations (propagator and reference converters share the
+  same rotation chain) and sits below the broadcast-ephemeris floor,
+  but it is NOT below cm-level SP3 truth: porting `deltet` into
+  `spody_time.c` is the known fix if that precision class is ever
+  targeted — do it as its own validated physics change, never inside
+  a refactor.
 - Events: recurring kinds (eclipse, altitude crossing) rely on dense
   output; only the RK45 integrator provides it. If another integrator
   is ever exposed, `spody_event_check` must grow a real fallback (it
