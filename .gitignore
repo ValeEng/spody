@@ -128,3 +128,7 @@ tools/
 # Local-only end-to-end test workspace (analogous to spody-core tvb/):
 # personal correctness/accuracy material, intentionally unversioned.
 tests/
+
+# Claude operating notes + workspace: local-only (machine-specific paths).
+CLAUDE.md
+.claude/
