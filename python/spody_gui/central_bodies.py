@@ -225,6 +225,6 @@ def default_central_body() -> CentralBodySpec:
 
 def known_central_body_names() -> tuple[str, ...]:
     """Names of all registered central bodies, in declaration order.
-    Used by the TOML form (toml_form.CENTRAL_BODIES) and any other
+    Used by the TOML form (form.catalog.CENTRAL_BODIES) and any other
     place that needs to enumerate supported bodies for the user."""
     return tuple(_KNOWN_BODIES.keys())
