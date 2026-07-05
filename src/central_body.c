@@ -21,6 +21,8 @@
 #include "spody_const.h"             /* MOON_MU, MOON_RADIUS, EARTH_MU, EARTH_RADIUS */
 #include "spody_earth_orientation.h" /* spody_bf_rotation_earth */
 
+#include "atmosphere_nrlmsise00.h"   /* Earth density model instance */
+
 /* Static registry of supported central bodies. Order is irrelevant --
  * lookups are linear over a single-digit list.
  *
@@ -37,6 +39,8 @@ static const SpodyCentralBodySpec _registry[] = {
         .mu          = MOON_MU,
         .radius_km   = MOON_RADIUS,
         .bf_rotation = spody_bf_rotation_moon,
+        .spin_rad_s  = 0.0,   /* no atmosphere -> drag stays inert */
+        .atmosphere  = NULL,
     },
     {
         .body        = SPODY_CENTRAL_EARTH,
@@ -45,6 +49,8 @@ static const SpodyCentralBodySpec _registry[] = {
         .mu          = EARTH_MU,
         .radius_km   = EARTH_RADIUS,
         .bf_rotation = spody_bf_rotation_earth,
+        .spin_rad_s  = EARTH_ROT_RATE_RADPS,
+        .atmosphere  = &spody_atmosphere_nrlmsise00,
     },
 };
 static const size_t _registry_n = sizeof _registry / sizeof _registry[0];

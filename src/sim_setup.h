@@ -79,11 +79,16 @@ typedef struct {
      * be safely shared across worker threads. */
     MappedEOPData       eop_data;
     MappedIAU2006Data   iau2006_data;
+    /* Drag-only: CelesTrak space weather table (daily F10.7/Ap rows).
+     * Parsed once when force_model.drag = true; read-only afterwards,
+     * safe to share across worker threads. */
+    MappedSpaceWeatherData sw_data;
 
     unsigned init_med : 1;
     unsigned init_hgd : 1;
     unsigned init_eop : 1;
     unsigned init_iau : 1;
+    unsigned init_sw  : 1;
 } SimulationShared;
 
 /* ------------------------------------------------------------------
@@ -109,6 +114,9 @@ typedef struct {
      * state later. Both reference the read-only Shared data above. */
     MappedEOP          eop;
     MappedIAU2006      iau2006;
+    /* Drag-only per-thread space weather handle (carries a last-hit
+     * lookup cache, so one per worker like MappedEOP). */
+    MappedSpaceWeather sw;
     Spacecraft         sat;
     ForceModelContext  ctx;
     IntegratorAllData  integ;
@@ -124,6 +132,7 @@ typedef struct {
     unsigned init_hg      : 1;
     unsigned init_eop_w   : 1;
     unsigned init_iau_w   : 1;
+    unsigned init_sw_w    : 1;
     unsigned init_integ   : 1;
 } SimulationWorker;
 

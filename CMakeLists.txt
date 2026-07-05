@@ -59,6 +59,7 @@ add_executable(spody
     src/main.c
     src/app_diagnostics.c
     src/app_io.c
+    src/atmosphere_nrlmsise00.c
     src/central_body.c
     src/dynamics_model.c
     src/toml_input.c

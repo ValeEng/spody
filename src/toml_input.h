@@ -208,6 +208,12 @@ typedef struct {
     int    has_srp_block;        /* 1 if [spacecraft.srp] is present, always 1 in debris mode */
     double srp_area_m2;          /* valid iff has_srp_block; A/m numerically when debris_mode */
     double srp_cr;               /* valid iff has_srp_block              */
+    /* [spacecraft.drag] (or debris.am_drag/Cd in debris mode): same
+     * area-or-A/m normalisation as SRP -- drag_area_m2 numerically
+     * equals A/m when debris_mode. */
+    int    has_drag_block;       /* 1 if [spacecraft.drag] (or debris drag keys) present */
+    double drag_area_m2;         /* valid iff has_drag_block; A/m numerically when debris_mode */
+    double drag_cd;              /* valid iff has_drag_block             */
 
     /* [initial_state]
      *
@@ -249,14 +255,23 @@ typedef struct {
     int              n_third_bodies;
     char             third_body_names[SPODY_MAX_THIRD_BODIES][SPODY_MAX_BODY_NAME];
     int              enable_srp;
+    /* drag: OPTIONAL key, default false, so pre-drag TOMLs parse
+     * unchanged. Requires a central body with a registered atmosphere
+     * model (today: Earth / NRLMSISE-00), a [spacecraft.drag] block
+     * (or debris drag keys) and a space_weather_file -- all enforced
+     * by spody_validate_input. */
+    int              enable_drag;
     /* Earth-only assets. Required (and validated to exist) when
      * central_body == Earth, ignored otherwise. The GUI writes these
      * fields ONLY for Earth; for Moon-or-other they stay empty strings.
      *   eop_file    : IERS finals2000A.all (daily xp, yp, dUT1, dX, dY)
      *   iau2006_dir : directory containing IAU 2006 tab5.2{a,b,d}.txt
-     *                 (X, Y, s+XY/2 series) */
+     *                 (X, Y, s+XY/2 series)
+     *   space_weather_file : CelesTrak combined space weather CSV
+     *                 (SW-All.csv); required only when drag = true */
     char             eop_file[SPODY_MAX_PATH];         /* resolved path, "" if none */
     char             iau2006_dir[SPODY_MAX_PATH];      /* resolved dir,  "" if none */
+    char             space_weather_file[SPODY_MAX_PATH]; /* resolved path, "" if none */
 
     /* [ephemeris] */
     char ephemeris_file[SPODY_MAX_PATH];               /* resolved path */

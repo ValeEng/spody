@@ -22,6 +22,7 @@ bit-identical (kept in lockstep -- change one, change both):
     tai_minus_utc    <->  spody_tai_minus_utc
     tdb_minus_tt     <->  spody_tdb_minus_tt  (SPICE deltet)
     et_to_mjd_utc    <->  spody_et_to_mjd_utc
+    mjd_to_doy       <->  spody_mjd_to_doy
 
 spody.exe consumes ET = TDB seconds past J2000. The conversion
 chain, each step exact to the noted precision:
@@ -148,6 +149,36 @@ def tdb_minus_tt(et_sec: float) -> float:
     m = _DELTET_M0 + _DELTET_M1 * et_sec
     e = m + _DELTET_EB * math.sin(m)
     return _DELTET_K * math.sin(e)
+
+
+_CUM_DAYS = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+
+
+def mjd_to_doy(mjd: float) -> tuple[int, int, float]:
+    """MJD -> (Gregorian civil year, day of year 1..366, seconds of
+    day). Scale-agnostic: outputs are in whatever time scale the MJD
+    is in. Valid for any MJD >= 0 (post-1858). Mirrors spody-core's
+    `spody_mjd_to_doy` (src/spody_time.c) bit-for-bit: the calendar
+    part is the all-integer Fliegel-Van Flandern inverse, where C
+    truncation and Python floor division agree because every
+    intermediate is positive."""
+    day = math.floor(mjd)
+    sec_of_day = (mjd - day) * SECONDS_PER_DAY
+
+    l = int(day) + 2400001 + 68569
+    n = (4 * l) // 146097
+    l = l - (146097 * n + 3) // 4
+    i = (4000 * (l + 1)) // 1461001
+    l = l - (1461 * i) // 4 + 31
+    j = (80 * l) // 2447
+    d = l - (2447 * j) // 80
+    l = j // 11
+    m = j + 2 - 12 * l
+    y = 100 * (n - 49) + i + l
+
+    leap = (y % 4 == 0 and y % 100 != 0) or y % 400 == 0
+    doy = _CUM_DAYS[m - 1] + d + (1 if (m > 2 and leap) else 0)
+    return int(y), int(doy), sec_of_day
 
 
 def et_to_mjd_utc(et: float) -> float:

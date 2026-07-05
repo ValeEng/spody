@@ -60,6 +60,16 @@ typedef struct {
     spody_bf_rotation_fn bf_rotation; /* ICRF<->body-fixed rotation
                                        * provider; NULL when the body
                                        * has no model registered yet */
+    double               spin_rad_s;  /* sidereal rotation rate about the
+                                       * body-fixed +Z axis; consumed by
+                                       * the drag force (omega x r air
+                                       * co-rotation). 0.0 for bodies
+                                       * without an atmosphere model --
+                                       * drag stays inert there. */
+    SpodyAtmosphere     *atmosphere;  /* density model registered for
+                                       * this body (Earth: NRLMSISE-00);
+                                       * NULL = no atmosphere, drag is
+                                       * rejected at validation */
 } SpodyCentralBodySpec;
 
 /* Look up the full spec for a central-body tag. Returns NULL only for

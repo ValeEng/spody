@@ -459,6 +459,38 @@ static int parse_spacecraft(toml_table_t *root, InputConfig *cfg,
         cfg->srp_area_m2   = 0.0;
         cfg->srp_cr        = 0.0;
     }
+
+    /* [spacecraft.drag]: same area-or-A/m normalisation as SRP (the
+     * drag force only ever consumes Cd * A/m). */
+    toml_table_t *drag = toml_table_in(t, "drag");
+    if (drag) {
+        cfg->has_drag_block = 1;
+        int has_area = toml_double_in(drag, "area_m2").ok ||
+                       toml_int_in   (drag, "area_m2").ok;
+        int has_am   = toml_double_in(drag, "am_drag").ok ||
+                       toml_int_in   (drag, "am_drag").ok;
+        if (has_area == has_am) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "[spacecraft.drag] needs exactly one of 'area_m2' or "
+                    "'am_drag' (got %s)", has_area ? "both" : "neither");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (has_am) {
+            double am;
+            if ((rc = req_double(drag, "spacecraft.drag", "am_drag", &am, err)))
+                return rc;
+            cfg->drag_area_m2 = am * cfg->mass_kg;
+        } else {
+            if ((rc = req_double(drag, "spacecraft.drag", "area_m2",
+                                 &cfg->drag_area_m2, err))) return rc;
+        }
+        if ((rc = req_double(drag, "spacecraft.drag", "Cd",
+                             &cfg->drag_cd, err))) return rc;
+    } else {
+        cfg->has_drag_block = 0;
+        cfg->drag_area_m2   = 0.0;
+        cfg->drag_cd        = 0.0;
+    }
     return SPODY_OK;
 }
 
@@ -484,6 +516,30 @@ static int parse_debris(toml_table_t *root, InputConfig *cfg, SpodyError *err) {
     cfg->mass_kg       = 1.0;     /* fictitious; only A/m matters */
     cfg->has_srp_block = 1;       /* debris implies SRP is the point */
     cfg->srp_area_m2   = am;      /* am * mass = am * 1 = am */
+
+    /* Optional drag pair (both-or-neither): debris.am_drag + debris.Cd.
+     * Same mass=1 trick, so drag_area_m2 numerically equals A/m. */
+    {
+        int has_am = toml_double_in(t, "am_drag").ok ||
+                     toml_int_in   (t, "am_drag").ok;
+        int has_cd = toml_double_in(t, "Cd").ok ||
+                     toml_int_in   (t, "Cd").ok;
+        if (has_am != has_cd) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "[debris] drag needs both 'am_drag' and 'Cd' "
+                    "(got only %s)", has_am ? "am_drag" : "Cd");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (has_am) {
+            double am_drag;
+            if ((rc = req_double(t, "debris", "am_drag", &am_drag, err)))
+                return rc;
+            if ((rc = req_double(t, "debris", "Cd", &cfg->drag_cd, err)))
+                return rc;
+            cfg->has_drag_block = 1;
+            cfg->drag_area_m2   = am_drag;
+        }
+    }
     return SPODY_OK;
 }
 
@@ -729,6 +785,13 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
     if ((rc = req_bool(t, "force_model", "srp",
                        &cfg->enable_srp, err))) return rc;
 
+    /* drag: optional, default false -- pre-drag TOMLs parse unchanged. */
+    cfg->enable_drag = 0;
+    {
+        toml_datum_t d = toml_bool_in(t, "drag");
+        if (d.ok) cfg->enable_drag = d.u.b ? 1 : 0;
+    }
+
     /* Earth-only assets. Both are OPTIONAL at the schema level so
      * Moon-centred TOMLs (the majority today) parse unchanged; the
      * required-when-Earth check lives in spody_validate_input. The
@@ -751,6 +814,17 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
         if (present) {
             resolve_path(toml_dir, rel,
                          cfg->iau2006_dir, sizeof cfg->iau2006_dir);
+        }
+    }
+    {
+        char rel[SPODY_MAX_PATH] = {0};
+        int  present = 0;
+        if ((rc = opt_string(t, "space_weather_file", rel, sizeof rel,
+                             &present))) return rc;
+        if (present) {
+            resolve_path(toml_dir, rel,
+                         cfg->space_weather_file,
+                         sizeof cfg->space_weather_file);
         }
     }
     return SPODY_OK;
@@ -1274,6 +1348,10 @@ static const SpodyFieldDesc FIELD_TABLE[] = {
       offsetof(InputConfig, srp_area_m2),        0, SPODY_VAL_POSITIVE },
     { "spacecraft.srp.Cr",               SPODY_FIELD_DOUBLE,
       offsetof(InputConfig, srp_cr),             0, SPODY_VAL_NON_NEG  },
+    { "spacecraft.drag.area_m2",         SPODY_FIELD_DOUBLE,
+      offsetof(InputConfig, drag_area_m2),       0, SPODY_VAL_POSITIVE },
+    { "spacecraft.drag.Cd",              SPODY_FIELD_DOUBLE,
+      offsetof(InputConfig, drag_cd),            0, SPODY_VAL_POSITIVE },
 
     /* debris -- am_srp/Cr alias srp_area_m2/srp_cr (debris mode forces
      * mass=1 so srp_area_m2 numerically equals A/m). Mutually exclusive
@@ -1282,6 +1360,10 @@ static const SpodyFieldDesc FIELD_TABLE[] = {
       offsetof(InputConfig, srp_area_m2),        0, SPODY_VAL_POSITIVE },
     { "debris.Cr",                       SPODY_FIELD_DOUBLE,
       offsetof(InputConfig, srp_cr),             0, SPODY_VAL_NON_NEG  },
+    { "debris.am_drag",                  SPODY_FIELD_DOUBLE,
+      offsetof(InputConfig, drag_area_m2),       0, SPODY_VAL_POSITIVE },
+    { "debris.Cd",                       SPODY_FIELD_DOUBLE,
+      offsetof(InputConfig, drag_cd),            0, SPODY_VAL_POSITIVE },
 
     /* initial_state (vec3 elements) -- |r|, |v| cross-field, not per-cell */
     { "initial_state.position_km[0]",    SPODY_FIELD_VEC3_AT,
@@ -1300,6 +1382,8 @@ static const SpodyFieldDesc FIELD_TABLE[] = {
     /* force_model -- toggles only; harmonics_* and central_body are shared. */
     { "force_model.srp",                 SPODY_FIELD_INT,
       offsetof(InputConfig, enable_srp),         0, SPODY_VAL_BOOL     },
+    { "force_model.drag",                SPODY_FIELD_INT,
+      offsetof(InputConfig, enable_drag),        0, SPODY_VAL_BOOL     },
 
     /* integrator (tolerances and step bounds may vary per case) */
     { "integrator.rel_tol",              SPODY_FIELD_DOUBLE,
@@ -1846,6 +1930,35 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
             return SPODY_ERR_BAD_VALUE;
         }
     }
+    /* Drag parameterisation: needed in both object modes when the
+     * force is on (debris drag keys are optional, so the check cannot
+     * be folded into the spacecraft-only block above). */
+    if (cfg->enable_drag && !cfg->has_drag_block) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                cfg->debris_mode
+                    ? "force_model.drag = true but [debris] lacks the "
+                      "'am_drag' / 'Cd' pair"
+                    : "force_model.drag = true but [spacecraft.drag] "
+                      "is missing");
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (cfg->has_drag_block) {
+        if (cfg->drag_area_m2 <= 0.0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s must be positive (got %.6g)",
+                    cfg->debris_mode ? "debris.am_drag"
+                                     : "spacecraft.drag.area_m2",
+                    cfg->drag_area_m2);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->drag_cd <= 0.0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s must be positive (got %.6g)",
+                    cfg->debris_mode ? "debris.Cd" : "spacecraft.drag.Cd",
+                    cfg->drag_cd);
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
 
     /* Initial state -- a degenerate IC defeats validation entirely. */
     double rmag = sqrt(cfg->position_km[0]*cfg->position_km[0] +
@@ -1994,6 +2107,33 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
             spody_error_set(err, SPODY_ERR_FILE_NOT_FOUND,
                     "iau2006_dir does not contain tab5.2a.txt: %s",
                     cfg->iau2006_dir);
+            return SPODY_ERR_FILE_NOT_FOUND;
+        }
+    }
+
+    /* Drag needs an atmosphere model registered on the central body
+     * (registry-driven: adding Mars+MCD later makes this check pass
+     * without touching it) plus the space weather table. */
+    if (cfg->enable_drag) {
+        const SpodyCentralBodySpec *cb =
+                spody_central_body_get(cfg->central_body);
+        if (!cb || !cb->atmosphere) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.drag = true but central body '%s' has no "
+                    "atmosphere model registered (today: 'Earth' / "
+                    "NRLMSISE-00)", cb ? cb->name : "?");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->space_weather_file[0] == '\0') {
+            spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                    "force_model.space_weather_file is required when "
+                    "drag = true (CelesTrak SW-All.csv)");
+            return SPODY_ERR_MISSING_KEY;
+        }
+        if (!file_exists(cfg->space_weather_file)) {
+            spody_error_set(err, SPODY_ERR_FILE_NOT_FOUND,
+                    "space_weather_file not found: %s",
+                    cfg->space_weather_file);
             return SPODY_ERR_FILE_NOT_FOUND;
         }
     }

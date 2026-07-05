@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "spody_const.h"
+#include "spody_time.h"   /* run-window vs space-weather-horizon check */
 
 /* ==================================================================
  * Shared (read-only, file-mapped) resources
@@ -102,6 +103,45 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
         shared->init_iau = 1;
     }
 
+    /* Drag-only: space weather table + run-window horizon check. The
+     * density callback fails soft (zero drag) outside the table, so
+     * the hard refusal has to happen here, where we can still tell
+     * the user to update the file. The NRLMSISE Ap history needs 3
+     * days of records BEFORE the epoch too. Batch cases that override
+     * et_start_s / duration_s beyond the base window are not
+     * re-checked -- the base TOML window is the contract. */
+    if (cfg->enable_drag) {
+        if (spody_setup_MappedSpaceWeatherData(&shared->sw_data,
+                                               cfg->space_weather_file) != 0) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "spody_setup_MappedSpaceWeatherData failed for '%s'",
+                    cfg->space_weather_file);
+            goto fail;
+        }
+        shared->init_sw = 1;
+
+        {
+            double mjd_start = spody_et_to_mjd_utc(cfg->et_start_s);
+            double mjd_end   = spody_et_to_mjd_utc(cfg->et_start_s +
+                                                   cfg->duration_s);
+            double first_ok  = shared->sw_data.mjd_first + 3.0;
+            double last_ok   = shared->sw_data.mjd_last_predicted + 1.0;
+            if (mjd_start < first_ok || mjd_end >= last_ok) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "run window (UTC MJD %.2f .. %.2f) is outside the "
+                        "space weather table coverage (usable: %.2f .. %.2f; "
+                        "observed data end at %.2f, the tail is CelesTrak "
+                        "prediction). Update '%s' from "
+                        "https://celestrak.org/SpaceData/SW-All.csv or "
+                        "shorten the run.",
+                        mjd_start, mjd_end, first_ok, last_ok,
+                        shared->sw_data.mjd_last_observed,
+                        cfg->space_weather_file);
+                goto fail;
+            }
+        }
+    }
+
     return SPODY_OK;
 
 fail:
@@ -111,6 +151,7 @@ fail:
 
 void spody_free_shared(SimulationShared *shared) {
     if (!shared) return;
+    if (shared->init_sw)  { spody_free_MappedSpaceWeatherData(&shared->sw_data); shared->init_sw = 0; }
     if (shared->init_iau) { spody_free_MappedIAU2006Data(&shared->iau2006_data); shared->init_iau = 0; }
     if (shared->init_eop) { spody_free_MappedEOPData     (&shared->eop_data);    shared->init_eop = 0; }
     if (shared->init_hgd) { spody_free_HarmonicGravityData(&shared->hgd); shared->init_hgd = 0; }
@@ -201,11 +242,20 @@ int spody_build_worker(const InputConfig *cfg,
         spody_setup_MappedIAU2006(&w->iau2006, &shared->iau2006_data);
         w->init_iau_w = 1;
     }
+    if (shared->init_sw) {
+        spody_setup_MappedSpaceWeather(&w->sw, &shared->sw_data);
+        w->init_sw_w = 1;
+    }
 
-    /* Spacecraft. Drag is disabled in v0 (placeholder in spody-core). */
+    /* Spacecraft. */
     w->sat.mass      = cfg->mass_kg;
-    w->sat.area_drag = 0.0;
-    w->sat.Cd        = 0.0;
+    if (cfg->has_drag_block) {
+        w->sat.area_drag = cfg->drag_area_m2;
+        w->sat.Cd        = cfg->drag_cd;
+    } else {
+        w->sat.area_drag = 0.0;
+        w->sat.Cd        = 0.0;
+    }
     if (cfg->has_srp_block) {
         w->sat.area_srp = cfg->srp_area_m2;
         w->sat.Cr       = cfg->srp_cr;
@@ -274,7 +324,14 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.srp_occulter_naif   = body->naif;
     w->ctx.srp_occulter_radius = body->radius_km;
     w->ctx.sun_radius          = SUN_RADIUS;
-    w->ctx.enable_drag         = 0;
+    /* Drag plumbing comes from the central-body registry: density
+     * model + spin rate are body properties, the space weather handle
+     * is per-worker. All three stay inert (NULL / 0) when drag is off
+     * or the body has no atmosphere -- spody_force_drag checks. */
+    w->ctx.enable_drag         = cfg->enable_drag;
+    w->ctx.atmosphere          = body->atmosphere;
+    w->ctx.space_weather       = w->init_sw_w ? &w->sw : NULL;
+    w->ctx.body_spin_rad_s     = body->spin_rad_s;
     w->ctx.et0                 = cfg->et_start_s;
 
     /* Integrator. Map cfg options onto IntegratorOptions and bind the
@@ -353,6 +410,7 @@ void spody_free_worker(SimulationWorker *w) {
     free(w->third_mu);   w->third_mu   = NULL;
     w->n_third = 0;
     if (w->init_iau_w) { spody_free_MappedIAU2006(&w->iau2006); w->init_iau_w = 0; }
+    if (w->init_sw_w)  { spody_free_MappedSpaceWeather(&w->sw); w->init_sw_w  = 0; }
     if (w->init_eop_w) { spody_free_MappedEOP(&w->eop);         w->init_eop_w = 0; }
     if (w->init_hg)    { spody_free_HarmonicGravity(&w->hg);    w->init_hg    = 0; }
     if (w->init_eph)   { spody_free_MappedEphemeris(&w->eph);   w->init_eph   = 0; }
