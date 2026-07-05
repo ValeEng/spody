@@ -1328,7 +1328,7 @@ class AnalysisPanel(QWidget):
             self._vtk.set_overlay_utc_text("")
             return
         try:
-            from .time_conv import et_to_utc, format_utc_iso
+            from spopy.time import et_to_utc, format_utc_iso
             dt = et_to_utc(float(info["et_start_s"]) + float(t_s))
             # Three fractional digits = millisecond resolution: enough
             # for any orbital regime spody propagates, and short

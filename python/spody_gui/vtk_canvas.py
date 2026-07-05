@@ -473,7 +473,7 @@ class VtkCanvas(QWidget):
         empty string hides the overlay. Caller is responsible for
         formatting (the canvas knows nothing about ET / leap seconds);
         AnalysisPanel converts `et_start + t_anim_s` via
-        `spody_gui.time_conv.et_to_utc` and pushes the result here on
+        `spopy.time.et_to_utc` and pushes the result here on
         every animation tick. The actor lives inside the VTK scene
         (top-layer renderer) so it composes through the same pipeline
         as the rest of the scene -- no native-widget overlay glitches."""

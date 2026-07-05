@@ -13,15 +13,14 @@
 
 Mirrors `spody_eop.c` in spody-core: same fixed-width column layout
 (USNO readme.finals2000A), same Bulletin-B-preferred selection, same
-ET -> UTC MJD time chain (TDB ~= TT, TAI = TT - 32.184 s, UTC = TAI -
-leap_seconds), same linear interpolation across daily-stepped records.
+ET -> UTC MJD time chain (via `spopy.time.et_to_mjd_utc`, the twin of
+spody-core's spody_time.c), same linear interpolation across
+daily-stepped records.
 
 Used by `spopy.earth_orientation.icrf_to_itrs` to assemble the IAU
 2006/2000A_R06 rotation matrix at the GUI's interactive query speed,
 without spawning subprocesses or loading the C engine as a shared
-library. Adding a new leap second is one entry in `LEAP_TABLE_MJD`
-(the single Python-side copy; spody_gui.time_conv derives its
-calendar-date boundaries from it).
+library.
 
 The values returned by `MappedEOP.interpolate` are bit-equivalent to
 the C engine's `spody_interpolate_eop` (cross-checked at MJD 60324
@@ -33,83 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-
-# ----------------------------------------------------------------------
-# Leap-second table: (MJD_UTC at which leap second is INTRODUCED,
-# cumulative TAI - UTC in seconds after that introduction).
-# Source: IERS Bulletin C history.
-# THE single Python-side copy, mirroring spody-core's `leap_table`
-# in src/spody_time.c. When IERS announces a new leap second, update
-# that C table and this one; every other Python consumer (including
-# spody_gui.time_conv) derives from here.
-# ----------------------------------------------------------------------
-LEAP_TABLE_MJD: tuple[tuple[float, float], ...] = (
-    (41317.0, 10.0),  # 1972-01-01 -- first IERS-defined entry
-    (41499.0, 11.0),  # 1972-07-01
-    (41683.0, 12.0),  # 1973-01-01
-    (42048.0, 13.0),  # 1974-01-01
-    (42413.0, 14.0),  # 1975-01-01
-    (42778.0, 15.0),  # 1976-01-01
-    (43144.0, 16.0),  # 1977-01-01
-    (43509.0, 17.0),  # 1978-01-01
-    (43874.0, 18.0),  # 1979-01-01
-    (44239.0, 19.0),  # 1980-01-01
-    (44786.0, 20.0),  # 1981-07-01
-    (45151.0, 21.0),  # 1982-07-01
-    (45516.0, 22.0),  # 1983-07-01
-    (46247.0, 23.0),  # 1985-07-01
-    (47161.0, 24.0),  # 1988-01-01
-    (47892.0, 25.0),  # 1990-01-01
-    (48257.0, 26.0),  # 1991-01-01
-    (48804.0, 27.0),  # 1992-07-01
-    (49169.0, 28.0),  # 1993-07-01
-    (49534.0, 29.0),  # 1994-07-01
-    (50083.0, 30.0),  # 1996-01-01
-    (50630.0, 31.0),  # 1997-07-01
-    (51179.0, 32.0),  # 1999-01-01
-    (53736.0, 33.0),  # 2006-01-01
-    (54832.0, 34.0),  # 2009-01-01
-    (56109.0, 35.0),  # 2012-07-01
-    (57204.0, 36.0),  # 2015-07-01
-    (57754.0, 37.0),  # 2017-01-01 -- current value as of 2026
-)
-
-_LEAP_MJDS = np.array([row[0] for row in LEAP_TABLE_MJD])
-_LEAP_TAI_MINUS_UTC = np.array([row[1] for row in LEAP_TABLE_MJD])
-
-# Constants. SECONDS_PER_DAY and JD_J2000 mirror spody-core's
-# `SECONDSxDAY` and `JD_J2000` in spody_const.h.
-_SECONDS_PER_DAY = 86400.0
-_JD_J2000_TT = 2451545.0
-_MJD_OFFSET = 2400000.5
-_TT_MINUS_TAI = 32.184
-
-
-def _tai_minus_utc(mjd_utc: float) -> float:
-    """TAI-UTC at the given UTC MJD. Step-function: piecewise constant
-    between consecutive leap-second insertions. Mirrors spody-core's
-    `_tai_minus_utc` (src/spody_eop.c)."""
-    if mjd_utc < _LEAP_MJDS[0]:
-        return float(_LEAP_TAI_MINUS_UTC[0])
-    # searchsorted(side='right') gives the index of the FIRST entry
-    # > mjd_utc; the leap value is the table entry just before that.
-    idx = int(np.searchsorted(_LEAP_MJDS, mjd_utc, side="right")) - 1
-    if idx < 0:
-        idx = 0
-    return float(_LEAP_TAI_MINUS_UTC[idx])
-
-
-def _et_to_mjd_utc(et: float) -> float:
-    """ET (TDB s past J2000) -> UTC MJD. Two-iteration fixed-point
-    around the leap-second step function, identical to spody-core's
-    `_et_to_mjd_utc`. TDB-TT is <2 ms over the EOP table's coverage
-    and folded into the daily interpolation noise."""
-    mjd_tt = (et / _SECONDS_PER_DAY) + (_JD_J2000_TT - _MJD_OFFSET)
-    mjd_tai = mjd_tt - _TT_MINUS_TAI / _SECONDS_PER_DAY
-    leap = _tai_minus_utc(mjd_tai)
-    mjd_utc = mjd_tai - leap / _SECONDS_PER_DAY
-    leap = _tai_minus_utc(mjd_utc)
-    return mjd_tai - leap / _SECONDS_PER_DAY
+from .time import et_to_mjd_utc
 
 
 # ----------------------------------------------------------------------
@@ -205,7 +128,7 @@ class MappedEOP:
         """Linear-interpolate (xp, yp, dut1, dX, dY) at ET. Returns
         None when `et` falls outside the table's coverage. Matches
         spody-core's `spody_interpolate_eop` numerically."""
-        mjd = _et_to_mjd_utc(et)
+        mjd = et_to_mjd_utc(et)
         if mjd < self.mjd_first or mjd > self.mjd_last_predicted:
             return None
         mjds = self._records[:, 0]

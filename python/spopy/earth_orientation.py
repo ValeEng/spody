@@ -35,7 +35,8 @@ import numpy as np
 
 import erfa
 
-from .eop import MappedEOP, _et_to_mjd_utc, _JD_J2000_TT, _MJD_OFFSET
+from .eop import MappedEOP
+from .time import JD_J2000_TT, MJD_OFFSET, et_to_mjd_utc
 
 
 _ARCSEC2RAD = math.pi / (180.0 * 3600.0)
@@ -61,16 +62,16 @@ def icrf_to_itrs(et: float, eop: MappedEOP) -> np.ndarray:
     # Split JD parts. The (jd1, jd2) split keeps microsecond precision
     # in jd2 over multi-decade epochs.
     tt_jd2 = et / 86400.0
-    mjd_utc = _et_to_mjd_utc(et)
+    mjd_utc = et_to_mjd_utc(et)
     mjd_ut1 = mjd_utc + dut1_sec / 86400.0
-    ut1_jd2 = mjd_ut1 + _MJD_OFFSET - _JD_J2000_TT
+    ut1_jd2 = mjd_ut1 + MJD_OFFSET - JD_J2000_TT
 
     xp_rad = xp_arcsec * _ARCSEC2RAD
     yp_rad = yp_arcsec * _ARCSEC2RAD
 
     R = erfa.c2t06a(
-        _JD_J2000_TT, tt_jd2,
-        _JD_J2000_TT, ut1_jd2,
+        JD_J2000_TT, tt_jd2,
+        JD_J2000_TT, ut1_jd2,
         xp_rad, yp_rad,
     )
     return np.asarray(R)

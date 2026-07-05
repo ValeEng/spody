@@ -113,8 +113,8 @@ class SectionBuildersMixin:
             └──────────┘   └──┘   └──────────────────────┘
 
         `→` fills the UTC cell from the current ET value; `←` does
-        the inverse. Conversion goes through `time_conv` which matches
-        SPICE `str2et` to ~1 ns (see module docstring)."""
+        the inverse. Conversion goes through `spopy.time` which
+        matches SPICE `str2et` to ~1 ns (see its module docstring)."""
         et_edit = QLineEdit()
         et_edit.textChanged.connect(self._touch)
         self._widgets[key] = et_edit
@@ -125,7 +125,9 @@ class SectionBuildersMixin:
         # UTC is NOT registered in self._widgets -- the TOML carries
         # only `et_start_s`; the UTC text is a transient display.
 
-        from .. import time_conv
+        from spopy.time import (
+            et_to_utc, format_utc_iso, parse_utc_iso, utc_to_et,
+        )
 
         def _et_to_utc() -> None:
             text = et_edit.text().strip()
@@ -140,7 +142,7 @@ class SectionBuildersMixin:
                     self, "ET → UTC",
                     f"et_start_s is not a number: {text!r}")
                 return
-            utc_edit.setText(time_conv.format_utc_iso(time_conv.et_to_utc(et)))
+            utc_edit.setText(format_utc_iso(et_to_utc(et)))
 
         def _utc_to_et() -> None:
             text = utc_edit.text().strip()
@@ -150,8 +152,8 @@ class SectionBuildersMixin:
                     "(e.g. 2009-09-18T12:00:00Z).")
                 return
             try:
-                dt = time_conv.parse_utc_iso(text)
-                et = time_conv.utc_to_et(dt)
+                dt = parse_utc_iso(text)
+                et = utc_to_et(dt)
             except ValueError as exc:
                 QMessageBox.warning(self, "UTC → ET", str(exc))
                 return

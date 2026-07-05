@@ -29,6 +29,11 @@ Today the package covers:
 - `earth_orientation.icrf_to_itrs`: ICRF -> ITRS rotation via SOFA
   (erfa.c2t06a). Mirrors `spody_bf_rotation_earth` in
   `src/spody_earth_orientation.c` at the GUI's mas precision floor.
+- `time`: calendar / time-scale conversions. The leap-second table,
+  the SPICE-deltet TDB-TT term and the ET -> UTC MJD chain mirror
+  `src/spody_time.c` bit-for-bit; on top sit the datetime-level
+  `utc_to_et` / `et_to_utc` and the ISO 8601 parse/format helpers
+  the GUI's ET <-> UTC fields use.
 
 Together these let the GUI compute, for any ET instant, the ICRF
 positions of Sun/Earth/Moon and the ICRF<->body-fixed rotation
@@ -38,8 +43,7 @@ IAU 2006/2000A + EOP).
 spopy is intentionally read-only and side-effect free: it never
 writes files, never spawns processes, and depends on numpy +
 erfa (SOFA bindings, ~3 MB) + stdlib. Validation is done by cross-
-checking values against a known SPICE / spody.exe run; the test
-scripts live under `tests/spopy/` when added.
+checking values against a known SPICE / spody.exe run.
 """
 from .ephemeris import (
     Ephemeris,
@@ -55,6 +59,9 @@ from .kepler import (
     keplerian_to_cartesian, cartesian_to_keplerian,
 )
 from .cr3bp import inertial_to_synodic, synodic_to_inertial
+from .time import (
+    utc_to_et, et_to_utc, parse_utc_iso, format_utc_iso,
+)
 
 __all__ = [
     "Ephemeris",
@@ -66,4 +73,5 @@ __all__ = [
     "kepler_solve_E", "mean_to_true_anom", "true_to_mean_anom",
     "keplerian_to_cartesian", "cartesian_to_keplerian",
     "inertial_to_synodic", "synodic_to_inertial",
+    "utc_to_et", "et_to_utc", "parse_utc_iso", "format_utc_iso",
 ]

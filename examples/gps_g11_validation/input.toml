@@ -49,7 +49,8 @@
 
 [simulation]
 name       = "gps_g11_2024_01_21_7d"
-et_start_s = 7.59067251183991e+08    # 2024-01-21 00:00:00 GPS = 00:00:51.184 TT
+et_start_s = 7.590672511844698e+08   # 2024-01-21 00:00:00 GPS = 00:00:51.184 TT
+                                     # + 0.479 ms deltet (TT -> TDB)
 duration_s = 6.039e+05               # 167.75 h (matches the 672-record SP3 reference)
 
 [spacecraft]
