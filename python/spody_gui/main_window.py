@@ -731,20 +731,25 @@ class MainWindow(QMainWindow):
         # On a successful run, stamp the engine's final status line
         # into the notes block of the per-run input.toml snapshot so
         # a user reopening the snapshot later sees how the run went
-        # alongside whatever they wrote before launching it.
-        if exit_code == 0:
-            self._stamp_run_notes(self._runner.last_line())
+        # alongside whatever they wrote before launching it. The
+        # snapshot path is resolved once here: the WIP branch below
+        # reuses it as its reload target.
+        snapshot = self._latest_run_snapshot() if exit_code == 0 else None
+        if snapshot is not None:
+            self._stamp_run_notes(self._runner.last_line(), snapshot)
 
-        # WIP cleanup + reload-of-origin. Only the WIP branch gets an
+        # WIP cleanup + snapshot reload. Only the WIP branch gets an
         # auto-reload: a normal-source run leaves the form pointed at
         # the source the user just edited (which is still on disk and
-        # current), so reloading would just be busywork. The combo
-        # refresh below picks up the new snapshot regardless so the
-        # user can open it from the dropdown when they want.
+        # current), so reloading would just be busywork. A WIP run
+        # instead deletes its draft, so the form is repointed at the
+        # per-run snapshot the engine just copied into `output/<ts>/`
+        # -- the only surviving on-disk record of what actually ran.
         ran_path = self._form.current_path()
         if exit_code == 0 and ran_path is not None and _is_wip_toml(ran_path):
-            # The WIP filename is `<origin_stem>.wip.toml`; the
-            # "starting file" is the source it was diverted from.
+            # The WIP filename is `<origin_stem>.wip.toml`; the origin
+            # is the source it was diverted from (fallback target when
+            # the snapshot can't be located).
             origin = ran_path.with_name(
                 ran_path.stem.removesuffix(".wip") + ".toml")
             # Detach the form FIRST so any open handle the editor was
@@ -754,10 +759,10 @@ class MainWindow(QMainWindow):
             self._form.set_current_path(None)
             self._form.clear_modified()
             self._refresh_title()
-            # Now unlink the WIP. The previous run already snapshotted
-            # its content into the new run folder, so the on-disk
-            # draft is no longer needed. Surface failures into the
-            # terminal so a silent file-lock doesn't get hidden.
+            # Now unlink the WIP. The run just snapshotted its content
+            # into the new run folder, so the on-disk draft is no
+            # longer needed. Surface failures into the terminal so a
+            # silent file-lock doesn't get hidden.
             try:
                 ran_path.unlink()
             except OSError as exc:
@@ -765,11 +770,14 @@ class MainWindow(QMainWindow):
                     f"[WIP cleanup: could not unlink {ran_path.name}: {exc}]")
             except FileNotFoundError:
                 pass
-            # Load the starting file when present. _open_path drives
+            # Load the run snapshot (fall back to the origin file when
+            # the snapshot can't be found). _open_path drives
             # _on_form_loaded_or_saved which refreshes the working
             # dir + combo + analysis -- so we can return early.
-            if origin.is_file():
-                self._open_path(origin)
+            target = (snapshot if snapshot is not None and snapshot.is_file()
+                      else origin)
+            if target.is_file():
+                self._open_path(target)
                 return
 
         # Refresh analysis + combo so the new run's outputs (the
@@ -792,31 +800,22 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_toml_combo()
 
-    def _stamp_run_notes(self, last_engine_line: str) -> None:
-        """Append the engine's final stdout line to the notes block
-        of the per-run `input.toml` snapshot.
+    def _latest_run_snapshot(self) -> Path | None:
+        """Path of the per-run `input.toml` snapshot of the most
+        recent run under the form's configured `output_dir`, or None
+        when it can't be located (missing output_dir, no run folders,
+        unparseable form, ...).
 
-        Modifies only the snapshot, NOT the source TOML the user is
-        editing -- the source must stay re-usable across many runs
-        without accumulating timing tails. The snapshot lives at
-        `<output_dir>/<UTC-ISO8601>/input.toml`; we locate the most
-        recently-modified subdir of the configured `output_dir` to
-        find it without parsing engine stdout.
-
-        Silent on every failure mode (missing output_dir, unreadable
-        snapshot, ...): the goal is a nice-to-have stamp, not a
-        guaranteed contract. The run already succeeded; we are not
-        going to flag a 'failed' status on a cosmetic post-step.
-        """
-        if not last_engine_line.strip():
-            return
+        The snapshot lives at `<output_dir>/<UTC-ISO8601>/`; we take
+        the most recently-modified subdir of `output_dir` so we don't
+        have to parse engine stdout for the folder name."""
         try:
             data = self._form.to_dict()
         except ValueError:
-            return
+            return None
         out_dir_raw = (data.get("output", {}) or {}).get("output_dir", "")
         if not isinstance(out_dir_raw, str) or not out_dir_raw:
-            return
+            return None
         # Resolve relative to the source TOML's directory, matching
         # what spody.exe does when reading the same key.
         out_dir = Path(out_dir_raw)
@@ -824,16 +823,16 @@ class MainWindow(QMainWindow):
         if not out_dir.is_absolute() and current is not None:
             out_dir = (current.parent / out_dir).resolve()
         if not out_dir.is_dir():
-            return
+            return None
         # Latest UTC-ISO8601 subfolder by mtime == the run we just
         # finished. Using mtime over name-parsing keeps us robust to
         # whatever timestamp pattern spody happens to use today.
         try:
             subdirs = [p for p in out_dir.iterdir() if p.is_dir()]
         except OSError:
-            return
+            return None
         if not subdirs:
-            return
+            return None
         snapshot_dir = max(subdirs, key=lambda p: p.stat().st_mtime)
         # Modern snapshots are named `<ts>_input.toml`; legacy ones
         # are plain `input.toml`. Try modern first, then fall back.
@@ -841,6 +840,24 @@ class MainWindow(QMainWindow):
         if not snapshot.is_file():
             snapshot = snapshot_dir / "input.toml"
         if not snapshot.is_file():
+            return None
+        return snapshot
+
+    def _stamp_run_notes(self, last_engine_line: str,
+                         snapshot: Path) -> None:
+        """Append the engine's final stdout line to the notes block
+        of the per-run `input.toml` snapshot.
+
+        Modifies only the snapshot, NOT the source TOML the user is
+        editing -- the source must stay re-usable across many runs
+        without accumulating timing tails.
+
+        Silent on every failure mode (unreadable snapshot, ...): the
+        goal is a nice-to-have stamp, not a guaranteed contract. The
+        run already succeeded; we are not going to flag a 'failed'
+        status on a cosmetic post-step.
+        """
+        if not last_engine_line.strip():
             return
         from .toml_io import read_toml, write_toml
         try:

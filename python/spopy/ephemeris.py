@@ -221,6 +221,23 @@ class Ephemeris:
                 f"the file looks truncated")
         self.num_records = payload_bytes // self.bytes_per_record
 
+        # Subset files (a partial DE440 conversion covering only the
+        # chunks the user downloaded) may carry the full-span epochs
+        # read from header.440 before the converter knew which chunks
+        # it would write. The records are the truth: reconcile so the
+        # record-index arithmetic below stays exact. Mirrors the same
+        # reconciliation in spody-core's ephemeris_map_file
+        # (record prefix: int32 x2, then start/end ET doubles).
+        if self.num_records:
+            rec0_start = struct.unpack_from("<d", b, _HEADER_BYTES + 8)[0]
+            last_off = (_HEADER_BYTES
+                        + (self.num_records - 1) * self.bytes_per_record)
+            last_end = struct.unpack_from("<d", b, last_off + 16)[0]
+            if (self.start_epoch_et != rec0_start
+                    or self.end_epoch_et != last_end):
+                self.start_epoch_et = rec0_start
+                self.end_epoch_et = last_end
+
     def _build_record_views(self) -> list[np.ndarray]:
         """One float64 numpy view per record over the in-memory bytes,
         sliced past the 24-byte record prefix. Indexed by record_id;

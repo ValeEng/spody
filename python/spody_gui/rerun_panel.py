@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Re-run selettivo: re-launch a batch on a subset of its previous cases.
+"""Selective re-run: re-launch a batch on a subset of its previous cases.
 
 Workflow:
 
@@ -176,7 +176,7 @@ def _annotate_with_events(rows: list[_CaseRow], events_path: Path) -> None:
     if "case_idx" not in arr.dtype.names:
         raise ValueError(
             f"{events_path}: per-run events file (no case_idx field) -- "
-            "re-run selettivo needs the aggregated batch events file "
+            "the selective re-run needs the aggregated batch events file "
             "(SPDYEVTB) written by `spody batch`")
 
     n = len(rows)
@@ -414,15 +414,24 @@ class RerunPanel(QWidget):
                 f"cases_file '{cases_raw}' from the snapshot could not "
                 f"be located. Tried snapshot dir and its two parents.")
 
-        # Aggregated events file lives next to the snapshot, named
-        # `<batch.name>_events.bin` (see main.c:batch_events_path).
-        events_name = f"{batch['name']}_events.bin"
-        events = folder / events_name
-        if not events.is_file():
+        # Aggregated events file lives next to the snapshot. Modern
+        # runs ts-prefix every file in the run folder, so the name is
+        # `<ts>_<batch.name>_events.bin`; legacy (pre run-folder
+        # refactor) runs used plain `<batch.name>_events.bin`. Accept
+        # either, like the snapshot lookup above.
+        candidates = (f"{folder.name}_{batch['name']}_events.bin",
+                      f"{batch['name']}_events.bin")
+        events = None
+        for name in candidates:
+            if (folder / name).is_file():
+                events = folder / name
+                break
+        if events is None:
             raise ValueError(
-                f"no aggregated events file '{events_name}' next to the "
-                "snapshot. Re-run selettivo needs the batch events log; "
-                "enable [output].events_log on the source batch and re-run it.")
+                f"no aggregated events file ('{candidates[0]}' or "
+                f"'{candidates[1]}') next to the snapshot. The selective "
+                "re-run needs the batch events log; enable "
+                "[output].events_log on the source batch and re-run it.")
 
         header, rows = _read_cases_csv(cases)
         _annotate_with_events(rows, events)
