@@ -189,6 +189,9 @@ Ordered roughly by what unlocks the most for users.
       reference binary, multi-file concat), `glonass` /
       `gps` (RINEX-NAV broadcast → SpOdy reference binary, multi-
       file)
+- [x] One time-scale chain, engine and GUI: ET is true TDB
+      end-to-end (IERS leap seconds + SPICE `deltet` TDB−TT term
+      in `spody_time.c`, zero-ULP Python twin in `spopy/time.py`)
 - [x] Aggregated batch events file (SPDYEVTB, single
       `<batch>_events.bin` with `case_idx` per record)
 - [x] Tee log output (`output.log_file` mirrors stdout/stderr to a

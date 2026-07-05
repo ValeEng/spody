@@ -110,18 +110,20 @@ at `sys._MEIPASS/spody-core/spody_const.h`.
    the `X2Y` style (`MAS2RAD`, `KM2AU`), not `_TO_`.
 3. **Constants live in one place.** Every numeric constant belongs in
    `spody-core/include/spody_const.h`; calendar/time-scale helpers
-   (Meeus Gregorian→JD, the leap-second chain, ET→UTC MJD) belong in
-   `spody-core/src/spody_time.c`. Never hardcode either in an
-   individual `.c`.
+   (Meeus Gregorian→JD, the leap-second chain, the SPICE-`deltet`
+   TDB−TT term, ET→UTC MJD) belong in `spody-core/src/spody_time.c`.
+   Never hardcode either in an individual `.c`.
 4. **Python reads the same constants.** `spody_gui/constants.py`
    parses `spody_const.h` (dev checkout and bundled install alike)
    and exposes named values; GUI code never hardcodes a physical
    constant. When adding a constant, add its clearly-marked fallback
    there too.
 5. **Leap seconds have exactly two copies**: `spody_time.c` (C) and
-   `spopy/eop.py::LEAP_TABLE_MJD` (Python; `spody_gui.time_conv`
-   derives its calendar boundaries from it). A new IERS Bulletin C
-   insertion is one row in each.
+   `spopy/time.py::LEAP_TABLE_MJD` (Python; every other Python
+   consumer derives from it). A new IERS Bulletin C insertion is one
+   row in each. The same twin relationship covers the whole time
+   module: `spopy/time.py` mirrors `spody_time.c` bit-for-bit
+   (leap chain, deltet, ET→UTC MJD) — change one, change both.
 6. **Time and units.** ET = TDB seconds past J2000 is the canonical
    internal time everywhere; positions km, velocities km/s, ICRF
    internally; body-fixed frames only at the edges (input, display,
@@ -220,21 +222,19 @@ atmosphere callback declared in `spody_atmosphere.h`.
 
 - `simulation.et_start_s` is TDB seconds past J2000; the GUI's UTC
   field converts through the SPICE `deltet` algorithm in
-  `time_conv.py` — don't introduce a second conversion path.
-- **Two ET→UTC chains coexist by design, with different fidelity.**
-  The form's `time_conv` includes the TDB−TT periodic term (SPICE
-  `deltet`, amplitude ±1.657 ms) so `et_start_s` is true TDB. The
-  engine's `spody_et_to_mjd_utc` (and its bit-identical mirror
-  `spopy.eop`) *neglects* TDB−TT when deriving UTC for EOP lookup
-  and the ERA argument. Consequence: up to ±1.657 ms of UT1 error →
-  ~25 mas of ERA → ~0.8 m at LEO radius, ~3.2 m at GPS radius in the
-  Earth-fixed rotation, worst-case phase. This cancels in the
-  current validations (propagator and reference converters share the
-  same rotation chain) and sits below the broadcast-ephemeris floor,
-  but it is NOT below cm-level SP3 truth: porting `deltet` into
-  `spody_time.c` is the known fix if that precision class is ever
-  targeted — do it as its own validated physics change, never inside
-  a refactor.
+  `spopy/time.py` — don't introduce a second conversion path.
+- **There is exactly one ET↔UTC chain, shared C↔Python.** Since the
+  2026-07 deltet port, `spody_et_to_mjd_utc` (engine) and
+  `spopy.time.et_to_mjd_utc` (its zero-ULP Python twin) both apply
+  the TDB−TT periodic term (SPICE `deltet`, ±1.657 ms) before the
+  leap-second chain, and the GNSS converters apply it in the TT→TDB
+  direction — so `et_start_s` is true TDB everywhere and the GUI's
+  `utc_to_et`/`et_to_utc` agree with the engine to <1 µs. History:
+  before the port the engine treated ET≈TT (self-consistently, so
+  validations cancelled), which mislabeled ET by up to 1.657 ms vs
+  the GUI and SPICE. If you touch this chain, re-verify the C↔Python
+  twins on a dense ET sweep (hexfloat dump from the C side vs
+  `spopy.time`) — they must stay zero-ULP.
 - Events: recurring kinds (eclipse, altitude crossing) rely on dense
   output; only the RK45 integrator provides it. If another integrator
   is ever exposed, `spody_event_check` must grow a real fallback (it

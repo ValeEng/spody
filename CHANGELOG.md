@@ -28,6 +28,34 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Engine ET&harr;UTC chain now includes TDB&minus;TT (SPICE
+  `deltet`) &mdash; deliberate physics change.** Previously the
+  engine treated ET&nbsp;&asymp;&nbsp;TT on both directions of the
+  conversion (self-consistently, so validation residuals cancelled),
+  which mislabeled every ET by up to &plusmn;1.657&nbsp;ms against
+  true TDB &mdash; visible as a &plusmn;25&nbsp;mas ERA offset
+  (~3&nbsp;m at GPS radius, Earth-fixed) versus the GUI conversion
+  and SPICE. `spody_et_to_mjd_utc` now subtracts the `deltet`
+  periodic term (new `spody_tdb_minus_tt`, `DELTET_*` constants from
+  the NAIF LSK in `spody_const.h`) before the leap chain, and the
+  GNSS converters (`convert gps/glonass/sp3`) add it in the TT&rarr;
+  TDB direction, so emitted ET timestamps are true TDB
+  (+0.479&nbsp;ms at the 2024 GPS validation epoch). Effects:
+  converted ICRF states are unchanged (the relabel cancels in the
+  rotation), the 7-day GPS-G11 propagation moves &lt;0.2&nbsp;mm,
+  and the day-1 / 7-day SP3 residuals are unchanged (45.97&nbsp;m /
+  581.06&nbsp;m RMS); ET values in outputs and `et_start_s` written
+  by the converters shift by the deltet term, breaking bit-compat
+  with pre-change artifacts by design. Validated by a zero-ULP
+  C&harr;Python sweep over 20&nbsp;000 epochs (1972&ndash;2035)
+  against the SPICE-validated Python twin.
+- **`spody_gui.time_conv` becomes `spopy.time`.** The UTC&harr;ET
+  datetime/ISO helpers move into `spopy` next to the engine-twin
+  chain (leap table &mdash; moved from `spopy.eop` &mdash;, `deltet`,
+  ET&rarr;UTC MJD), making `spopy/time.py` the single Python home of
+  time conversions, in lockstep with `spody_time.c`. GUI imports
+  updated; no behavior change on the form fields beyond the engine
+  alignment above.
 - **Maintainability refactor (engine + GUI), behavior-preserving.**
   spody-core grows `spody_time.{h,c}` as the single home of the
   calendar/time-scale helpers (Meeus Gregorian&rarr;JD, the

@@ -277,7 +277,7 @@ canvas uses VTK, not matplotlib, and its own Scene-options dialog
 A small text overlay at the bottom-right of the 3D canvas shows
 the UTC corresponding to the current animation tick (the
 spacecraft marker's time on the slider, converted via
-`spody_gui.time_conv.et_to_utc` of `et_start + t_anim_s`).
+`spopy.time.et_to_utc` of `et_start + t_anim_s`).
 Anchored to the viewport via a `vtkTextActor` 2D, so it tracks
 the canvas size; cleared when the canvas leaves 3D or when the
 loaded run has no `et_start_s` (CR3BP, bare `.bin` without
