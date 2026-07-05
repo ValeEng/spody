@@ -221,9 +221,11 @@ A successful **RUN** launched from a WIP cleans up automatically:
    as `output/<new-ts>/<new-ts>_input.toml` (the canonical record
    of this run).
 2. The GUI unlinks the WIP from disk (no longer needed).
-3. The form is reloaded with the "starting file" the WIP was
-   derived from &mdash; the source file with the same name minus
-   the `.wip` infix.
+3. The form is reloaded with that per-run snapshot &mdash; the only
+   surviving on-disk copy of what actually ran (with the engine's
+   final status line stamped into its notes). Runs launched from a
+   regular (non-WIP) TOML leave the form on the source file
+   instead.
 
 Failed runs leave the WIP alone so you can fix and retry.
 

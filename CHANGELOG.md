@@ -98,6 +98,36 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   `[[events.altitude_crossing]]` array alongside eclipse, and
   either feature can be enabled independently.
 
+### Fixed
+
+- **Partial DE440 conversions (wizard "modern era" profile) crashed
+  the engine at load.** The `.spody` loader kept the memory-mapped
+  header (read-only pages) and, on detecting a subset file &mdash;
+  header epochs written from `header.440`'s full span while the
+  records cover only the converted chunks &mdash; patched the epochs
+  in place: an access violation right after the `!It is a subset!`
+  console lines. The header is now always a private heap copy,
+  reconciled against the records (one informative line instead of
+  the alarming block), and the converter itself refreshes the
+  on-disk header epochs after writing, so newly converted subsets
+  are born self-consistent. `spopy.Ephemeris` applies the same
+  reconciliation. Verified: a modern-era-only run is bit-identical
+  to the same run against the full DE440.
+- **Re-run tab could not open modern run folders.** It looked for
+  the aggregated events file under its legacy name
+  (`<batch>_events.bin`) while post-run-folder-refactor runs
+  timestamp-prefix every file (`<ts>_<batch>_events.bin`). Both
+  names are accepted now, like the snapshot lookup already did.
+- **A WIP-launched run now reloads the per-run snapshot.** After a
+  successful run from a `.wip.toml` draft the form used to reload
+  the origin file; it now loads the `<ts>_input.toml` snapshot the
+  engine copied into the run folder (the only surviving record of
+  what actually ran &mdash; the draft is deleted). Non-WIP runs keep
+  the current behaviour (form stays on the source TOML).
+- Stray Italian words in user-facing messages ("re-run selettivo"
+  in the Re-run tab warnings, "Errore file ..." in the converter's
+  perror output) translated to English.
+
 ## v0.2.0-beta &mdash; 2026-06-25
 
 Headline: **CR3BP joins high-fidelity as a selectable dynamics
