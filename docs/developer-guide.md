@@ -46,7 +46,7 @@ SpOdy is three cooperating components:
 
 | Component | Language | Where | Role |
 |---|---|---|---|
-| **spody-core** | C | `external/spody-core` (git submodule of [ValeEng/spody-core](https://github.com/ValeEng/spody-core)) | The physics/numerics library: ephemeris reader, force models, RKDP45 integrator with dense output, events, Earth orientation (IAU 2006/2000A_R06), GNSS/SP3 converters, time-scale helpers (`spody_time.c`). No I/O policy, no TOML — pure engine. |
+| **spody-core** | C | `external/spody-core` (git submodule of [ValeEng/spody-core](https://github.com/ValeEng/spody-core)) | The physics/numerics library: ephemeris reader, force models, RKDP45 integrator with dense output, events, Earth orientation (IAU 2006/2000A_R06), GNSS/SP3 converters, time-scale helpers (`spody_time.c`), NRLMSISE-00 atmosphere (`spody_nrlmsise00.c`, native port). No I/O policy, no TOML — pure engine. |
 | **spody** (app layer) | C | `src/` | The `spody.exe` CLI: TOML parsing/validation (`toml_input.c`), worker setup (`sim_setup.c`), run loop + output writers (`sim_run.c`), subcommand dispatch (`main.c`). |
 | **GUI + Python libs** | Python | `python/` | `spody_gui` (PySide6 desktop app wrapping `spody.exe` as a subprocess), `spopy` (pure-Python mirror of spody-core read-side functions), `spody_io` (binary output readers). |
 
@@ -342,6 +342,12 @@ time. Follow them for new/touched code; don't mass-rename old code.
    `spody-core/src/spody_time.c`. Never hardcode either in an
    individual `.c`. If you catch yourself typing `86400` or
    `2451545` in a source file, stop — the name already exists.
+   **One deliberate exemption:** `spody_nrlmsise00.c`. Its DATA
+   constants and coefficient tables are the NRLMSISE-00 model
+   *definition* exactly as NRL fit it (`DGTR = 1.74533E-2` is not
+   π/180 to double precision *on purpose*); "fixing" them or moving
+   them to `spody_const.h` changes the model output and breaks the
+   reference-driver equality (§7).
 4. **Python reads the same constants.** `spody_gui/constants.py`
    parses `spody_const.h` (dev checkout and bundled install alike)
    and exposes named values; GUI code never hardcodes a physical
@@ -729,7 +735,13 @@ ch. 7; CHANGELOG.
 4. Atmospheric drag specifically must go through the per-body
    atmosphere callback declared in `spody_atmosphere.h` — the
    atmosphere model is a property of the body, never hardwired into
-   the force.
+   the force. For Earth the engine already ships the density model:
+   `spody_nrlmsise00.h` (native NRLMSISE-00 port, re-entrant). A
+   drag wrapper calls `spody_nrlmsise00_gtd7d` (the "effective
+   total mass density for drag" variant) and converts the native
+   CGS output to kg/m³ (× 1000) at the callback boundary; the
+   space-weather inputs (previous-day F10.7, 81-day centered
+   average, Ap) come from the shared `MappedSpaceWeather` handle.
 5. **Validate the physics against SPICE-derived references** on a
    spot check before trusting a full run: per-force magnitude at a
    known state, then a short propagation against an independently
@@ -866,6 +878,15 @@ Each entry: the rule, and the symptom you'll see if you break it.
 - **`spopy.Ephemeris` is not thread-safe** (per-instance record
   cache): one instance per worker thread. *Symptom: garbled
   positions under concurrency.*
+- **NRLMSISE-00 is the model definition, verbatim.** The coefficient
+  tables in `spody_nrlmsise00.c` are generated from the official
+  Fortran's `BLOCK DATA GTD7BK`, and the DATA constants keep the
+  original (low) precision; the port matches the official reference
+  driver's 17 cases to the printed 7 digits. Never edit a
+  coefficient by hand and never "improve" a constant's precision —
+  regenerate from the NRL source or don't touch it. (The model
+  itself is fully re-entrant: all state is stack-local.) *Symptom:
+  the 17 reference cases drift from the published outputs.*
 - **Wire formats are append-only** (§1.2): readers in the wild parse
   old files. *Symptom: `spody_io` exceptions on historical runs.*
 

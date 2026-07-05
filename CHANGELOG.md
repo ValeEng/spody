@@ -44,6 +44,22 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   paths` in scene3d resolving inside the subpackage) that broke any
   HF 3D scene with third-body markers enabled.
 
+- **NRLMSISE-00 atmosphere model in the engine (native port).**
+  spody-core gains `spody_nrlmsise00.{h,c}`: a double-precision,
+  fully re-entrant C translation of the official NRL Fortran
+  distribution (Picone et al. 2002, a public-domain U.S. Government
+  work) &mdash; `gtd7` plus the `gtd7d` "effective total mass
+  density for drag" variant, daily-Ap and 3-hour-Ap-history modes,
+  coefficient tables generated verbatim from the original `BLOCK
+  DATA`. Validated against the reference test driver bundled with
+  the NRL distribution: all 17 published cases match to the printed
+  7 significant digits (max relative deviation 4.5e-7),
+  plus a 20,000-case random sweep against an independent evaluation
+  of the same Fortran with no deviation above single-precision
+  noise. Engine-side only for now &mdash; the drag force wiring
+  (TOML + GUI) is the next slice; no behaviour change in any
+  existing run (GPS-G11 regression bit-identical).
+
 ### Changed
 
 - **Engine ET&harr;UTC chain now includes TDB&minus;TT (SPICE
