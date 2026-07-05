@@ -35,7 +35,11 @@ from ..vtk_canvas import VtkCanvas
 from .context import PlotContext, resolve_run_context
 from .overlays import make_2d_overlay, overlay_3d_orbit
 from .plots_cr3bp import plot_cr3bp_3d_orbit
-from .scene3d import add_animated_pa_decoration, add_third_bodies
+from .scene3d import (
+    add_animated_pa_decoration,
+    add_sun_illumination,
+    add_third_bodies,
+)
 from .spec import PlotSpec
 
 
@@ -366,6 +370,10 @@ def _plot_traj_3d_orbit(canvas: VtkCanvas, d: np.ndarray,
     add_animated_pa_decoration(canvas, ctx, ts,
                                   show_icrf=opts.show_icrf_triad,
                                   show_pa=opts.show_pa_triad)
+    # LAST: the sunlight walks the actors added above and freezes
+    # their lighting recipe (see set_sun_light docstring).
+    if opts.sun_illumination:
+        add_sun_illumination(canvas, ctx, ts)
 
 
 # Inline lambdas wrapping `_plot_traj_projection` for the XY / XZ / YZ

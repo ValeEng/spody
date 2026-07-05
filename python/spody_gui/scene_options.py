@@ -73,6 +73,7 @@ class SceneOptions:
     show_bodies:            set[str] = field(default_factory=set)
     trail_enabled:          bool = False  # polyline clipped behind the marker
     show_starfield:         bool = False  # equirectangular star map skybox
+    sun_illumination:       bool = True   # day/night terminator (HF only)
     scene_frame:            str = "icrf"  # "icrf" | "pa" (pa = TODO)
     cr3bp_elements_primary: int = 1       # 1 (bigger) or 2 (smaller)
 
@@ -142,10 +143,22 @@ class SceneOptionsDialog(QDialog):
             "Replaces the dark background with the star map from the "
             "wizard-managed data dir. Disabled until the 'Star map' "
             "asset is downloaded via Settings > Setup wizard.")
+        self._cb_sun = self._make_checkbox(
+            "Sun illumination (day/night terminator)",
+            options.sun_illumination,
+            lambda v: self._set("sun_illumination", v))
+        self._cb_sun.setToolTip(
+            "Light the body spheres from the Sun's true direction "
+            "(spopy ephemeris, re-aimed every animation tick) instead "
+            "of the camera headlight; an orange ring marks the "
+            "terminator on the central body and the night side stays "
+            "barely visible. Trajectories, arrows and triads are "
+            "unaffected.")
         lay_contents.addWidget(self._cb_trajectory)
         lay_contents.addWidget(self._cb_third_bodies)
         lay_contents.addWidget(self._cb_trail)
         lay_contents.addWidget(self._cb_starfield)
+        lay_contents.addWidget(self._cb_sun)
         root.addWidget(self._gb_contents)
 
         # --- Reference frames ---------------------------------------
@@ -270,6 +283,9 @@ class SceneOptionsDialog(QDialog):
         # (CR3BP scenes have no third bodies -- the two primaries are
         # part of the dynamics, not decoration).
         self._cb_third_bodies.setVisible(not is_cr3bp)
+        # Sun illumination needs an epoch + ephemeris; the CR3BP
+        # synodic frame has neither, so hide the knob there.
+        self._cb_sun.setVisible(not is_cr3bp)
         if is_cr3bp:
             self._rb_primary_1.setText(f"primary 1: {primary_names[0]}")
             self._rb_primary_2.setText(f"primary 2: {primary_names[1]}")

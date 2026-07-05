@@ -68,6 +68,7 @@ from vtkmodules.vtkRenderingCore import (
     vtkBillboardTextActor3D,
     vtkCoordinate,
     vtkGlyph3DMapper,
+    vtkLight,
     vtkPolyDataMapper,
     vtkPolyDataMapper2D,
     vtkPropPicker,
@@ -387,6 +388,21 @@ class VtkCanvas(QWidget):
         self._axes_widget.SetEnabled(1)
         self._axes_widget.InteractiveOff()
 
+        # Sun-illumination state. `_shadable_actors` collects the body
+        # spheres (central body, textured 3rd-body markers, CR3BP
+        # primaries) that `set_sun_light` flips from the default
+        # headlight-lit look to sun-shaded (day/night terminator).
+        # `_sun_lights` holds one directional vtkLight per renderer
+        # layer; `_sun_anim` the (times, unit-directions) arrays the
+        # animation ticks interpolate.
+        self._shadable_actors: list[vtkActor] = []
+        self._sun_lights: list[vtkLight] = []
+        self._sun_anim: tuple[np.ndarray, np.ndarray] | None = None
+        # Terminator ring: great circle perpendicular to the sun
+        # direction on the central body, re-aimed with the light.
+        self._sun_ring_src = None
+        self._central_body_radius_km: float | None = None
+
         # Picking state. Trajectories registered via add_trajectory
         # (with a source_path) become pickable on Ctrl+left-click; the
         # callback fires with the matching path or None on a miss.
@@ -497,6 +513,16 @@ class VtkCanvas(QWidget):
         path so a scene rebuild doesn't kill the star background."""
         self._renderer.RemoveAllViewProps()
         self._renderer_far.RemoveAllViewProps()
+        # Drop the sun lights so the next scene starts from the VTK
+        # default again (automatic camera headlight, created lazily on
+        # first render when a renderer has zero lights).
+        self._renderer.RemoveAllLights()
+        self._renderer_far.RemoveAllLights()
+        self._sun_lights.clear()
+        self._sun_anim = None
+        self._sun_ring_src = None
+        self._central_body_radius_km = None
+        self._shadable_actors.clear()
         self._skybox_actor = None
         self._trajectory_actors.clear()
         self._highlighted_actor = None
@@ -652,6 +678,9 @@ class VtkCanvas(QWidget):
         # Stash so set_central_body_animated_orientation can later
         # bind a libration animation onto it.
         self._central_body_actor = actor
+        self._central_body_radius_km = float(radius_km)
+        # Body sphere: day/night-shadable when set_sun_light is called.
+        self._shadable_actors.append(actor)
 
     def add_secondary_body(self, position_km: tuple[float, float, float],
                             radius_km: float,
@@ -702,6 +731,8 @@ class VtkCanvas(QWidget):
                           float(position_km[1]),
                           float(position_km[2]))
         self._renderer.AddActor(actor)
+        # Body sphere: day/night-shadable when set_sun_light is called.
+        self._shadable_actors.append(actor)
 
         if label:
             billboard = vtkBillboardTextActor3D()
@@ -851,6 +882,7 @@ class VtkCanvas(QWidget):
                                  marker_radius_km: float | None = None,
                                  marker_texture_path: Path | None = None,
                                  marker_R_bf_to_scene_sequence: np.ndarray | None = None,
+                                 marker_shadable: bool = True,
                                  is_decoration: bool = False) -> None:
         """Like `add_trajectory` but also registers an animation
         handle: a coloured sphere marker (sized to ~1% of the scene
@@ -939,6 +971,12 @@ class VtkCanvas(QWidget):
             # (LRO Moon-scene) or distant (GLONASS Earth-scene).
             marker.GetProperty().SetAmbient(0.50)
             marker.GetProperty().SetDiffuse(0.55)
+            # Textured body sphere: day/night-shadable when
+            # set_sun_light is called -- except when the caller says
+            # otherwise (the Sun's own marker must stay emissive: it
+            # IS the light source).
+            if marker_shadable:
+                self._shadable_actors.append(marker)
         else:
             sphere = vtkSphereSource()
             sphere.SetRadius(marker_r)
@@ -1177,6 +1215,121 @@ class VtkCanvas(QWidget):
             actor=self._central_body_actor,
         )
 
+    def set_sun_light(self, times_s: np.ndarray,
+                      sun_dirs_unit: np.ndarray) -> None:
+        """Switch the scene from the default camera headlight to a
+        directional 'sunlight' so the body spheres show a physical
+        day/night terminator.
+
+        `sun_dirs_unit` is the (n, 3) unit direction from the scene
+        origin (central body) to the Sun in scene coordinates, sampled
+        at the sim times `times_s`; `set_animation_time` re-aims the
+        light every tick. Parallel-ray approximation: at >= 0.98 AU
+        the Sun's rays are parallel across any planetocentric scene
+        to well under 0.01 deg, so ONE direction serves every body.
+
+        Call this LAST in the scene build: it walks the actors added
+        so far and (a) turns the registered body spheres into properly
+        shaded surfaces (low ambient keeps the night side faintly
+        readable against the dark sky), (b) freezes every other actor
+        (trajectory lines, arrows, triads, marker pucks, silhouettes)
+        to flat emissive color -- installing any light suppresses
+        VTK's automatic headlight, and without this step those actors
+        would dim with the sun angle."""
+        times = np.asarray(times_s, dtype=float)
+        dirs = np.asarray(sun_dirs_unit, dtype=float)
+        if len(times) == 0:
+            return
+        if dirs.shape != (len(times), 3):
+            raise ValueError(
+                "sun_dirs_unit must have shape (len(times_s), 3); "
+                f"got {dirs.shape}")
+
+        shadable = set(map(id, self._shadable_actors))
+        for ren in (self._renderer, self._renderer_far):
+            actors = ren.GetActors()
+            actors.InitTraversal()
+            a = actors.GetNextActor()
+            while a is not None:
+                if isinstance(a, vtkSkybox):
+                    pass  # its shader ignores lights; leave untouched
+                elif id(a) in shadable:
+                    p = a.GetProperty()
+                    p.LightingOn()
+                    # Low ambient = hard day/night contrast; the night
+                    # side stays just barely readable against the sky.
+                    p.SetAmbient(0.05)
+                    p.SetDiffuse(1.0)
+                    p.SetSpecular(0.0)
+                else:
+                    a.GetProperty().LightingOff()
+                a = actors.GetNextActor()
+
+        self._sun_lights.clear()
+        for ren in (self._renderer, self._renderer_far):
+            # A paint event processed mid-build (the scene builders
+            # pump the Qt loop every 512 samples) can render the
+            # half-built, light-less scene -- at which point VTK
+            # auto-creates a camera headlight and leaves it in the
+            # renderer. Sweep the collection first: the sun must be
+            # the scene's ONLY light or it washes out to the default
+            # look (seen as "no effect on the first view open").
+            ren.RemoveAllLights()
+            light = vtkLight()
+            light.SetLightTypeToSceneLight()
+            light.SetPositional(False)   # directional: only the axis matters
+            light.SetFocalPoint(0.0, 0.0, 0.0)
+            light.SetColor(1.0, 1.0, 1.0)
+            # >1 compensates the Lambertian cos-falloff away from the
+            # sub-solar point: the day side reads bright (saturating
+            # only near normal incidence) while the night side keeps
+            # the low-ambient darkness.
+            light.SetIntensity(1.4)
+            ren.AddLight(light)
+            self._sun_lights.append(light)
+
+        # Terminator ring on the central body: the day/night boundary
+        # is the great circle perpendicular to the sun direction, so a
+        # thin warm-colored outline there makes the shadow front
+        # explicit even where the Lambertian falloff is gradual. The
+        # ring is inertial (terminator geometry only depends on the
+        # sun direction, not on the body's spin) and slightly above
+        # the surface so it never z-fights the sphere.
+        if self._central_body_radius_km is not None:
+            ring_src = vtkRegularPolygonSource()
+            ring_src.SetNumberOfSides(240)
+            ring_src.GeneratePolygonOff()      # outline, not a disc
+            ring_src.SetRadius(self._central_body_radius_km * 1.003)
+            ring_src.SetCenter(0.0, 0.0, 0.0)
+            ring_mapper = vtkPolyDataMapper()
+            ring_mapper.SetInputConnection(ring_src.GetOutputPort())
+            ring_actor = vtkActor()
+            ring_actor.SetMapper(ring_mapper)
+            rp = ring_actor.GetProperty()
+            rp.SetColor(1.0, 0.55, 0.15)
+            rp.SetLineWidth(2.0)
+            rp.SetOpacity(0.85)
+            rp.LightingOff()
+            self._renderer.AddActor(ring_actor)
+            self._sun_ring_src = ring_src
+
+        self._sun_anim = (times, dirs)
+        self._aim_sun_light(dirs[0])
+
+    def _aim_sun_light(self, direction_unit: np.ndarray) -> None:
+        """Aim the directional lights: position along +direction (the
+        Sun side), focal point at the origin, so rays travel from the
+        Sun direction toward the scene. The terminator ring's plane
+        normal follows the same direction."""
+        for light in self._sun_lights:
+            light.SetPosition(float(direction_unit[0]),
+                              float(direction_unit[1]),
+                              float(direction_unit[2]))
+        if self._sun_ring_src is not None:
+            self._sun_ring_src.SetNormal(float(direction_unit[0]),
+                                         float(direction_unit[1]),
+                                         float(direction_unit[2]))
+
     def has_animations(self) -> bool:
         return (bool(self._anim_handles) or bool(self._anim_arrows)
                 or bool(self._anim_triads) or self._anim_body is not None)
@@ -1269,6 +1422,12 @@ class VtkCanvas(QWidget):
             R_now = self._interp_R(self._anim_body.times,
                                     self._anim_body.R_sequence, t_s)
             self._apply_rotation_matrix(self._anim_body.actor, R_now)
+        if self._sun_anim is not None and self._sun_lights:
+            times, dirs = self._sun_anim
+            d = self._interp_xyz(times, dirs, t_s)
+            norm = float(np.linalg.norm(d))
+            if norm > 1.0e-12:
+                self._aim_sun_light(d / norm)
 
     @staticmethod
     def _interp_xyz(times: np.ndarray, points: np.ndarray,

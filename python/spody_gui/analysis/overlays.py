@@ -31,7 +31,12 @@ from ..scene_options import SceneOptions
 from ..vtk_canvas import VtkCanvas
 from .context import PlotContext
 from .plots_cr3bp import overlay_cr3bp_3d_orbit
-from .scene3d import add_animated_pa_decoration, add_third_bodies, turbo_color
+from .scene3d import (
+    add_animated_pa_decoration,
+    add_sun_illumination,
+    add_third_bodies,
+    turbo_color,
+)
 from .spec import OverlayFn2D, PlotFn2D
 
 
@@ -132,3 +137,7 @@ def overlay_3d_orbit(canvas: VtkCanvas,
                                       show_pa=opts.show_pa_triad)
     if legend_items:
         canvas.add_legend(legend_items)
+    # LAST: the sunlight walks the actors added above and freezes
+    # their lighting recipe (see set_sun_light docstring).
+    if items and opts.sun_illumination:
+        add_sun_illumination(canvas, body_ctx, first_ts)

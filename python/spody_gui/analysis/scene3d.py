@@ -336,7 +336,7 @@ def add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
         # Earth-centric scene even at its true ~384,000 km distance.
         # paths.data_dir() is the same QSettings-backed lookup the
         # wizard uses, so this stays in sync with the user's choice.
-        from . import assets, paths
+        from .. import assets, paths
         try:
             marker_texture_path = assets.central_body_texture_path(
                 paths.data_dir(), name)
@@ -375,6 +375,9 @@ def add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
                 name, ref_radius_km=ctx.central_body.radius_km),
             marker_texture_path=marker_texture_path,
             marker_R_bf_to_scene_sequence=marker_R_seq,
+            # The Sun's own marker must never be day/night-shaded by
+            # the sun-illumination light: it IS the source.
+            marker_shadable=(name != "Sun"),
             is_decoration=True,
         )
         # 2) Fixed-length direction arrow anchored at the origin so
@@ -392,6 +395,55 @@ def add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
             length_km=_BODY_ARROW_LEN_RBODY * ctx.central_body.radius_km,
             is_decoration=False,
         )
+
+
+def add_sun_illumination(canvas: VtkCanvas, ctx: "PlotContext",
+                            times_s: np.ndarray) -> None:
+    """Install the day/night sunlight on an ICRF-centric HF scene:
+    query the Sun's direction from the central body at every sample
+    of the trajectory time grid (spopy ephemeris, same recipe as
+    `add_third_bodies`) and hand the unit vectors to
+    `canvas.set_sun_light`, which re-aims the light on every
+    animation tick.
+
+    Call it LAST in the scene build (set_sun_light freezes the
+    lighting recipe of every actor present at call time). Silent on
+    every failure mode (missing snapshot, unreadable ephemeris, ET
+    outside coverage): illumination is opt-in scene decoration, not
+    a hard contract -- the scene falls back to the default headlight
+    look."""
+    if ctx is None:
+        return
+    info = resolve_run_context(ctx.path)
+    if info is None or info["ephemeris_path"] is None:
+        return
+    sun_naif = _BODY_NAIF["Sun"]
+    central_naif = ctx.central_body.naif_id
+    if central_naif == sun_naif:
+        return  # heliocentric scene: no external sun to shade from
+    from spopy import Ephemeris
+    try:
+        eph = Ephemeris(str(info["ephemeris_path"]))
+    except (OSError, ValueError):
+        return
+    et_start = float(info["et_start_s"])
+    n = len(times_s)
+    if n == 0:
+        return
+    dirs = np.empty((n, 3), dtype=float)
+    for i in range(n):
+        try:
+            p = eph.position(central_naif, sun_naif,
+                             et_start + float(times_s[i]))
+        except (ValueError, IndexError):
+            return
+        norm = float(np.linalg.norm(p))
+        if norm <= 0.0:
+            return
+        dirs[i] = p / norm
+        if (i & 0x1FF) == 0:
+            QApplication.processEvents()
+    canvas.set_sun_light(np.asarray(times_s, dtype=float), dirs)
 
 
 def add_animated_pa_decoration(canvas: VtkCanvas, ctx: "PlotContext",
