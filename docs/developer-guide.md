@@ -365,130 +365,400 @@ time. Follow them for new/touched code; don't mass-rename old code.
    which spec section, what invariant — not what the next line does.
 9. **Docs cite SPICE** as the only validation ground truth.
 
-## 5. Extension recipes
+## 5. Extension recipes — growing the software without breaking it
 
-The design goal of the 2026-07 refactor: each recipe touches a small,
-predictable set of files. Every recipe ends the same way: run the
-matching §6 verification, then walk the §3.3 docs checklist.
+This is the heart of the guide. Every recipe below follows the same
+skeleton — **Files you touch → Steps → What you can break here →
+Verify → Document** — and every recipe assumes you first ran the
+safe-change protocol of §5.0. When your change doesn't match any
+recipe, assemble it from the closest ones and still follow §5.0.
+
+### 5.0 The safe-change protocol (applies to every change)
+
+Do these in order, literally. The protocol exists because each step
+has caught a real bug at least once.
+
+1. **Name the blast radius before typing.** Which layers does the
+   change touch: spody-core? `src/`? wire formats? `spopy`? the GUI?
+   Each extra layer adds one verification from §6. If the change
+   touches a wire format or the time chain, read §7 first.
+2. **Take a baseline.** Build clean (`cmake --build build --config
+   Release`) and run the bundled example(s) closest to the feature
+   *before* changing anything. Keep the produced `output/<ts>/`
+   folders — they are your before/after reference. If you skip this
+   you will have nothing trustworthy to compare against later.
+3. **Change in dependency order**: spody-core first (its own clone,
+   §3.1), then `src/`, then Python. Each layer should build/import
+   cleanly before you move to the next. Never edit
+   `external/spody-core` in place.
+4. **Keep every layer honest about its mirror.** If you touched a C
+   function, grep `python/spopy/` for a sibling; if you touched a
+   constant, remember the GUI parses `spody_const.h`; if you touched
+   an output writer, open the matching `spody_io` reader.
+5. **Re-run the baseline** and binary-compare (`fc /b`, or a numpy
+   diff via `spody_io.read_trajectory`).
+   - Pure refactor / cleanup → outputs must be **byte-identical**.
+   - Deliberate physics/format change → **measure** every delta and
+     write the numbers into the CHANGELOG entry. "Looks fine" is not
+     a measurement.
+6. **Exercise the GUI surface live** if you touched anything under
+   `python/` (§6.2): launch, click through the changed screens,
+   console must stay silent.
+7. **Walk the docs checklist** (§3.3). A feature isn't done until
+   README/CHANGELOG/manual/this guide agree with the code.
+
+Rule of thumb: if you cannot say which §7 invariant your change is
+*closest to violating*, you don't understand the change yet — re-read
+§7, then start.
 
 ### 5.1 New physical constant
 
-1. Add the `#define` to `spody-core/include/spody_const.h` in the
-   thematically right block, as a plain number with a source comment
-   (which publication/kernel the value comes from).
-2. Use it from C.
-3. If the GUI needs it: `constants.const("NAME", fallback)` — the
-   parser picks it up automatically (it tolerates parenthesized
-   values and trailing comments).
+**Files:** `spody-core/include/spody_const.h` (+ consumers).
+
+1. Add the `#define` in the thematically right block of
+   `spody_const.h`, as a **plain number literal** with a source
+   comment (which publication/kernel/datasheet the value comes from):
+
+   ```c
+   #define MARS_MU   42828.375816    // GM km^3/s^2 (source: ...)
+   ```
+
+   Plain literal matters: the GUI parses the header with a regex that
+   accepts numbers (optionally parenthesized, optional exponent,
+   trailing comment) — an expression like `(A * B)` is invisible to
+   Python and the GUI will silently fall back.
+2. Use the name from C. If you typed the raw number anywhere else,
+   you did it wrong (§4.3).
+3. If the GUI needs the value: `constants.const("MARS_MU", 42828.375816)`
+   — the second argument is the clearly-marked fallback used only
+   when the header is missing (broken install). Keep fallback == header.
+
+**Break risk:** none if the literal is plain; a silent GUI fallback
+mismatch if it isn't. **Verify:** run
+`python -c "from spody_gui import constants; print(constants.const('MARS_MU', 0))"`
+from `python/` and check it prints the header value, not the
+fallback. **Document:** CHANGELOG only (constants are internal).
 
 ### 5.2 New TOML key or section (engine feature)
 
-Files: `src/toml_input.c` / `.h`, `src/sim_setup.c` or `sim_run.c`
-(consumer), `python/spody_gui/form/*`.
+**Files:** `src/toml_input.c`, `src/toml_input.h`,
+`src/sim_setup.c` and/or `src/sim_run.c`,
+`python/spody_gui/form/catalog.py`, `form/sections.py`,
+(`form/visibility.py`), user-manual ch. 6.
 
-1. **Parse**: in `toml_input.c`, extend the right `parse_*` function
-   (or add one for a new `[section]`), add the field to
-   `InputConfig` in `toml_input.h`. Fixed-size buffers only — the
-   struct is flat-copied by batch mode (§7).
-2. **Validate**: range/consistency checks go in
-   `spody_validate_input`, with error messages that name the TOML
-   key verbatim (users grep for them).
-3. **Batch**: if the key must be overridable per case, add a row to
-   `FIELD_TABLE` in `toml_input.c` **and** a mode-tagged entry to
-   `BATCH_TARGETS` in `form/catalog.py`.
-4. **Consume**: read the config field in `sim_setup.c` / `sim_run.c`
-   and wire it into the ForceModelContext / run loop.
-5. **GUI form**: one row in `form/catalog.py` (label, tooltip, unit,
-   validator); builder additions in `form/sections.py` (+ one call
-   in `TomlForm.__init__` for a whole new section); a hook in
-   `form/visibility.py` if the field is conditional (model- or
-   mode-dependent). The round-trip is generic — widgets registered
-   under the dotted key serialize themselves, and unknown sections
-   pass through verbatim, so old TOMLs stay loadable.
-6. Verify: §6.2 round-trip + a `spody validate` run on an example
-   TOML with and without the new key.
-7. Document: manual ch. 6 (schema table) + ch. 5 if the form UI is
-   visible; CHANGELOG.
+Follow the chain in this order — parse, validate, batch, consume,
+GUI — because each step is testable on its own:
+
+1. **Struct field**: add the field to `InputConfig` in
+   `toml_input.h`. **Fixed-size buffers only** (`char path[...]`,
+   `double`, `int`) — the struct is flat-copied by
+   `spody_apply_batch_case`, so a heap pointer here breaks batch
+   mode (§7). Give it a safe default where `InputConfig` is
+   initialized.
+2. **Parse**: extend the matching `parse_<section>` function in
+   `toml_input.c` (`parse_simulation`, `parse_force_model`,
+   `parse_events`, …; for a whole new `[section]` add a new
+   `parse_*` and call it from the parse entry point next to its
+   siblings). Copy the idiom of the neighbouring keys — the file is
+   deliberately repetitive so that patterns can be copied.
+3. **Validate**: range/consistency checks go in
+   `spody_validate_input`, *not* in the parser. Error messages name
+   the TOML key verbatim and, when the value comes from a known set,
+   list the accepted values — users grep for these strings.
+4. **Batch (only if the key should be overridable per case)**: add a
+   row to `FIELD_TABLE` in `toml_input.c`:
+
+   ```c
+   { "section.my_key", SPODY_FIELD_DOUBLE,
+     offsetof(InputConfig, my_key), 0, SPODY_VAL_POSITIVE },
+   ```
+
+   and the mirror entry to `BATCH_TARGETS` in `form/catalog.py`
+   (`("section.my_key", None)`; use the `"spacecraft"` /
+   `"debris"` tag instead of `None` when the key only exists in one
+   object mode). Deliberately excluded from batch: anything that
+   would invalidate shared resources across cases (central body,
+   harmonics file/degree) — don't add those.
+5. **Consume**: read the config field in `sim_setup.c` (setup-time
+   resources) or `sim_run.c` (run-loop behaviour) and wire it in.
+6. **GUI form**:
+   - one row in `form/catalog.py`: tooltip in the tooltip table,
+     unit in `UNIT`, validator (reuse `_pos` / `_nonneg` / friends
+     or add one that returns `""` when valid, message otherwise);
+   - in `form/sections.py`, extend the right section builder with a
+     factory call from `form/widgets.py` — `_add_float`, `_add_int`,
+     `_add_bool`, `_add_enum`, `_add_path`, `_add_vec3`,
+     `_add_duration_seconds`, `_add_asset_combo`,
+     `_add_strlist_checks` — registering the widget under the dotted
+     key (`"section.my_key"`). For a whole new section: new builder
+     method + one call in `TomlForm.__init__`.
+   - if the field is conditional (model- or mode-dependent), add the
+     hook in `form/visibility.py` next to the HF↔CR3BP /
+     spacecraft↔debris logic.
+   - you do **not** touch `roundtrip.py`: widgets registered under
+     dotted keys serialize themselves, and unknown TOML sections
+     pass through verbatim (old TOMLs stay loadable, new TOMLs stay
+     loadable by old code that ignores the key).
+
+**Break risk:** heap field in `InputConfig` (batch double-free);
+validation in the parser instead of `spody_validate_input` (batch
+overrides skip it); catalog row without builder call (key silently
+never serialized). **Verify:** `spody validate` on an example TOML
+with and without the new key (both must behave as designed); §6.2
+offscreen round-trip (the new key must survive load→save); if
+batchable, a 2-case `spody batch` overriding the key. **Document:**
+manual ch. 6 schema table (+ ch. 5 if the form UI is visible,
++ ch. 7 if batchable); CHANGELOG.
 
 ### 5.3 New analysis view (plot/table on existing data)
 
-1. Write the plot function in the matching
-   `spody_gui/analysis/plots_*.py` — signature and idioms as its
-   neighbours (take a `PlotContext`, draw into the provided figure).
-2. Append a `PlotSpec` to that module's `SPECS` list.
+**Files:** one `spody_gui/analysis/plots_*.py` module. Nothing else.
 
-That's all: the registry assembles per-kind lists, the panel
-dispatches on them. Verify by opening the Analysis tab on a run of
-the right kind. Document: manual ch. 9 (plot catalog).
+1. Pick the module by file kind: `plots_traj.py` (trajectories),
+   `plots_accel.py` (breakdowns), `plots_events.py`,
+   `plots_diff.py` (two-file comparisons), `plots_cr3bp.py`.
+2. Write the plot function with the signature its `mode` implies
+   (see `analysis/spec.py`, which documents every field):
+   - `mode="single"` (default): `def my_view(ax, data): ...` for 2D,
+     `def my_view(canvas, data): ...` for 3D;
+   - `mode="diff"`: `def my_view(ax, data_a, data_b): ...`;
+   - `mode="context"`: `def my_view(ax, data, ctx): ...` where `ctx`
+     is a `PlotContext` (run folder, `et_start_s`, central body,
+     dynamics model, ephemeris path — everything resolved for you).
+   The dispatcher clears/resets/renders the canvas; the function
+   only draws its content.
+3. Append one `PlotSpec` to the module's `SPECS` list:
+
+   ```python
+   PlotSpec(label="My view", dim="2d", fn=my_view,
+            category="Diagnostics",          # tree folder ("" = root)
+            mode="single",                   # or "diff" / "context"
+            overlay_fn=my_view_overlay,      # or None (button disabled)
+            models=("high_fidelity",))       # hide where meaningless
+   ```
+
+   Field-by-field guidance:
+   - `models` gates the view by dynamics model — a body-fixed
+     lat/lon map is meaningless in the CR3BP synodic frame, so
+     advertise `("high_fidelity",)`; Jacobi-style views advertise
+     `("cr3bp",)`.
+   - `overlay_fn=None` is correct when overlaying N files would draw
+     3N–5N illegible lines; the Overlay button self-disables with an
+     explanation.
+   - `projection="mollweide"` (or `"aitoff"`/`"hammer"`) for
+     geographic ellipse views, 2D only.
+
+**Break risk:** essentially zero for other views (the registry is
+additive); the classic mistake is hardcoding a body (radius,
+texture, name) instead of reading `ctx.central_body`. **Verify:**
+launch the GUI, open a run of the right kind, render the view in
+single / tile / overlay modes; check it does *not* appear for
+models it doesn't support. **Document:** manual ch. 9 (plot
+catalog); CHANGELOG.
 
 ### 5.4 New output file kind
 
-1. Engine: new magic + writer (follow `sim_run.c` patterns; 8-byte
-   magic, version, dims).
-2. `python/spody_io/`: reader module + export in `__init__.py`.
-3. `spody_gui/analysis/registry.py`: entries in `KIND_LABEL`,
-   `READERS`, `detect_kind`.
-4. Usually a new `plots_<kind>.py` with its `SPECS`.
-5. Document: manual ch. 8 + ch. 9; CHANGELOG; §1.2 table in this
-   guide.
+**Files:** `src/sim_run.c` (writer), `python/spody_io/` (reader),
+`spody_gui/analysis/registry.py`, usually a new
+`analysis/plots_<kind>.py`.
+
+1. **Wire format first, on paper**: 8-byte magic (pad to exactly 8,
+   e.g. `SPDYXYZ_`), `uint32` version = 1, `uint32` dims, 8 reserved
+   bytes, then fixed-size little-endian records. Formats are
+   **append-only** (§7): once shipped, a record layout never changes
+   in place — future fields mean a version bump handled by the
+   reader.
+2. **Writer** in `sim_run.c`, following the existing writer
+   functions (same header helper, same error paths, ts-prefixed
+   filename inside `output/<ts>/`).
+3. **Reader** module in `python/spody_io/` (numpy structured dtype
+   with an `itemsize` assert, header check, version check), exported
+   from `spody_io/__init__.py`.
+4. **Registry**: in `analysis/registry.py` add the kind to
+   `KIND_LABEL`, `READERS`, and teach `detect_kind` the magic.
+5. **Views**: new `plots_<kind>.py` with its `SPECS` (recipe 5.3).
+
+**Break risk:** reader/writer drift (assert record sizes on both
+sides); forgetting `detect_kind` (files invisible in the Analysis
+tree). **Verify:** run a scenario that writes the new file; `spody
+info` prints its header; the Analysis tree lists it under the new
+label and the views render. **Document:** §1.2 table in this guide;
+manual ch. 8 + ch. 9; CHANGELOG.
 
 ### 5.5 New event kind
 
-Use the altitude-crossing implementation as the template
-(spody-core `d1bb88b`, spody `96b1ad5`..`913fb6d`).
+Use the altitude-crossing implementation as the working template
+(spody-core `d1bb88b`, spody `96b1ad5`..`913fb6d` — read those diffs
+once before starting; they are the recipe in executable form).
 
-1. spody-core `spody_events.{h,c}`: kind enum value + constructor +
-   residual function + a case in `spody_event_check_refined`.
-   Recurring kinds need the sign-tracking + Brent refinement pattern
-   and **only fire on the RK45 dense-output path** (§7).
-2. `src/toml_input.c`: parse the `[events]` entry (array-of-tables
-   if multiple instances make sense); `sim_run.c` `build_events`:
-   instantiate per config.
-3. GUI: events table labels in `analysis/table_model.py`; any new
-   view in `analysis/plots_events.py`; form panel in
-   `form/sections.py` (follow the eclipse/altitude collapsible-panel
-   pattern).
-4. Verify: a purpose-built scenario TOML that provably triggers the
-   event; check count, ET and refinement of every logged row.
-5. Document: manual ch. 6 (events schema) + ch. 8; CHANGELOG.
+**Files:** spody-core `spody_events.{h,c}`; `src/toml_input.c`,
+`src/sim_run.c`; GUI `analysis/table_model.py`,
+`analysis/plots_events.py`, `form/sections.py`.
+
+1. **Core enum + descriptor** (`spody_events.h`): add a
+   `SPODY_EVENT_KIND_*` value. The enum is deliberately open —
+   adding kinds is non-breaking, the wire format discriminates on
+   the kind field. Reuse the existing descriptor slots (`naif_id`,
+   `radius_km`, `threshold_fraction`, …) and document what each
+   means for your kind in the header comment, like the existing
+   kinds do.
+2. **Predicate**: implement the residual/check and add one `case` to
+   the dispatch in `spody_event_check` and (for refined kinds)
+   `spody_event_check_refined`. Two families:
+   - *one-shot* (impact-like): plain geometric check on the accepted
+     state;
+   - *recurring* (eclipse/altitude-like): track the residual's sign
+     across steps and refine the crossing with Brent on the dense
+     output — copy the altitude-crossing pattern wholesale.
+     Recurring kinds **only fire on the RK45 dense-output path**
+     (§7): if the residual sign-tracks but never refines, you are on
+     the wrong path.
+3. **Parse**: `[events]` entry in `toml_input.c` — single table for
+   a singleton toggle (eclipse-style) or array-of-tables
+   (`parse_altitude_crossings`-style) when the user may register
+   several instances. Validation messages name the keys and accepted
+   `action` values (`log`, `stop`, `log_and_stop`).
+4. **Instantiate**: `build_events` in `sim_run.c` constructs the
+   events array from the config — add your kind there, including the
+   per-event `refined` opt-out if it's recurring.
+5. **GUI**: kind label in `analysis/table_model.py` (events table);
+   any dedicated view in `analysis/plots_events.py` (recipe 5.3);
+   form panel in `form/sections.py` following the collapsible
+   "Enable …" pattern of eclipse/altitude (checkbox + table + Add /
+   Remove, combos auto-tracking the model's valid bodies).
+6. **Test scenario**: write a TOML that *provably* triggers the
+   event a known number of times (pick an orbit where you can count
+   the crossings by hand). Check count, ET ordering and refinement
+   of every logged row, and that `action = "stop"` truncates the run.
+
+**Break risk:** forgetting the refined case (events land on step
+boundaries, ~30 s error); parsing an array-of-tables as a single
+table; new descriptor fields that the flat `SpodyEvent` copy
+doesn't cover. **Verify:** the purpose-built scenario + one existing
+events example (`debris_impact_demo`) unchanged. **Document:**
+manual ch. 6 (events schema) + ch. 8 (events table); CHANGELOG.
 
 ### 5.6 New central body
 
-1. Engine: entry in the app-side registry `src/central_body.{h,c}`
-   (radius, mu, NAIF id, gravity-field file wiring, body-fixed
-   rotation callback if the body rotates).
-2. GUI: one `CentralBodySpec` in `spody_gui/central_bodies.py`
-   (+ an orientation provider backed by spopy if the body rotates),
-   texture asset in `spody_gui/assets.py` if desired. The form's
-   combo and the impact/3D views auto-track the registry.
-3. Verify: propagate a simple orbit around the new body; check the
-   3D view triads and an impact-event lat/lon if applicable.
-4. Document: manual ch. 6 + README feature list; CHANGELOG.
+**Files:** `src/central_body.{h,c}`; spody-core rotation provider if
+the body rotates; GUI `spody_gui/central_bodies.py`
+(+ `spody_gui/assets.py` for textures); gravity data under `data/`.
+
+The registry is designed so this is three local edits on the C side
+(the header says so, and it's true):
+
+1. One enum value in `SpodyCentralBody` (`central_body.h`).
+2. One row in the static registry in `central_body.c`: name, NAIF
+   id, `mu` (add the constant to `spody_const.h` first — recipe
+   5.1), mean radius, and the `spody_bf_rotation_fn` provider
+   (`NULL` is legal while the body has no orientation model: the
+   engine then treats it as non-rotating).
+3. If the body rotates: implement `spody_bf_rotation_<body>` in
+   spody-core following `spody_bf_rotation_earth` /
+   `spody_bf_rotation_moon`.
+4. Gravity field: ship/convert a harmonics file (`spody convert
+   harmonics_icgem` for ICGEM `.gfc` sources) and wire the
+   per-body file selection the way Moon/Earth do it.
+5. **GUI mirror**: one `CentralBodySpec` in
+   `spody_gui/central_bodies.py` (name, `naif_id`, `radius_km`,
+   `mu_km3_s2`, `bf_frame_name`, `bf_orientation`). The orientation
+   provider is the spopy twin of the C rotation (see
+   `_moon_orientation` for the pattern) — if you wrote a C provider,
+   write the spopy sibling and keep them in lockstep (§4.5 spirit).
+   Texture in `assets.py` if you want a textured 3D body.
+6. The form's combo, the validator error text ("known: …") and the
+   impact/3D views all auto-track the registries — no further edits.
+
+**Break risk:** C registry and Python `_KNOWN_BODIES` drifting
+(different radius/mu between engine and 3D view); a rotation
+provider without its spopy twin (3D triads lie). **Verify:**
+propagate a simple orbit around the new body; check `spody
+validate` rejects a typo'd name listing the new body among the
+known ones; check the 3D view triads and, if applicable, an
+impact-event lat/lon against hand-computed geometry. **Document:**
+manual ch. 6 + README feature list; CHANGELOG; §2.3 data table in
+this guide.
 
 ### 5.7 New CR3BP primary pair
 
-1. `spody_const.h`: separation constant (`*_DISTANCE_KM`).
-2. `src/toml_input.c`: row in `CR3BP_PAIRS` (used by
-   `lookup_cr3bp_pair`; the engine rejects unknown pairs at load).
-3. `form/catalog.py`: mirror tuple for the combo.
-4. The two lists must stay in lockstep — grep both when touching
-   either.
+**Files:** `spody_const.h`, `src/toml_input.c`,
+`form/catalog.py`.
 
-### 5.8 New force model
+1. Separation constant `<PAIR>_DISTANCE_KM` in `spody_const.h`
+   (recipe 5.1 rules apply).
+2. Row in `CR3BP_PAIRS` in `toml_input.c` (feeds
+   `lookup_cr3bp_pair`; unknown pairs are rejected at load with a
+   message that lists the known ones — your row updates that
+   message for free).
+3. Mirror tuple in `CR3BP_PAIRS` in `form/catalog.py` for the combo.
+4. The two lists must stay in lockstep — grep both names whenever
+   touching either.
 
-1. spody-core `spody_forcemodels.c`: implement the acceleration
-   callback following the existing per-force pattern — read inputs
-   from `ForceModelContext`, write into the per-force breakdown
-   slots (so `SPDYACC_` stays complete).
-2. Wire the enable flag / parameters through `[force_model]` parsing
-   (§5.2 steps 1–4) and the GUI section builder.
-3. Atmospheric drag specifically must go through the per-body
-   atmosphere callback declared in `spody_atmosphere.h` — never
-   hardwire an atmosphere to a body.
-4. Verify: per-force breakdown shows the new column with plausible
-   magnitude; total acceleration matches an independent SPICE-based
-   estimate on a spot check.
-5. Document: manual ch. 6; README feature list; CHANGELOG.
+**Verify:** a CR3BP run with the new pair (`cr3bp_em_l4` is the
+template scenario); the synodic 3D view shows both primaries at the
+right separation. **Document:** manual ch. 6; CHANGELOG.
+
+### 5.8 New batch override target
+
+Covered inside recipe 5.2 step 4 — the two tables (`FIELD_TABLE` in
+C, `BATCH_TARGETS` in Python) are the whole feature. Remember the
+exclusion rule: keys whose change would invalidate resources shared
+across batch cases (central body, harmonics file/degree) are
+excluded *on purpose* — batch shares one `SimulationShared` across
+cases. **Verify:** 2-case CSV overriding the key, check the two
+outputs differ in exactly the expected way. **Document:** manual
+ch. 7; CHANGELOG.
+
+### 5.9 New force model
+
+**Files:** spody-core `spody_forcemodels.{h,c}`
+(+ `spody_atmosphere.{h,c}` for drag-like models);
+`src/toml_input.c`, `form/catalog.py` + `form/sections.py`.
+
+1. Implement the acceleration callback in `spody_forcemodels.c`
+   following the existing per-force pattern: read inputs from
+   `ForceModelContext`, add into the state derivative, **and write
+   the per-force contribution into the breakdown slots** — a force
+   missing from `SPDYACC_` is invisible to the Analysis tab and to
+   future debugging.
+2. Add the context fields it needs to `ForceModelContext` (set up in
+   `sim_setup.c` from config; remember flat-copy rules if anything
+   lands in `InputConfig`).
+3. Wire the enable flag / parameters through `[force_model]`
+   (recipe 5.2).
+4. Atmospheric drag specifically must go through the per-body
+   atmosphere callback declared in `spody_atmosphere.h` — the
+   atmosphere model is a property of the body, never hardwired into
+   the force.
+5. **Validate the physics against SPICE-derived references** on a
+   spot check before trusting a full run: per-force magnitude at a
+   known state, then a short propagation against an independently
+   computed arc.
+
+**Break risk:** missing breakdown slot; force evaluated in the wrong
+frame (everything in the RHS is ICRF, body-fixed only via the
+context's rotation providers); unvalidated physics shipping because
+"the numbers looked plausible". **Verify:** §6.1 including the
+breakdown check; bit-identity of runs with the force *disabled*
+(a new force must be a strict no-op when off). **Document:** manual
+ch. 6; README feature list; CHANGELOG (with the validation numbers).
+
+### 5.10 Touching the time chain or a spopy mirror
+
+Shortest recipe, sharpest edges:
+
+1. Change the C side (`spody_time.c` or the mirrored core function)
+   and its Python twin **in the same sitting** — never land one
+   without the other.
+2. Keep the *operation order* identical between the twins: the
+   bit-identity guarantee comes from both sides executing the same
+   IEEE-754 operations in the same order against the same libm.
+3. Re-verify per §6.3 (dense hexfloat sweep, zero-ULP).
+4. If the change alters results (physics): treat outputs as a
+   deliberate compat break — measure, update stored example
+   references and `et_start_s` values where the epoch semantics
+   moved, and write the numbers in the CHANGELOG (the 2026-07 deltet
+   entry is the template).
 
 ## 6. Verifying changes
 
