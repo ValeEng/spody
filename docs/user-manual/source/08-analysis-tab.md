@@ -311,6 +311,37 @@ spacecraft trajectories, central body, third-body markers and
 triads all render in front of it correctly regardless of zoom
 level.
 
+## 3D scene options &mdash; sun illumination
+
+The **Sun illumination (day/night terminator)** checkbox (on by
+default, HF scenes only) replaces the default camera headlight
+&mdash; which always lights whatever side you are looking at
+&mdash; with a directional light aimed from the Sun's true
+position, read from the ephemeris at each sample of the loaded
+trajectory. The effect:
+
+- the central body and every textured third-body marker show a
+  physical day/night terminator with hard contrast; the night side
+  stays just barely visible (low ambient) so the body outline never
+  quite disappears against the dark sky;
+- a thin orange ring on the central body traces the terminator
+  itself (the great circle perpendicular to the sun direction), so
+  the shadow front is explicit even where the shading falloff is
+  gradual;
+- during playback the light re-aims every animation tick, so on
+  multi-day runs you can watch the terminator sweep across the
+  rotating surface;
+- the Moon marker in an Earth-centred scene (and vice versa) shows
+  its actual phase, since one parallel sun direction lights every
+  body in the scene consistently;
+- the Sun's own marker is exempt (it is the light source), and
+  trajectories, arrows, triads and the spacecraft marker keep
+  their flat colours &mdash; only body surfaces are shaded.
+
+Unchecking the box restores the headlight look (every visible
+surface lit). The option is hidden for CR3BP scenes: the synodic
+frame has no epoch, hence no sun direction to point the light at.
+
 ## Picking in the 3D viewer
 
 When a 3D plot is active, **Ctrl+left-click** on any rendered

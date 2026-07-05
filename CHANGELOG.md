@@ -26,6 +26,24 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   action / refined table and Add / Remove buttons; body combos
   auto-track the model's valid bodies.
 
+- **Sun illumination in the 3D scene (day/night terminator).** New
+  Scene-options checkbox (on by default, HF scenes only): the body
+  spheres &mdash; central body and textured third-body markers
+  &mdash; are lit by a directional light aimed from the Sun's true
+  direction (spopy ephemeris, sampled on the trajectory time grid
+  and re-aimed on every animation tick) instead of the camera
+  headlight. The night side stays barely visible (low ambient, hard
+  day/night contrast), a thin orange ring on the central body marks
+  the terminator explicitly, the Moon marker shows its actual phase
+  in Earth-centred scenes, and the terminator sweeps the rotating
+  surface during playback.
+  Trajectories, arrows, triads, marker pucks and the Sun's own
+  marker keep their flat emissive colours. Hidden for CR3BP scenes
+  (no epoch in the synodic frame). Also fixes a latent import bug
+  from the July analysis-package split (`from . import assets,
+  paths` in scene3d resolving inside the subpackage) that broke any
+  HF 3D scene with third-body markers enabled.
+
 ### Changed
 
 - **Engine ET&harr;UTC chain now includes TDB&minus;TT (SPICE
