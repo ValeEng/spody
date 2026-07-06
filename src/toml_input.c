@@ -827,6 +827,29 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
                          sizeof cfg->space_weather_file);
         }
     }
+
+    /* density calibration: optional, drag-only, constant XOR file
+     * (the XOR and the >0 range live in spody_validate_input). */
+    cfg->density_scale = 1.0;
+    cfg->has_density_scale = 0;
+    {
+        toml_datum_t d = toml_double_in(t, "density_scale");
+        if (d.ok) {
+            cfg->density_scale = d.u.d;
+            cfg->has_density_scale = 1;
+        }
+    }
+    {
+        char rel[SPODY_MAX_PATH] = {0};
+        int  present = 0;
+        if ((rc = opt_string(t, "density_scale_file", rel, sizeof rel,
+                             &present))) return rc;
+        if (present) {
+            resolve_path(toml_dir, rel,
+                         cfg->density_scale_file,
+                         sizeof cfg->density_scale_file);
+        }
+    }
     return SPODY_OK;
 }
 
@@ -1384,6 +1407,8 @@ static const SpodyFieldDesc FIELD_TABLE[] = {
       offsetof(InputConfig, enable_srp),         0, SPODY_VAL_BOOL     },
     { "force_model.drag",                SPODY_FIELD_INT,
       offsetof(InputConfig, enable_drag),        0, SPODY_VAL_BOOL     },
+    { "force_model.density_scale",       SPODY_FIELD_DOUBLE,
+      offsetof(InputConfig, density_scale),      0, SPODY_VAL_POSITIVE },
 
     /* integrator (tolerances and step bounds may vary per case) */
     { "integrator.rel_tol",              SPODY_FIELD_DOUBLE,
@@ -2136,6 +2161,38 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                     cfg->space_weather_file);
             return SPODY_ERR_FILE_NOT_FOUND;
         }
+    }
+
+    /* Density calibration: constant XOR file, positive constant,
+     * meaningful only under the drag force. */
+    if (cfg->has_density_scale && cfg->density_scale_file[0] != '\0') {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "force_model.density_scale and density_scale_file are "
+                "mutually exclusive (constant factor vs k(t) node "
+                "table)");
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if ((cfg->has_density_scale || cfg->density_scale_file[0] != '\0')
+            && !cfg->enable_drag) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "force_model.density_scale%s requires drag = true (it "
+                "calibrates the atmosphere density)",
+                cfg->density_scale_file[0] != '\0' ? "_file" : "");
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (cfg->has_density_scale
+            && !(cfg->density_scale > 0.0 && isfinite(cfg->density_scale))) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "force_model.density_scale must be positive and finite "
+                "(got %.6g)", cfg->density_scale);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (cfg->density_scale_file[0] != '\0'
+            && !file_exists(cfg->density_scale_file)) {
+        spody_error_set(err, SPODY_ERR_FILE_NOT_FOUND,
+                "density_scale_file not found: %s",
+                cfg->density_scale_file);
+        return SPODY_ERR_FILE_NOT_FOUND;
     }
 
     /* Integrator */

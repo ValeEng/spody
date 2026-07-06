@@ -83,12 +83,19 @@ typedef struct {
      * Parsed once when force_model.drag = true; read-only afterwards,
      * safe to share across worker threads. */
     MappedSpaceWeatherData sw_data;
+    /* Drag-only, optional: density calibration k(t). Built either
+     * from force_model.density_scale_file (node table) or from the
+     * scalar force_model.density_scale (synthesised single node).
+     * Stateless read-only queries -> shared across workers, no
+     * per-thread handle needed. */
+    MappedDensityScale     ds_data;
 
     unsigned init_med : 1;
     unsigned init_hgd : 1;
     unsigned init_eop : 1;
     unsigned init_iau : 1;
     unsigned init_sw  : 1;
+    unsigned init_ds  : 1;
 } SimulationShared;
 
 /* ------------------------------------------------------------------

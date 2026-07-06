@@ -140,6 +140,49 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
                 goto fail;
             }
         }
+
+        /* Optional density calibration k(t): node file, or one node
+         * synthesised from the scalar key (same evaluation path in
+         * spody_force_drag). Outside its node span the table clamps
+         * to the end values by design, so partial overlap with the
+         * run window is a warning, not an error. */
+        if (cfg->density_scale_file[0] != '\0') {
+            if (spody_setup_MappedDensityScale(&shared->ds_data,
+                                               cfg->density_scale_file) != 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "spody_setup_MappedDensityScale failed for '%s'",
+                        cfg->density_scale_file);
+                goto fail;
+            }
+            shared->init_ds = 1;
+            {
+                double mjd_start = spody_et_to_mjd_utc(cfg->et_start_s);
+                double mjd_end   = spody_et_to_mjd_utc(cfg->et_start_s +
+                                                       cfg->duration_s);
+                double node_lo = shared->ds_data.mjd[0];
+                double node_hi = shared->ds_data.mjd[shared->ds_data.n - 1];
+                if (mjd_start < node_lo || mjd_end > node_hi) {
+                    fprintf(stderr,
+                            "spody: warning: run window (UTC MJD %.2f .. "
+                            "%.2f) extends past the density-scale nodes "
+                            "(%.2f .. %.2f); the end values are held "
+                            "there.\n",
+                            mjd_start, mjd_end, node_lo, node_hi);
+                }
+            }
+        } else if (cfg->density_scale != 1.0) {
+            shared->ds_data.mjd = malloc(sizeof *shared->ds_data.mjd);
+            shared->ds_data.k   = malloc(sizeof *shared->ds_data.k);
+            if (!shared->ds_data.mjd || !shared->ds_data.k) {
+                spody_error_set(err, SPODY_ERR_INTERNAL,
+                        "out of memory building the density-scale node");
+                goto fail;
+            }
+            shared->ds_data.mjd[0] = spody_et_to_mjd_utc(cfg->et_start_s);
+            shared->ds_data.k[0]   = cfg->density_scale;
+            shared->ds_data.n      = 1;
+            shared->init_ds = 1;
+        }
     }
 
     return SPODY_OK;
@@ -151,6 +194,7 @@ fail:
 
 void spody_free_shared(SimulationShared *shared) {
     if (!shared) return;
+    if (shared->init_ds)  { spody_free_MappedDensityScale(&shared->ds_data); shared->init_ds = 0; }
     if (shared->init_sw)  { spody_free_MappedSpaceWeatherData(&shared->sw_data); shared->init_sw = 0; }
     if (shared->init_iau) { spody_free_MappedIAU2006Data(&shared->iau2006_data); shared->init_iau = 0; }
     if (shared->init_eop) { spody_free_MappedEOPData     (&shared->eop_data);    shared->init_eop = 0; }
@@ -331,6 +375,7 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.enable_drag         = cfg->enable_drag;
     w->ctx.atmosphere          = body->atmosphere;
     w->ctx.space_weather       = w->init_sw_w ? &w->sw : NULL;
+    w->ctx.density_scale       = shared->init_ds ? &shared->ds_data : NULL;
     w->ctx.body_spin_rad_s     = body->spin_rad_s;
     w->ctx.et0                 = cfg->et_start_s;
 

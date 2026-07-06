@@ -272,6 +272,15 @@ typedef struct {
     char             eop_file[SPODY_MAX_PATH];         /* resolved path, "" if none */
     char             iau2006_dir[SPODY_MAX_PATH];      /* resolved dir,  "" if none */
     char             space_weather_file[SPODY_MAX_PATH]; /* resolved path, "" if none */
+    /* Density calibration k(t) applied to the atmosphere model
+     * (rho_used = k * rho_model, see MappedDensityScale in spody-core).
+     * OPTIONAL, drag-only, two exclusive flavours: a constant factor
+     * (`density_scale`, > 0) or a node file (`density_scale_file`,
+     * `mjd,k` rows). density_scale = 1.0 with an empty file path is
+     * the uncalibrated default; validation rejects setting both. */
+    double           density_scale;                      /* constant k; 1.0 default   */
+    int              has_density_scale;                  /* 1 if the constant key set */
+    char             density_scale_file[SPODY_MAX_PATH]; /* resolved path, "" if none */
 
     /* [ephemeris] */
     char ephemeris_file[SPODY_MAX_PATH];               /* resolved path */
