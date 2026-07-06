@@ -30,6 +30,8 @@
  *   spody convert    sp3 <input.sp3> [input.sp3 ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody convert    glonass <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody convert    gps     <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
+ *   spody convert    oem <input.oem> [input.oem ...] <output.bin>
+ *   spody calibrate  <input.toml> <reference.bin> [--window <hours>]
  *   spody info
  */
 #include <float.h>
@@ -57,6 +59,7 @@
 #include "toml_input.h"
 #include "sim_setup.h"
 #include "sim_run.h"
+#include "calibrate.h"
 
 /* Monotonic wall-clock seconds. Resolution + thread-safety: with
  * OpenMP linked in we get omp_get_wtime, the only portable wall-time
@@ -1141,10 +1144,86 @@ static int cmd_convert(int argc, char **argv) {
         return 0;
     }
 
+    /* ---- oem ------------------------------------------------------ */
+    if (strcmp(argv[1], "oem") == 0) {
+        if (argc < 4) {
+            fprintf(stderr,
+                "convert oem: need <input.oem> [input.oem ...] <output.bin>\n"
+                "  CCSDS OEM text (REF_FRAME ICRF/EME2000/J2000, "
+                "TIME_SYSTEM UTC/TDB) ->\n"
+                "  SPDYOUT_ ICRF state binary. Multiple input files are\n"
+                "  concatenated with a continuous 0-anchored time axis; "
+                "pass them in\n"
+                "  chronological order (overlapping records: first file "
+                "wins).\n"
+                "  e.g. spody convert oem ./ISS_OEM_1.txt ./ISS_OEM_2.txt "
+                "./iss_ref.bin\n");
+            return 1;
+        }
+        int n_inputs = argc - 3;
+        const char *const *input_oem_paths =
+            (const char *const *)(argv + 2);
+        const char *output_bin = argv[argc - 1];
+        spody_log_printf("spody convert oem: %d file%s -> %s\n",
+            n_inputs, n_inputs == 1 ? "" : "s", output_bin);
+        int rc = spody_convert_oem_to_state_icrf(n_inputs,
+                                                 input_oem_paths,
+                                                 output_bin);
+        if (rc != 0) {
+            fprintf(stderr,
+                "convert oem: spody_convert_oem_to_state_icrf "
+                "returned %d\n", rc);
+            return 1;
+        }
+        spody_log_printf("OK -- wrote %s\n", output_bin);
+        return 0;
+    }
+
     fprintf(stderr,
         "convert: unknown subform '%s' (expected 'ephemeris', "
-        "'harmonics_icgem', 'sp3', 'glonass', or 'gps')\n", argv[1]);
+        "'harmonics_icgem', 'sp3', 'glonass', 'gps', or 'oem')\n", argv[1]);
     return 1;
+}
+
+/* Fit a time-varying density-scale node table k(t) against a state
+ * reference. Thin arg-parsing wrapper: the whole workflow (window
+ * partition, per-window drag OFF/ON arcs, in-track least squares,
+ * k_nodes.csv emission) lives in calibrate.c -- see calibrate.h for
+ * the method and the I/O contract. */
+static int cmd_calibrate(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr,
+            "usage: spody calibrate <input.toml> <reference.bin> "
+            "[--window <hours>]\n"
+            "  Fits the [force_model] density_scale_file node table "
+            "against a full-state\n"
+            "  reference binary (`spody convert gps/glonass/oem`; SP3 "
+            "references carry no\n"
+            "  velocities and are rejected). The TOML must have "
+            "force_model.drag = true and\n"
+            "  et_start_s equal to the reference's first epoch. Default "
+            "window: %.0f h.\n",
+            SPODY_CAL_WINDOW_DEFAULT_H);
+        return 1;
+    }
+    const char *toml_path = argv[1];
+    const char *ref_path  = argv[2];
+    double window_h = SPODY_CAL_WINDOW_DEFAULT_H;
+    for (int i = 3; i < argc; ++i) {
+        if (strcmp(argv[i], "--window") == 0 && i + 1 < argc) {
+            window_h = strtod(argv[++i], NULL);
+            if (!(window_h > 0.0)) {
+                fprintf(stderr,
+                    "calibrate: --window must be > 0 hours (got '%s')\n",
+                    argv[i]);
+                return 1;
+            }
+        } else {
+            fprintf(stderr, "calibrate: unrecognised arg '%s'\n", argv[i]);
+            return 1;
+        }
+    }
+    return spody_calibrate_run(toml_path, ref_path, window_h);
 }
 
 static void usage(const char *prog) {
@@ -1170,6 +1249,11 @@ static void usage(const char *prog) {
         "  convert    gps     <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>\n"
         "                                          RINEX GPS nav -> ICRF state bin\n"
         "                                          (IS-GPS-200 Kepler propagation; multi-file concatenated)\n"
+        "  convert    oem <input.oem> [input.oem ...] <output.bin>\n"
+        "                                          CCSDS OEM -> ICRF state bin\n"
+        "                                          (multi-file: concatenated, overlaps first-file-wins)\n"
+        "  calibrate  <input.toml> <reference.bin> [--window <hours>]\n"
+        "                                          fit density-scale k(t) nodes vs a state reference\n"
         "  info                                    print version and capabilities\n"
         "  maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n"
         "                                          largest useful harmonics degree\n"
@@ -1204,6 +1288,7 @@ int main(int argc, char **argv) {
     else if (strcmp(cmd, "batch")     == 0) return cmd_batch    (argc - 1, argv + 1);
     else if (strcmp(cmd, "validate")  == 0) return cmd_validate (argc - 1, argv + 1);
     else if (strcmp(cmd, "convert")   == 0) return cmd_convert  (argc - 1, argv + 1);
+    else if (strcmp(cmd, "calibrate") == 0) return cmd_calibrate(argc - 1, argv + 1);
     else if (strcmp(cmd, "info")      == 0) return cmd_info     (argc - 1, argv + 1);
     else if (strcmp(cmd, "maxhgdegree") == 0) return cmd_maxhgdegree(argc - 1, argv + 1);
     else if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
