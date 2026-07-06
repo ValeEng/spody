@@ -89,6 +89,19 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   so the probe offers a one-click refresh whenever the server
   copy is newer.
 
+- **Manual: drag validation and ballistic calibration**
+  (chapter 11). New section documenting how to validate a
+  drag-enabled propagation against public orbit products
+  (NASA/JSC ISS ephemeris pairs, ESA Swarm `SP3ACOM` POD +
+  `DNSAPOD` density): the density/ballistic-coefficient
+  degeneracy, the single-scale least-squares calibration with
+  calibration/hold-out split, measured numbers (NRLMSISE-00
+  median +38% vs POD-derived density at 470&ndash;500 km around
+  the 2024 solar maximum; ~200 m/day in-track with a calibrated
+  ballistic factor against cm-level truth), the pitfalls
+  (forecast references, manoeuvres inside the arc), and the SRP
+  analogue of the same calibration logic.
+
 ### Changed
 
 - **Engine ET&harr;UTC chain now includes TDB&minus;TT (SPICE

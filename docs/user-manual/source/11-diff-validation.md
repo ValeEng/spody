@@ -235,6 +235,188 @@ broadcast-OD floor &mdash; or the force-model residual must be
 recovered indirectly by composing `prop_vs_brdc &approx;
 sqrt(prop_vs_SP3^2 - brdc_vs_SP3^2)`.
 
+## Drag validation and ballistic calibration
+
+Validating a drag-enabled propagation (chapter 6,
+`[spacecraft.drag]`) is structurally different from the gravity
+and GNSS comparisons above, and deserves its own method. This
+section documents the process, the calibration method, the
+numbers measured with it, and the problems you will meet on the
+way &mdash; so you can reproduce the analysis on your own
+spacecraft.
+
+### Why drag cannot be validated "as is"
+
+The drag acceleration is
+
+```
+a_drag = -1/2 · rho(model) · v_rel^2 · (Cd·A/m) · v_rel_hat
+```
+
+and the density `rho` and the ballistic coefficient `Cd·A/m`
+enter **only as a product**. A +30% density bias with a correct
+ballistic coefficient is indistinguishable &mdash; at the
+trajectory level &mdash; from a correct density with a +30%
+ballistic error. Both factors are genuinely uncertain:
+
+* **The density model.** NRLMSISE-00 is an empirical climatology
+  fitted to pre-2000 data. Against modern orbit-derived density
+  references it runs **20&ndash;40% hot at 400&ndash;500 km
+  around solar maximum** (the thermosphere has cooled since the
+  model's fit epoch). This is a property of the model, not an
+  implementation defect.
+* **The ballistic coefficient of record.** Free-molecular `Cd`
+  is not a plate constant: it depends on attitude, surface
+  temperature and gas composition. Operational centres re-estimate
+  it continuously &mdash; the NASA/JSC ISS ephemerides changed
+  their own published `DRAG_AREA × DRAG_COEFF` by 10% between two
+  files six days apart.
+
+Any single drag-on vs truth comparison therefore measures the
+*sum* of the two effects. The method below separates them.
+
+### Process: choosing reference data
+
+Two public data families make clean drag benchmarks:
+
+1. **NASA/JSC ISS ephemerides** (CCSDS OEM, EME2000, published
+   ~weekly with an archive of dated snapshots). Each file carries
+   mass, drag area and Cd in its `COMMENT` block plus a trajectory
+   event summary. Pick a **pair of consecutive files** bracketing
+   a 3&ndash;7 day gap with **no manoeuvre in the event summary**:
+   the older file's first state is a tracking-fresh initial
+   condition, the newer file's first day is a tracking-fresh
+   truth. Never validate against the *forecast* portion of a
+   single file &mdash; that measures the publisher's space-weather
+   forecast, not your propagator (see *Problems* below).
+2. **ESA Swarm Level-2 precise orbits** (`SP3ACOM` reduced-dynamic
+   POD: SP3 format, ITRF, GPS time, cm-level truth), with the
+   companion `DNSAPOD` product giving the POD-derived thermospheric
+   density along the same orbit. The density product enables a
+   **density-space comparison that needs no mass or area at all**.
+
+In both cases prefer a geomagnetically quiet window (daily Ap
+below ~15 in the CelesTrak table) so the drag signal is
+EUV-driven and the model's storm response stays out of the
+budget.
+
+### Method: the single-scale ballistic fit
+
+Introduce one free factor `k` that scales the product:
+`a_drag(k) = k · a_drag(nominal)`. Because drag is a small
+perturbation, the in-track displacement it accumulates is linear
+in `k` to first order, so **two propagations are enough**: with
+`I_off(t)` and `I_on(t)` the in-track residuals of the drag-off
+and drag-on (k = 1) runs against the truth,
+
+```
+I(k, t) ≈ I_off(t) + k · [I_on(t) − I_off(t)]
+```
+
+and the least-squares scale over the scored epochs is
+
+```
+k* = Σ_t [ −I_off(t) · ΔI(t) ] / Σ_t [ ΔI(t)² ],   ΔI = I_on − I_off
+```
+
+Then **verify the linearity by actually re-running** the
+propagation with `Cd` multiplied by `k*`: if the chain is healthy
+the in-track residual collapses by two orders of magnitude. For an
+honest accuracy claim, fit `k*` on a **calibration arc** (the
+first 1&ndash;2 days) and quote the residual growth on the
+remaining **hold-out days**, which the fit has never seen.
+
+The fitted `k*` is not a fudge: it is exactly the ballistic
+re-estimation every operational OD performs, and it cleanly splits
+the error budget into a *constant* part (density-model bias ×
+ballistic uncertainty, absorbed by `k*`) and a *time-varying* part
+(day-to-day thermospheric variability the climatology cannot
+capture, visible in the hold-out drift).
+
+### Results (July 2024 window, Ap 2&ndash;10, F10.7a ≈ 205)
+
+ISS, 5-day gap between the 2024-07-03 and 2024-07-09 JSC
+ephemerides, truth = first (pre-creation) day of the newer file:
+
+| Run                              | In-track @ 5 d      |
+|----------------------------------|---------------------|
+| Drag off                         | −146 km             |
+| Drag on, BC of record (k = 1)    | +53 km              |
+| Drag on, fitted k* = 0.725       | 973 m RMS, 1.8 km max |
+| JSC's own 5-day forecast (yardstick) | 1.3 km RMS, 2.1 km max |
+
+The fitted run lands in the same class as the publisher's own
+forecast &mdash; which is produced with internal tracking and
+attitude timelines. Radial and cross-track stay at tens of metres
+throughout.
+
+Swarm-A, 5.5 days against the cm-level `SP3ACOM` POD, `k*` fitted
+on the first two days only (Cd 2.6 → 3.29 at the nominal
+area/mass), per-day in-track RMS:
+
+| Day | In-track RMS | Arc         |
+|-----|--------------|-------------|
+| 0   | 51 m         | calibration |
+| 1   | 37 m         | calibration |
+| 2   | 120 m        | hold-out    |
+| 3   | 81 m         | hold-out    |
+| 4   | 453 m        | hold-out    |
+| 5   | 997 m        | hold-out    |
+
+The scale factor is **stable to 0.6%** between the 2-day
+calibration fit and a full-window fit, and the drag-off drift is
+−108 km over the same window: with one calibrated number the chain
+holds roughly **200 m/day in-track** against a −20 km/day
+signal. Radial ≤ 25 m and cross-track ≤ 17 m RMS everywhere.
+
+The independent density-space comparison (NRLMSISE-00 evaluated
+along the Swarm orbit at the `DNSAPOD` epochs, same space-weather
+inputs the engine uses) gives the model bias directly: **median
++38%** at 470&ndash;500 km over the window &mdash; and rising from
++28% to +51% day by day, which is exactly the time-varying part
+that surfaces as the hold-out drift above. The three numbers close
+on each other: `k* × BC_nominal × 1.38` reproduces the physical
+`Cd·A` expected for the spacecraft geometry.
+
+### Problems and solutions
+
+* **Forecast references flatter or damn you unpredictably.** A
+  drag validation first attempted against the forecast portion of
+  a single ISS ephemeris "failed" by +7.7 km in two days &mdash;
+  entirely explained by an F10.7 spike and a geomagnetic storm
+  that post-dated the file's creation. *Solution: anchor both ends
+  of the arc on tracking-fresh states from an archive of dated
+  files, in a historical window where all space weather is
+  observed (`OBS` rows in `SW-All.csv`), never predicted.*
+* **The density/BC degeneracy.** No trajectory comparison can
+  separate them. *Solution: calibrate the product with `k*` and,
+  when a POD-derived density product exists (Swarm), measure the
+  density bias independently in density space; the ballistic part
+  is whatever remains.*
+* **The bias is not constant.** A single `k*` removes the mean
+  bias but the residual climatology error (tens of percent over
+  days) sets the hold-out floor &mdash; roughly 1 km at 5 days in
+  a quiet window at ~480 km. *Solution: none available at
+  constant-`k` level; this is the intrinsic ceiling of any
+  empirical thermosphere model. Storm-time indices (JB2008-class
+  models) or assimilative corrections would be needed to push
+  further, which is why `Cd` should be treated as a calibration
+  parameter, not a physical datum.*
+* **Manoeuvres poison the arc silently.** A reboost inside the
+  gap turns the whole comparison into noise. *Solution: read the
+  event summary in the OEM comments before choosing the pair; for
+  spacecraft without event metadata, a kink in the fitted-run
+  in-track residual is the diagnostic.*
+
+The same calibration logic applies verbatim to solar radiation
+pressure: `Cr·A/m` is one more product of an uncertain optical
+coefficient and an effective area, and operational ODs estimate a
+`Cr` scale exactly like a ballistic factor. At drag altitudes
+(400&ndash;500 km) SRP is only ~5% of drag and its calibration
+error is second-order; above ~800 km the roles reverse and SRP
+becomes the term worth calibrating (see the GNSS sections above,
+where un-modelled SRP dominates the 7-day budget).
+
 ## Combining diff plots through the tile dashboard
 
 A useful pattern for the validation workflow is to tile the four
