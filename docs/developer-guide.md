@@ -747,7 +747,20 @@ ch. 7; CHANGELOG.
    in `central_body.c` (together with `spin_rad_s`); a new
    atmosphere (Mars + MCD) is a new wrapper file + that one
    registry row.
-5. **Validate the physics against SPICE-derived references** on a
+5. Model-calibration knobs follow the density-scale pattern: the
+   engine owns a loader + evaluator pair (`MappedDensityScale` in
+   `spody_atmosphere.{h,c}`, evaluated via the shared
+   `spody_interp_linear` from `spody_math` — put any new generic
+   bracketing/interpolation math there, not in the feature file), a
+   `const` pointer slot on `ForceModelContext` where NULL means
+   "factor = 1, feature off", and the multiply at exactly one point
+   inside the force. The app synthesises the degenerate case (a
+   scalar TOML key becomes a single node) so the engine has one
+   evaluation path. INVARIANT: the default (NULL slot / factor 1.0
+   / key absent) must be bit-identical to the pre-feature engine —
+   verify with the §6.1 bit-identity regression, and mind the
+   reference trap below.
+6. **Validate the physics against SPICE-derived references** on a
    spot check before trusting a full run: per-force magnitude at a
    known state, then a short propagation against an independently
    computed arc.
@@ -798,6 +811,16 @@ Rebuild **both** repos (core clone + app), then:
   every delta *quantitatively* (measure it — a one-line Python/numpy
   diff of the two binaries via `spody_io.read_trajectory` — and put
   the numbers in the CHANGELOG entry).
+
+  **Reference trap:** a stored `output/<ts>/` is only a valid
+  bit-identity reference if no *deliberate physics change* shipped
+  since it was written (the 2026-07 deltet relabeling invalidated
+  every earlier stored run at the ~µm level). If the stored runs
+  predate one, regenerate the reference first: stash your changes,
+  point the submodule at the pre-change core commit, rebuild, run,
+  then restore and compare against *that*. ULP-level noise against
+  a stale reference is not your bug — but prove it this way instead
+  of assuming it.
 - Run the other example families your change could plausibly touch
   (`batch_demo`, `cr3bp_em_l4`, `debris_impact_demo`,
   `glonass_r03_validation`).

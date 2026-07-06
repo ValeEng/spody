@@ -8,6 +8,23 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Density calibration factor for drag** (`force_model.density_scale`
+  / `density_scale_file`). The drag force can now apply a
+  multiplicative correction to the NRLMSISE-00 density: a constant
+  factor (`density_scale = 1.15`, batch-targetable) or a
+  time-varying piecewise-linear node table (`density_scale_file`,
+  plain-text `mjd,k` rows, clamped outside the node span with a
+  console warning on partial run-window coverage). Rationale and
+  numbers in the manual's *Drag validation and ballistic
+  calibration* section (chapter 11): empirical thermosphere models
+  run 20&ndash;40% hot at 400&ndash;500 km around solar maximum, and
+  the calibrated factor belongs in a dedicated key rather than in a
+  misdeclared `Cd`. Both keys are drag-only and mutually exclusive;
+  the default (1.0 / absent) is bit-identical to previous behaviour.
+  Engine side: `MappedDensityScale` loader/evaluator in
+  spody-core's atmosphere module plus generic `spody_bracket_index`
+  / `spody_interp_linear` primitives in `spody_math`.
+
 - **Altitude-crossing events.** New
   `[[events.altitude_crossing]]` array-of-tables registers any
   number of altitude triggers, each measured against the central

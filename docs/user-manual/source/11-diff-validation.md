@@ -396,12 +396,15 @@ on each other: `k* × BC_nominal × 1.38` reproduces the physical
 * **The bias is not constant.** A single `k*` removes the mean
   bias but the residual climatology error (tens of percent over
   days) sets the hold-out floor &mdash; roughly 1 km at 5 days in
-  a quiet window at ~480 km. *Solution: none available at
-  constant-`k` level; this is the intrinsic ceiling of any
-  empirical thermosphere model. Storm-time indices (JB2008-class
-  models) or assimilative corrections would be needed to push
-  further, which is why `Cd` should be treated as a calibration
-  parameter, not a physical datum.*
+  a quiet window at ~480 km. *Solution: a time-varying node table.
+  SpOdy applies the calibration natively through
+  `force_model.density_scale` (constant `k*`) or
+  `density_scale_file` (piecewise-linear `k(t)` nodes, chapter 6),
+  so the fitted factor goes where it belongs instead of
+  misdeclaring the physical `Cd`. The remaining ceiling &mdash;
+  sub-daily density structure no multiplicative correction can
+  capture &mdash; would need storm-time indices (JB2008-class
+  models) or assimilative corrections.*
 * **Manoeuvres poison the arc silently.** A reboost inside the
   gap turns the whole comparison into noise. *Solution: read the
   event summary in the OEM comments before choosing the pair; for
