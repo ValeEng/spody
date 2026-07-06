@@ -67,9 +67,28 @@ widget on the right.
   `external/spody-core/raw_data/GRGM1200B/...` still round-trips.
   The dropdown refreshes automatically when the wizard finishes a
   new download or when `central_body` changes. The Earth-only
-  rows (`eop_file`, `iau2006_dir`, `space_weather_file`, `drag`)
+  rows (`eop_file`, `iau2006_dir`, `space_weather_file`,
+  `density_scale`, `density_scale_file`, `drag`)
   appear only when `central_body = "Earth"`; switching back to
   Moon hides them and drops them from the emitted TOML.
+- **Density calibration (`force_model.density_scale` /
+  `density_scale_file`)** &mdash; the drag-only pair from chapter 6:
+  a plain float row for the constant factor (leave empty for the
+  uncalibrated 1.0) and a path row for the fitted `mjd,k` node
+  table. Both are dropped from the emitted TOML when `drag` is off
+  or the central body is not Earth; the engine's XOR between the
+  two keys is checked by **Validate**, not by the form. The file
+  row carries a third button, **Calibrate...**: it asks for a
+  full-state reference binary (`spody convert gps / glonass /
+  oem`) and a fit window in hours, then runs `spody calibrate`
+  (chapter 12) through the same runner as RUN &mdash; the button
+  flips to a disabled *Calibrating...*, the per-window report
+  streams into the Run-tab console (the toolbar **Stop** aborts
+  it), and on success the row is auto-filled with the emitted
+  `k_nodes.csv` path (clearing the constant, honouring the XOR)
+  and the form is marked modified so you decide whether to save.
+  The bundled `examples/iss_drag_calibration/` scenario is the
+  ready-made playground for the whole loop.
 - **Epoch (`simulation.et_start_s`)** &mdash; a dual-cell row: the
   ET value on the left, a UTC ISO 8601 cell on the right, two
   arrow buttons between them. **&rarr;** converts ET to UTC,

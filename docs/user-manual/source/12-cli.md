@@ -435,7 +435,13 @@ Fits the time-varying density-scale table `k(t)` of chapter 11's
 entirely inside the engine &mdash; and writes it in exactly the
 format `[force_model].density_scale_file` consumes (chapter 6).
 One command closes the calibration loop: convert a reference, run
-`calibrate`, point the TOML at the emitted `k_nodes.csv`.
+`calibrate`, point the TOML at the emitted `k_nodes.csv`. The GUI
+form wraps the same command behind the **Calibrate...** button
+next to `density_scale_file` (chapter 5), streaming this report
+into the Run-tab console and auto-filling the path on success.
+The bundled `examples/iss_drag_calibration/` scenario ships the
+NASA/JSC ISS OEM plus its converted reference, ready for the whole
+workflow.
 
 Requirements, checked up front:
 

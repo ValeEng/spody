@@ -194,7 +194,11 @@ Ordered roughly by what unlocks the most for users.
       density-scale `k(t)` node table against a full-state
       reference (sliding windows, drag on/off arc pairs, in-track
       least squares); emits the `density_scale_file` consumed by
-      `[force_model]`
+      `[force_model]`. GUI: density-scale form rows + a
+      **Calibrate...** button that streams the fit report into the
+      Run-tab console and auto-fills the node-file path; bundled
+      `examples/iss_drag_calibration/` ISS bench (NASA/JSC OEM +
+      converted reference) exercises the whole loop
 - [x] One time-scale chain, engine and GUI: ET is true TDB
       end-to-end (IERS leap seconds + SPICE `deltet` TDB−TT term
       in `spody_time.c`, zero-ULP Python twin in `spopy/time.py`)

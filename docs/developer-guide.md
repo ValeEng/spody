@@ -846,9 +846,30 @@ Checklist, in order:
    `spopy.time`; `calibrate` was closed-loop tested (fit → node
    file → propagate → residual shrinks 8.35 km → 0.46 km on 3 ISS
    days). Local scripts under `tests/` (never committed).
-6. **Docs catch-up** (§3.3): manual ch. 12 section (+ ch. 6/11
-   pointers if the subcommand feeds a TOML key), README feature
-   list, CHANGELOG, this guide if the recipe moved.
+6. **GUI hookup, when the subcommand deserves a button** (the
+   Calibrate... button is the template — grep `calibrateRequested`):
+   - the form owns ONLY the inputs and the busy state: a
+     `QPushButton` in the relevant row, a minimal `QDialog` for the
+     arguments, a `<name>Requested = Signal(...)` on `TomlForm`,
+     and a `set_<name>_busy(bool)` that disables + relabels the
+     button (the user must SEE that the click did something);
+   - `MainWindow._action_<name>` does the heavy lifting through the
+     SHARED `SpodyRunner` (never a second QProcess): same
+     save-before-run gating as `_action_run`, banner + streaming
+     into the Run-tab console, toolbar Stop free of charge. Pass
+     the subcommand tail via `runner.run(..., extra_args=[...])`;
+   - results flow back by CAPTURING a report line
+     (`_on_calibrate_line` watches for the `nodes :` row while the
+     action's flag is armed) — never by re-parsing files the
+     engine already named on stdout. The completion pass
+     (`_finish_calibrate`) must run on EVERY exit path of
+     `_on_run_finished` (including the WIP early-return) and on
+     `_on_run_error`, and must stay idempotent;
+   - remember §3.3's GUI rule: launch `python -m spody_gui` and get
+     the owner's OK before committing.
+7. **Docs catch-up** (§3.3): manual ch. 12 section (+ ch. 5 form
+   row and ch. 6/11 pointers if the subcommand feeds a TOML key),
+   README feature list, CHANGELOG, this guide if the recipe moved.
 
 ## 6. Verifying changes
 

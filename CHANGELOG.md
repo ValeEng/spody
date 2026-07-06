@@ -8,6 +8,24 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Density calibration in the GUI + bundled ISS bench.** The
+  `[force_model]` form gains the `density_scale` /
+  `density_scale_file` rows (Earth-only, dropped from the emitted
+  TOML when drag is off) and a **Calibrate...** button next to the
+  file row: a minimal dialog (reference `.bin` + fit window in
+  hours) launches `spody calibrate` through the shared runner, the
+  button flips to a disabled *Calibrating...*, the per-window
+  report streams live into the Run-tab console (Stop works), and on
+  success the emitted `k_nodes.csv` path is auto-filled into the
+  form (clearing the constant key to honour the XOR). New bundled
+  example `examples/iss_drag_calibration/`: the NASA/JSC ISS OEM of
+  2024-07-03 (bundled &mdash; historical OEMs are not
+  re-downloadable) with its converted 15-day reference and a
+  ready-to-run TOML using the OEM's own mass / drag area / Cd;
+  the full 15-day calibration fits 15 nodes (k sliding 0.79
+  &rarr; 0.52 across the JSC forecast horizon, in-track rms
+  2.5&ndash;3 km &rarr; 8&ndash;40 m per window) in ~3 minutes.
+
 - **`spody calibrate` subcommand.** Fits the time-varying drag
   density-scale `k(t)` against a full-state reference trajectory,
   engine-side: the reference span is cut into sliding windows
