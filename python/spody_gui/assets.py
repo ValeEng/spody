@@ -241,6 +241,23 @@ IAU2006_TAB_SXY = Asset(
     body="Earth",
 )
 
+# CelesTrak combined space weather: daily F10.7 + 3-hour Ap from
+# 1957-10-01 through a ~45-day daily prediction tail plus monthly
+# long-range rows. Consumed by the NRLMSISE-00 drag density callback
+# (force_model.space_weather_file); needed only when drag is enabled.
+# CelesTrak regenerates it daily, so it gets the same startup
+# freshness HEAD probe as the EOP file.
+SPACE_WEATHER_FILE = Asset(
+    name="CelesTrak space weather (SW-All.csv)",
+    url="https://celestrak.org/SpaceData/SW-All.csv",
+    relpath="spaceweather/SW-All.csv",
+    min_bytes=1_000_000,
+    kind="raw",
+    required=False,
+    category="space_weather",
+    body="Earth",
+)
+
 # NASA Blue Marble Next Generation -- equirectangular RGB mosaic of
 # Earth's day side, December 2004 with topography + bathymetry. The
 # `world.topo.bathy.YYYYMM.3x5400x2700.jpg` ID encodes the monthly
@@ -328,6 +345,7 @@ def required_assets(coverage_value: str | None = None) -> tuple[Asset, ...]:
     out.extend((EIGEN_6C4_GFC, EIGEN_6C4_TAB,
                 EOP_FILE,
                 IAU2006_TAB_X, IAU2006_TAB_Y, IAU2006_TAB_SXY,
+                SPACE_WEATHER_FILE,
                 EARTH_TEXTURE,
                 STAR_TEXTURE))
     return tuple(out)
@@ -372,6 +390,10 @@ def asset_groups(coverage_value: str | None = None
          "IERS finals2000A.all (UT1, polar motion) + the IAU 2006 X / Y / "
          "s+XY/2 conventions tables (`tab5.2{a,b,d}.txt`).",
          (EOP_FILE, IAU2006_TAB_X, IAU2006_TAB_Y, IAU2006_TAB_SXY)),
+        ("Space weather (optional, drag runs only)",
+         "CelesTrak combined daily F10.7 + 3-hour Ap table feeding the "
+         "NRLMSISE-00 drag density model. Updated daily upstream.",
+         (SPACE_WEATHER_FILE,)),
         ("Textures (optional)",
          "Body-fixed photographic textures used by the 3D Analysis scene "
          "and the impact lat/lon backgrounds, plus an equirectangular "

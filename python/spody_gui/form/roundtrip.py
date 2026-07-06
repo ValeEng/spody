@@ -111,9 +111,20 @@ class RoundTripMixin:
                         flat.pop("spacecraft.srp.am_srp", None)
                     else:
                         flat.pop("spacecraft.srp.area_m2", None)
+                if not self._drag_check.isChecked():
+                    flat = {k: v for k, v in flat.items() if not k.startswith("spacecraft.drag.")}
+                else:
+                    # XOR inside [spacecraft.drag]: same rule as SRP.
+                    if self._drag_radio_area.isChecked():
+                        flat.pop("spacecraft.drag.am_drag", None)
+                    else:
+                        flat.pop("spacecraft.drag.area_m2", None)
             else:
                 flat = {k: v for k, v in flat.items()
                         if not (k.startswith("spacecraft.") or k == "spacecraft.mass_kg")}
+                if not self._dbr_drag_check.isChecked():
+                    flat.pop("debris.am_drag", None)
+                    flat.pop("debris.Cd",      None)
 
         # Optional sections: drop their fields entirely when the gating
         # checkbox is off so an unchecked block isn't emitted half-filled.
@@ -131,6 +142,13 @@ class RoundTripMixin:
         if str(cb).strip().lower() != "earth":
             flat.pop("force_model.eop_file",    None)
             flat.pop("force_model.iau2006_dir", None)
+            flat.pop("force_model.drag",        None)
+            flat.pop("force_model.space_weather_file", None)
+        # The space weather table only matters to the drag force; keep
+        # the emitted TOML minimal when drag is off (the widget still
+        # remembers the path for the next toggle-on).
+        if not flat.get("force_model.drag", False):
+            flat.pop("force_model.space_weather_file", None)
 
         # output.interval_s only applies to mode == "fixed"; in step
         # mode the field is hidden in the UI but the underlying widget
@@ -418,6 +436,21 @@ class RoundTripMixin:
                     self._srp_radio_area.setChecked(True)
                 self._on_srp_param_toggled()
 
+            # Drag gates (spacecraft block / debris pair).
+            has_drag = any(k.startswith("spacecraft.drag.") for k in flat)
+            self._drag_check.setChecked(has_drag)
+            self._on_drag_toggled(has_drag)
+            if has_drag:
+                if "spacecraft.drag.am_drag" in flat:
+                    self._drag_radio_am.setChecked(True)
+                else:
+                    self._drag_radio_area.setChecked(True)
+                self._on_drag_param_toggled()
+
+            has_dbr_drag = "debris.am_drag" in flat
+            self._dbr_drag_check.setChecked(has_dbr_drag)
+            self._on_debris_drag_toggled(has_dbr_drag)
+
             # Optional-block gates: events, batch.
             has_events = any(k.startswith("events.") for k in flat)
             self._events_check.setChecked(has_events)
@@ -513,6 +546,12 @@ class RoundTripMixin:
             self._on_srp_toggled(False)
             self._srp_radio_area.setChecked(True)
             self._on_srp_param_toggled()
+            self._drag_check.setChecked(False)
+            self._on_drag_toggled(False)
+            self._drag_radio_area.setChecked(True)
+            self._on_drag_param_toggled()
+            self._dbr_drag_check.setChecked(False)
+            self._on_debris_drag_toggled(False)
             self._events_check.setChecked(False)
             self._on_events_toggled(False)
             self._altcross_check.setChecked(False)

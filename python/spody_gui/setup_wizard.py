@@ -854,8 +854,9 @@ class _AssetRow(QWidget):
         """Asset-category-aware tail text appended to the size badge.
         For finals2000A.all (`category == "eop"`) we parse the file
         with spopy.MappedEOP and surface the Bulletin B horizon (last
-        observed MJD) and the prediction horizon (last predicted MJD)
-        as informational text. For any other asset returns "".
+        observed MJD) and the prediction horizon (last predicted MJD);
+        for SW-All.csv (`category == "space_weather"`) the date of the
+        last OBSERVED space-weather row. For any other asset returns "".
 
         No colour coding: both Bulletin B and the prediction window
         lag real time by construction (B by ~30 days, A predictions
@@ -865,6 +866,23 @@ class _AssetRow(QWidget):
         MainWindow._maybe_warn_eop_stale, which compares the local
         mtime against the server's Last-Modified.
         """
+        if self.asset.category == "space_weather":
+            # CelesTrak SW CSV: everything past the last OBS row is
+            # prediction, which is what a drag user cares about.
+            # Column 26 is F10.7_DATA_TYPE in the stable CSV schema
+            # (same offsets the engine parser uses).
+            try:
+                last_obs = ""
+                with open(p, "r", encoding="ascii", errors="replace") as fh:
+                    next(fh, None)          # header
+                    for line in fh:
+                        cols = line.split(",")
+                        if len(cols) > 26 and cols[26].strip() == "OBS":
+                            last_obs = cols[0]
+            except OSError:
+                return "; UNREADABLE"
+            return f"; observed data through {last_obs}" if last_obs else ""
+
         if self.asset.category != "eop":
             return ""
         try:

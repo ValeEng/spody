@@ -910,3 +910,15 @@ class VisibilityMixin:
         use_area = self._srp_radio_area.isChecked()
         self._widgets["spacecraft.srp.area_m2"].setEnabled(use_area)
         self._widgets["spacecraft.srp.am_srp"].setEnabled(not use_area)
+
+    def _on_drag_toggled(self, checked: bool) -> None:
+        self._drag_box.setVisible(checked)
+
+    def _on_drag_param_toggled(self) -> None:
+        """Same XOR grey-out as SRP, for area_m2 / am_drag."""
+        use_area = self._drag_radio_area.isChecked()
+        self._widgets["spacecraft.drag.area_m2"].setEnabled(use_area)
+        self._widgets["spacecraft.drag.am_drag"].setEnabled(not use_area)
+
+    def _on_debris_drag_toggled(self, checked: bool) -> None:
+        self._dbr_drag_box.setVisible(checked)

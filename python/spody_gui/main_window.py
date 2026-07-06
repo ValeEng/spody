@@ -939,30 +939,36 @@ class MainWindow(QMainWindow):
         self._open_setup_wizard()
 
     def _maybe_warn_eop_stale(self) -> None:
-        """One-shot startup gate: HEAD the IERS finals2000A.all URL and
-        compare the server's Last-Modified with our local file's mtime.
-        If the server has a fresher version we missed (i.e. IERS pushed
-        a Bulletin A update since the user last downloaded), offer a
-        one-click re-download.
+        """One-shot startup gate over the daily-updated remote tables:
+        the IERS EOP file and the CelesTrak space weather CSV. For each
+        one that is already on disk, HEAD its canonical URL and compare
+        the server's Last-Modified with the local mtime; if the server
+        has a fresher version (IERS pushes Bulletin A weekly, CelesTrak
+        regenerates daily), offer a one-click re-download.
 
-        The URL comes from `assets.EOP_FILE.url` (the same field the
-        wizard exposes for editing) -- never hard-coded here. Skipped
-        silently when:
+        The URLs come from the `assets` descriptors (the same field the
+        wizard exposes for editing) -- never hard-coded here. Each probe
+        is skipped silently when:
           - the file isn't downloaded yet (the wizard-pop covers that),
-          - the HEAD request fails (offline, firewall, IERS outage),
+          - the HEAD request fails (offline, firewall, server outage),
           - the server is not newer than our local copy.
 
-        Note: this REPLACES an earlier check that fired on the file's
-        `mjd_last_observed` age, which was misleading because Bulletin B
-        always lags ~30 days behind real time regardless of how fresh
-        the file actually is -- the dialog popped after every download.
+        Note: this REPLACES an earlier check that fired on the EOP
+        file's `mjd_last_observed` age, which was misleading because
+        Bulletin B always lags ~30 days behind real time regardless of
+        how fresh the file actually is -- the dialog popped after every
+        download.
         """
+        for asset in (assets.EOP_FILE, assets.SPACE_WEATHER_FILE):
+            self._warn_if_asset_stale(asset)
+
+    def _warn_if_asset_stale(self, asset) -> None:
         root = self._store.data_dir()
-        eop_path = root / "eop" / "finals2000A.all"
-        if not eop_path.is_file():
+        path = root / asset.relpath
+        if not path.is_file():
             return
 
-        url = assets.EOP_FILE.url
+        url = asset.url
         try:
             import urllib.request
             req = urllib.request.Request(url, method="HEAD")
@@ -986,8 +992,8 @@ class MainWindow(QMainWindow):
             server_lm = server_lm.replace(tzinfo=timezone.utc)
 
         local_mtime = datetime.fromtimestamp(
-            eop_path.stat().st_mtime, tz=timezone.utc)
-        local_size = eop_path.stat().st_size
+            path.stat().st_mtime, tz=timezone.utc)
+        local_size = path.stat().st_size
         try:
             server_size = int(server_size_str) if server_size_str else None
         except ValueError:
@@ -995,15 +1001,15 @@ class MainWindow(QMainWindow):
 
         # Up-to-date iff the server has not modified the file since we
         # downloaded AND the byte count still matches. The size check
-        # is belt-and-suspenders: IERS finals2000A.all is append-only,
-        # so any new daily record changes the length.
+        # is belt-and-suspenders: both tables are effectively
+        # append-only, so any new daily record changes the length.
         if server_lm <= local_mtime and (
                 server_size is None or server_size == local_size):
             return
 
         choice = QMessageBox.question(
-            self, "IERS EOP update available",
-            "A newer IERS finals2000A.all is available on the server.\n\n"
+            self, f"{asset.name} update available",
+            f"A newer {path.name} is available on the server.\n\n"
             f"  server : {server_lm.strftime('%Y-%m-%d %H:%M UTC')}"
             f"  ({server_size or '?'} B)\n"
             f"  local  : {local_mtime.strftime('%Y-%m-%d %H:%M UTC')}"
@@ -1015,11 +1021,11 @@ class MainWindow(QMainWindow):
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
-        # Open the wizard AND immediately trigger the EOP row's
+        # Open the wizard AND immediately trigger the asset row's
         # download. The wizard remains modal; the download progresses
         # in its row's progress bar while the user watches.
         dlg = SetupWizard(self._store, self)
-        row = dlg._rows.get("eop/finals2000A.all")
+        row = dlg._rows.get(asset.relpath)
         if row is not None:
             row.start_download()
         dlg.exec()

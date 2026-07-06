@@ -234,6 +234,34 @@ class SectionBuildersMixin:
         self._srp_box.setVisible(False)
         self._on_srp_param_toggled()
 
+        # Optional [spacecraft.drag] sub-block, same shape as SRP
+        # (area_m2 XOR am_drag + a coefficient).
+        self._drag_check = QCheckBox("Enable [spacecraft.drag]")
+        self._drag_check.toggled.connect(self._on_drag_toggled)
+        self._drag_check.toggled.connect(lambda _: self._touch())
+        spc_form.addRow("", self._drag_check)
+
+        self._drag_box = QWidget()
+        drag_form = QFormLayout(self._drag_box)
+
+        self._drag_radio_area = QRadioButton("area_m2 (derive A/m)")
+        self._drag_radio_am   = QRadioButton("am_drag (direct A/m)")
+        self._drag_radio_area.setChecked(True)
+        drag_radio_row = QHBoxLayout()
+        drag_radio_row.addWidget(self._drag_radio_area)
+        drag_radio_row.addWidget(self._drag_radio_am)
+        drag_radio_row.addStretch(1)
+        drag_form.addRow("Parameter", hwrap(drag_radio_row))
+
+        self._add_float(drag_form, "spacecraft.drag.area_m2", "area_m2")
+        self._add_float(drag_form, "spacecraft.drag.am_drag", "am_drag")
+        self._add_float(drag_form, "spacecraft.drag.Cd",      "Cd")
+        self._drag_radio_area.toggled.connect(self._on_drag_param_toggled)
+        self._drag_radio_area.toggled.connect(lambda _: self._touch())
+        spc_form.addRow(self._drag_box)
+        self._drag_box.setVisible(False)
+        self._on_drag_param_toggled()
+
         v.addWidget(self._spc_box)
 
         # ---- Debris box --------------------------------------------
@@ -241,6 +269,20 @@ class SectionBuildersMixin:
         dbr_form = QFormLayout(self._dbr_box)
         self._add_float(dbr_form, "debris.am_srp", "am_srp")
         self._add_float(dbr_form, "debris.Cr",     "Cr")
+
+        # Optional drag pair (both-or-neither in the engine schema).
+        self._dbr_drag_check = QCheckBox("Enable drag (am_drag + Cd)")
+        self._dbr_drag_check.toggled.connect(self._on_debris_drag_toggled)
+        self._dbr_drag_check.toggled.connect(lambda _: self._touch())
+        dbr_form.addRow("", self._dbr_drag_check)
+
+        self._dbr_drag_box = QWidget()
+        dbr_drag_form = QFormLayout(self._dbr_drag_box)
+        self._add_float(dbr_drag_form, "debris.am_drag", "am_drag")
+        self._add_float(dbr_drag_form, "debris.Cd",      "Cd")
+        dbr_form.addRow(self._dbr_drag_box)
+        self._dbr_drag_box.setVisible(False)
+
         v.addWidget(self._dbr_box)
         self._dbr_box.setVisible(False)
 
@@ -466,10 +508,18 @@ class SectionBuildersMixin:
             f, "force_model.iau2006_dir", "iau2006_dir",
             "", pick_dir=True,
         )
+        # Drag-only asset; Earth-only today like the two rows above
+        # (the only registered atmosphere model is Earth/NRLMSISE-00).
+        self._fm_sw_row = self._add_path(
+            f, "force_model.space_weather_file", "space_weather_file",
+            "CelesTrak space weather (*.csv);;All Files (*)",
+        )
 
         self._add_strlist_checks(f, "force_model.third_bodies", "third_bodies",
                                  THIRD_BODIES_ALL)
         self._add_bool (f, "force_model.srp", "srp")
+        self._fm_drag_row = f.rowCount()
+        self._add_bool (f, "force_model.drag", "drag")
 
         # Hook visibility of the Earth-only rows to the central_body
         # combo. Initial sync uses the combo's current value (set by
@@ -501,17 +551,25 @@ class SectionBuildersMixin:
         if not hasattr(self, "_fm_force_form"):
             return  # called too early during construction
         is_earth = (body.strip().lower() == "earth")
-        for row in (self._fm_eop_row, self._fm_iau_row):
+        # Drag rows follow the same gate as EOP/IAU today because Earth
+        # is the only body with a registered atmosphere model; when a
+        # Mars atmosphere lands this becomes a per-body capability
+        # lookup instead of a name check.
+        for row in (self._fm_eop_row, self._fm_iau_row, self._fm_sw_row,
+                    self._fm_drag_row):
             self._fm_force_form.setRowVisible(row, is_earth)
 
         if is_earth and self._store is not None:
             data_root = self._store.data_dir()
             eop_w = self._widgets.get("force_model.eop_file")
             iau_w = self._widgets.get("force_model.iau2006_dir")
+            sw_w  = self._widgets.get("force_model.space_weather_file")
             if isinstance(eop_w, QLineEdit) and not eop_w.text().strip():
                 eop_w.setText(str(data_root / "eop" / "finals2000A.all"))
             if isinstance(iau_w, QLineEdit) and not iau_w.text().strip():
                 iau_w.setText(str(data_root / "iau2006"))
+            if isinstance(sw_w, QLineEdit) and not sw_w.text().strip():
+                sw_w.setText(str(data_root / "spaceweather" / "SW-All.csv"))
         # Refresh the input_frame combo: the BF radio's label tracks the
         # central body's bf_frame_name (ITRS for Earth, PA for Moon).
         self._refresh_input_frame_availability()

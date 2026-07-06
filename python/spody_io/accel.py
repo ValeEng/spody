@@ -25,7 +25,7 @@ One record = one `ForceBreakdown` C struct (360 bytes on x86_64 with
     (4 bytes padding to 8-byte align)
     double acc_thirdbody[8][3]     per-body breakdown (unused slots = 0)
     double acc_srp[3]
-    double acc_drag[3]             placeholder today
+    double acc_drag[3]             atmospheric drag (zero when drag off)
     double eclipse_fraction        1=full sun, 0=full umbra
 """
 from __future__ import annotations
