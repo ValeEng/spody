@@ -188,7 +188,13 @@ Ordered roughly by what unlocks the most for users.
       .tab format), `sp3` (IGS SP3 precise orbits → SpOdy
       reference binary, multi-file concat), `glonass` /
       `gps` (RINEX-NAV broadcast → SpOdy reference binary, multi-
-      file)
+      file), `oem` (CCSDS OEM text → SpOdy reference binary,
+      multi-file, overlap-deduplicated)
+- [x] `spody calibrate` — engine-side fit of the drag
+      density-scale `k(t)` node table against a full-state
+      reference (sliding windows, drag on/off arc pairs, in-track
+      least squares); emits the `density_scale_file` consumed by
+      `[force_model]`
 - [x] One time-scale chain, engine and GUI: ET is true TDB
       end-to-end (IERS leap seconds + SPICE `deltet` TDB−TT term
       in `spody_time.c`, zero-ULP Python twin in `spopy/time.py`)

@@ -790,6 +790,66 @@ Shortest recipe, sharpest edges:
    moved, and write the numbers in the CHANGELOG (the 2026-07 deltet
    entry is the template).
 
+### 5.11 New CLI subcommand or format converter
+
+Canonical examples: `spody convert oem` (converter, spody-core
+`spody_oem.{h,c}`) and `spody calibrate` (subcommand,
+`src/calibrate.{h,c}`). The split rule decides where the code goes
+**before** you write it:
+
+- **Format converters live in spody-core**, one file per format,
+  next to `spody_sp3.c` / `spody_gps.c` / `spody_glonass.c` /
+  `spody_oem.c`. They read an external text/binary format and emit a
+  SpOdy wire format (usually `SPDYOUT_`). They must not depend on
+  app-side code (`toml_input`, `sim_setup`, ...).
+- **Subcommands that orchestrate propagations live app-side**, one
+  `src/<name>.{h,c}` pair plus a thin `cmd_<name>` arg-parsing
+  wrapper in `main.c`. `calibrate` is the template: load + validate
+  the TOML exactly like `cmd_propagate`, build ONE
+  `SimulationShared`, then run as many short-lived
+  `SimulationWorker`s as needed off mutated **copies** of the
+  `InputConfig` (struct assignment is safe: the copy shares
+  read-only heap pointers and is never passed to
+  `spody_free_input`).
+
+Checklist, in order:
+
+1. **Converter (if any) first, in the core clone** (§3.1 dance):
+   new `include/spody_<fmt>.h` + `src/spody_<fmt>.c`, license
+   header, static preamble writer per file (the existing converters
+   deliberately keep their own copies), 0-anchored time column (the
+   absolute epoch travels in the TOML's `et_start_s` — this is the
+   workflow-wide contract). Add the source to the core
+   `CMakeLists.txt` **and the header to `spody_core.h`** (forgetting
+   the umbrella means the app cannot see the symbol).
+2. **Epoch arithmetic**: never build ET through a full-magnitude JD
+   (ulp of a modern JD is ~40 µs ≈ 30 cm along a LEO track).
+   Compute the date's **midnight JD** (exact half-integer), take
+   `(jd0 - JD_J2000) * SECONDSxDAY + seconds-of-day`, then apply
+   the timescale chain (`spody_tai_minus_utc`, `TT2TAI_SEC`,
+   `spody_tdb_minus_tt`).
+3. **Any reusable math** the subcommand needs (interpolation,
+   vector primitives, ...) goes in `spody_math` — owner's standing
+   rule; `spody_dot3` / `spody_cross3` / `spody_bracket_index` /
+   `spody_interp_linear` are already there. Numeric defaults and
+   thresholds go in `spody_const.h` (`SPODY_CAL_*` is the
+   pattern), never inline.
+4. **App side**: `src/<name>.c` in the app `CMakeLists.txt`,
+   `cmd_<name>` + dispatch line + `usage()` entry + the subcommand
+   list in `main.c`'s header comment. Outputs follow the run-folder
+   convention: `spody_io_make_run_subdir` +
+   `spody_io_run_subdir_filepath` + TOML snapshot, so every run is
+   self-contained and ts-prefixed.
+5. **Verify** with an independent oracle, not self-consistency: the
+   OEM converter was cross-checked field-by-field (bitwise states,
+   0.0 time axis) against a separate Python parse via
+   `spopy.time`; `calibrate` was closed-loop tested (fit → node
+   file → propagate → residual shrinks 8.35 km → 0.46 km on 3 ISS
+   days). Local scripts under `tests/` (never committed).
+6. **Docs catch-up** (§3.3): manual ch. 12 section (+ ch. 6/11
+   pointers if the subcommand feeds a TOML key), README feature
+   list, CHANGELOG, this guide if the recipe moved.
+
 ## 6. Verifying changes
 
 ### 6.1 Engine changes

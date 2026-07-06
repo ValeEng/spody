@@ -21,14 +21,15 @@ The conventions throughout the chapter:
 spody.exe <command> [arguments]
 ```
 
-The five commands are:
+The six commands are:
 
 | Command           | Purpose                                      |
 |-------------------|----------------------------------------------|
 | `validate`        | parse + sanity-check an input TOML, no run   |
 | `propagate`       | run a single-case simulation                 |
 | `batch`           | run a multi-case sweep                       |
-| `convert`         | data-file conversions (ephemeris, harmonics, SP3, GLONASS) |
+| `convert`         | data-file conversions (ephemeris, harmonics, SP3, GLONASS, GPS, OEM) |
+| `calibrate`       | fit the drag density-scale `k(t)` nodes against a reference |
 | `info`            | print version + build info                   |
 
 Pass `--help` or no command to print a short usage summary.
@@ -369,13 +370,158 @@ spody.exe convert gps `
 Each file contributes its own per-file summary line on stderr,
 followed by an aggregate line covering the whole track.
 
-**Exit codes** (sp3, glonass, gps).
+### `spody convert oem`
+
+```
+spody.exe convert oem <input.oem> [input.oem ...] <output.bin>
+```
+
+Converts one or more CCSDS OEM (Orbit Ephemeris Message) text files
+&mdash; the format used by the NASA/JSC public ISS trajectory
+ephemerides, among many others &mdash; into a SpOdy `SPDYOUT_`
+reference binary with full `(r, v)` states. This is the reference
+of choice for `spody calibrate` on LEO spacecraft: operator OEMs
+carry tracking-fresh states plus, usually, mass / drag-area /
+event-summary comments.
+
+Supported subset (anything else is rejected with a message naming
+the offending line):
+
+- `REF_FRAME` &mdash; `ICRF`, `EME2000` or `J2000`. Per the SPICE
+  convention J2000 &equiv; ICRF, so no rotation (and no EOP data)
+  is involved.
+- `TIME_SYSTEM` &mdash; `UTC` (full leap-second chain + TDB
+  periodic term) or `TDB`.
+- Epochs in calendar ISO form `YYYY-MM-DDThh:mm:ss[.sss]` (the
+  day-of-year OEM variant is not supported).
+- Ephemeris rows `epoch x y z vx vy vz` in km / km/s; optional
+  trailing acceleration columns are ignored, `COMMENT` lines and
+  covariance blocks are skipped, multi-segment files (several
+  `META_START` blocks) are fine.
+
+Multi-file inputs are concatenated into one binary with a
+continuous 0-anchored time axis; pass them in **chronological
+order**. Consecutive operator releases overlap in span, so any
+record that does not advance past the last written epoch is
+dropped (**first file wins**) and counted in the summary line. To
+calibrate against the freshest prediction of each day, convert the
+files one at a time instead.
+
+**Example.** The ISS reference used in chapter 11's bench:
+
+```powershell
+spody.exe convert oem .\ISS_OEM_2024-07-03.txt .\iss_ref.bin
+```
+
+The stderr summary reports the record count, the ET span in hours
+and the number of skipped overlapping records.
+
+**Exit codes** (sp3, glonass, gps, oem).
 
 - `0` &mdash; conversion succeeded (or wrote zero records with a
   WARNING when the requested `<sat_id>` was absent across all
   inputs).
 - `1` &mdash; missing file, parse error, frame-rotation setup
   failure, or write failure.
+
+## `spody calibrate`
+
+```
+spody.exe calibrate <input.toml> <reference.bin> [--window <hours>]
+```
+
+Fits the time-varying density-scale table `k(t)` of chapter 11's
+*Drag validation and ballistic calibration* section &mdash;
+entirely inside the engine &mdash; and writes it in exactly the
+format `[force_model].density_scale_file` consumes (chapter 6).
+One command closes the calibration loop: convert a reference, run
+`calibrate`, point the TOML at the emitted `k_nodes.csv`.
+
+Requirements, checked up front:
+
+- the TOML is a valid single-scenario input with
+  `force_model.drag = true` (the whole drag stack &mdash;
+  `[spacecraft.drag]`, `space_weather_file` &mdash; must be
+  configured; a density scale is unobservable otherwise);
+- `[simulation].et_start_s` equals the epoch of the reference's
+  first record &mdash; the same 0-anchored-time contract as the
+  Analysis-tab diff workflow;
+- the reference is a `SPDYOUT_` binary with **full states**
+  (`convert gps`, `convert glonass` or `convert oem`). SP3-derived
+  binaries carry zero velocities and are rejected: each window
+  re-anchors the propagation on a reference state.
+
+Any `density_scale` / `density_scale_file` already in the TOML is
+ignored (with a warning): the fit must price the raw, uncalibrated
+model. The TOML's `[initial_state]` and `duration_s` are ignored
+too &mdash; the calibration span is the reference span, and every
+window anchors on the reference itself.
+
+**Method.** The reference span is cut into windows of `--window`
+hours (default 24; at least 6 reference samples per window, a runt
+tail is folded into the last window). Per window the engine:
+
+1. anchors the initial state on the reference record at the window
+   start;
+2. propagates the window twice &mdash; drag **off** and drag **on**
+   at `k = 1`;
+3. resamples both arcs onto the reference epochs (cubic Hermite
+   between accepted steps) and projects the position residuals on
+   the **in-track** axis of the reference's RIC triad;
+4. solves the closed-form least squares
+   `k* = -sum(I_off * dI) / sum(dI^2)` with `dI = I_on - I_off`
+   (in-track drift is linear in the density scale &mdash; chapter
+   11 derives why);
+5. emits one node `(mjd_utc_of_window_centre, k*)`.
+
+Windows with no usable fit are **skipped with a warning** rather
+than failing the run: a drag signal below 1 mm rms in-track (widen
+`--window`), or a non-positive fitted `k` (typically a manoeuvre
+inside the window). The piecewise-linear evaluator bridges the gap
+between the surviving nodes; if *no* window survives, the command
+fails.
+
+**Outputs.** A fresh timestamped run folder under the TOML's
+`output_dir` (self-contained, like every run): the snapshot TOML,
+the per-window `cal_wNNN_off.bin` / `cal_wNNN_on.bin` arcs (kept
+for inspection &mdash; they are ordinary trajectory binaries the
+Analysis tab can open), and `<ts>_k_nodes.csv`. The report goes to
+stdout, one line per window:
+
+```
+  [ 1/ 3] t=    0.00..   24.00 h  n=  360  k=0.7931 +/- 0.0006  in-track rms 2685.1 -> 36.7 m
+```
+
+`n` is the number of fitted reference samples, `+/-` the 1-sigma
+of the fit, and the two rms values are the raw (`k = 1`) and
+post-fit in-track residuals over the window. The footer reports
+the node file path and the **pooled k** (the constant-scale
+equivalent over the whole span, i.e. what you would put in
+`force_model.density_scale` if a single number is enough).
+
+To use the result, copy (or reference) the node file from the
+scenario and set:
+
+```toml
+[force_model]
+density_scale_file = "k_nodes.csv"
+```
+
+Mind the node span: nodes sit at window *centres*, so a
+propagation covering the full reference span extends half a window
+past the first/last node on each side &mdash; the engine holds the
+end values there and prints the chapter-6 clamp warning. That is
+by design and harmless.
+
+**Cost.** Two short propagations per window &mdash; a 3-day ISS
+reference with 24 h windows (6 day-arcs) fits in ~35 s.
+
+**Exit codes.**
+
+- `0` &mdash; at least one window produced a node and the file was
+  written.
+- `1` &mdash; parse/validation failure, reference format error,
+  a propagation failure inside a window, or every window skipped.
 
 ## `spody info`
 

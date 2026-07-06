@@ -8,6 +8,35 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **`spody calibrate` subcommand.** Fits the time-varying drag
+  density-scale `k(t)` against a full-state reference trajectory,
+  engine-side: the reference span is cut into sliding windows
+  (`--window <hours>`, default 24), each window re-anchors the
+  initial state on the reference and propagates a drag-off/drag-on
+  arc pair, both are resampled onto the reference epochs (cubic
+  Hermite) and the in-track residuals give the closed-form
+  least-squares `k` per window. Emits `k_nodes.csv` in exactly the
+  `density_scale_file` format plus a per-window report (k, 1-sigma,
+  raw vs post-fit in-track rms) and a pooled constant-`k`
+  equivalent. Degenerate windows (drag signal < 1 mm rms, or a
+  non-positive fitted `k` from a manoeuvre) are skipped with a
+  warning. Closed-loop check on a 3-day ISS arc vs the NASA/JSC
+  OEM: in-track rms 8.35 km (`k = 1`) &rarr; 0.46 km with the
+  fitted 3-node table. Manual chapter 12 documents the command,
+  chapter 11 the method.
+
+- **`spody convert oem`.** CCSDS OEM text (e.g. the NASA/JSC public
+  ISS ephemerides) &rarr; `SPDYOUT_` full-state reference binary.
+  Accepts `REF_FRAME` ICRF/EME2000/J2000 (SPICE convention: no
+  rotation, no EOP needed) and `TIME_SYSTEM` UTC/TDB; skips
+  comments and covariance blocks; multi-file concatenation with
+  first-file-wins overlap deduplication. Epochs are built from the
+  midnight JD so the text field's full resolution survives (a
+  full-magnitude JD would quantise at ~40 &micro;s &asymp; 30 cm
+  along a LEO track). Cross-checked bit-for-bit (states) and to
+  0.0 s (time axis) against an independent Python parse of the ISS
+  files.
+
 - **Density calibration factor for drag** (`force_model.density_scale`
   / `density_scale_file`). The drag force can now apply a
   multiplicative correction to the NRLMSISE-00 density: a constant

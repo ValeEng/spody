@@ -401,7 +401,11 @@ on each other: `k* × BC_nominal × 1.38` reproduces the physical
   `force_model.density_scale` (constant `k*`) or
   `density_scale_file` (piecewise-linear `k(t)` nodes, chapter 6),
   so the fitted factor goes where it belongs instead of
-  misdeclaring the physical `Cd`. The remaining ceiling &mdash;
+  misdeclaring the physical `Cd`; and the whole fit described in
+  this section &mdash; window partition, drag on/off arc pairs,
+  in-track least squares &mdash; is automated by the
+  `spody calibrate` subcommand (chapter 12), which emits the node
+  file directly. The remaining ceiling &mdash;
   sub-daily density structure no multiplicative correction can
   capture &mdash; would need storm-time indices (JB2008-class
   models) or assimilative corrections.*
