@@ -11,6 +11,7 @@ without copying-and-tweaking from an existing one.
 | [`lro_6day/`](lro_6day/)         | propagate | NASA LRO 6-day reference -- the validation scenario     |
 | [`batch_demo/`](batch_demo/)     | batch     | Smoke test: 3-case mass + SRP sweep over 1 hour         |
 | [`debris_demo/`](debris_demo/)   | batch     | Debris-mode A/m sweep -- 3 cases, 1 hour                |
+| [`iss_drag_calibration/`](iss_drag_calibration/) | propagate + calibrate | ISS 15-day drag bench vs the NASA/JSC OEM: `convert oem` -> `spody calibrate` -> propagate with the fitted k(t) |
 
 ---
 

@@ -92,6 +92,13 @@ examples/gps_g11_validation/*
 examples/glonass_r03_validation/*
 !examples/glonass_r03_validation/input.toml
 
+# ISS drag-calibration bench: unlike the GNSS examples, the source
+# OEM IS bundled (NASA only hosts the *current* ISS ephemeris --
+# historical ones are not re-downloadable) together with its
+# converted SPDYOUT_ reference, so the calibration workflow runs
+# out of the box.
+!examples/iss_drag_calibration/iss_oem_2024_07_03_15d_ref.bin
+
 # Python
 __pycache__/
 *.py[cod]

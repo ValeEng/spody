@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import os
 import sys
 
 from PySide6.QtCore import QUrl
@@ -242,6 +243,16 @@ class MainWindow(QMainWindow):
         # _on_form_loaded_or_saved.
         self._form.modificationChanged.connect(self._refresh_title)
         self._form.runRequested.connect(self._action_run)
+        self._form.calibrateRequested.connect(self._action_calibrate)
+        # Calibrate bookkeeping: while a `spody calibrate` run is in
+        # flight we watch the streamed lines for the `nodes :` report
+        # row so the form's density_scale_file can be auto-filled on
+        # success. `_calibrate_run_cwd` anchors the engine's
+        # CWD-relative path back to an absolute one.
+        self._calibrate_active = False
+        self._calibrate_nodes_path: str | None = None
+        self._calibrate_run_cwd: Path | None = None
+        self._runner.line_received.connect(self._on_calibrate_line)
 
         self._build_menus()
         self._refresh_title()
@@ -692,6 +703,61 @@ class MainWindow(QMainWindow):
     def _action_stop(self) -> None:
         self._runner.stop()
 
+    def _action_calibrate(self, ref_path: str, window_h: float) -> None:
+        """Launch `spody calibrate <toml> <ref> --window <h>` through
+        the shared runner: same save-before-run gating as
+        `_action_run`, report streamed line-by-line into the Run-tab
+        console, Stop button live. The Calibrate... button flips to a
+        disabled 'Calibrating...' for the duration; on success the
+        engine's `nodes :` line (captured by `_on_calibrate_line`)
+        auto-fills the form's density_scale_file row."""
+        if self._runner.is_running():
+            QMessageBox.warning(self, "Calibrate",
+                "A spody process is already running; stop it first.")
+            return
+        spody_bin = self._store.spody_binary()
+        if not spody_bin or not Path(spody_bin).exists():
+            QMessageBox.warning(
+                self, "spody binary not set",
+                "Set the path to spody.exe in Settings > Paths first."
+            )
+            return
+        if not self._require_data_ready("Cannot calibrate"):
+            return
+        if self._form.current_path() is None or self._form.is_modified():
+            if not self._maybe_save():
+                return
+        current = self._form.current_path()
+        if current is None:
+            return  # user cancelled the save prompt
+        self._terminal.clear()
+        self._terminal.append_line(
+            f"$ {Path(spody_bin).name} calibrate {current.name} "
+            f"{Path(ref_path).name} --window {window_h:g}"
+        )
+        run_cwd = _project_root_for_toml(current)
+        self._calibrate_active = True
+        self._calibrate_nodes_path = None
+        self._calibrate_run_cwd = run_cwd
+        self._form.set_calibrate_busy(True)
+        self._runner.run(spody_bin, "calibrate", current, cwd=run_cwd,
+                         extra_args=[ref_path, "--window", f"{window_h:g}"])
+
+    def _on_calibrate_line(self, line: str) -> None:
+        """Capture the `  nodes      : <path>  (N nodes)` report row
+        of a running calibration; ignored for every other subcommand
+        (the flag is only set by `_action_calibrate`)."""
+        if not self._calibrate_active:
+            return
+        stripped = line.strip()
+        if not stripped.startswith("nodes"):
+            return
+        _, _, value = stripped.partition(":")
+        # Drop the trailing "  (N nodes)" annotation; the path itself
+        # contains no double-space + parenthesis sequence (run folders
+        # are UTC timestamps).
+        self._calibrate_nodes_path = value.split("  (")[0].strip()
+
     def _on_rerun_requested(self, toml_path: Path) -> None:
         """RerunPanel finalised a subset and wrote a new input.toml.
         Load it into the form (so the user sees what's about to run),
@@ -778,6 +844,10 @@ class MainWindow(QMainWindow):
                       else origin)
             if target.is_file():
                 self._open_path(target)
+                # A calibrate launched from a WIP still needs its
+                # completion pass (busy reset + node-file auto-fill on
+                # the freshly reloaded snapshot) before this early exit.
+                self._finish_calibrate(exit_code)
                 return
 
         # Refresh analysis + combo so the new run's outputs (the
@@ -799,6 +869,46 @@ class MainWindow(QMainWindow):
                 self._refresh_toml_combo()
         else:
             self._refresh_toml_combo()
+        self._finish_calibrate(exit_code)
+
+    def _finish_calibrate(self, exit_code: int) -> None:
+        """Completion pass of a `spody calibrate` run: re-enable the
+        form's Calibrate... button and, on success, point the form's
+        density_scale_file row at the emitted k_nodes.csv (relative to
+        the TOML when possible, so the scenario stays relocatable).
+        No-op unless `_action_calibrate` armed the flag; idempotent,
+        so it is safe to call from both exit paths of
+        `_on_run_finished` and from `_on_run_error`."""
+        if not self._calibrate_active:
+            return
+        self._calibrate_active = False
+        self._form.set_calibrate_busy(False)
+        nodes   = self._calibrate_nodes_path
+        run_cwd = self._calibrate_run_cwd
+        self._calibrate_nodes_path = None
+        self._calibrate_run_cwd = None
+        if exit_code != 0:
+            return
+        if not nodes or run_cwd is None:
+            self._terminal.append_line(
+                "[calibrate: no nodes line found in the report]")
+            return
+        abs_nodes = (run_cwd / nodes).resolve()
+        if not abs_nodes.is_file():
+            self._terminal.append_line(
+                f"[calibrate: nodes file not found at {abs_nodes}]")
+            return
+        current = self._form.current_path()
+        target = str(abs_nodes)
+        if current is not None:
+            try:
+                target = os.path.relpath(abs_nodes, current.parent)
+            except ValueError:
+                pass  # different drive on Windows -> keep absolute
+        self._form.set_density_scale_file(target)
+        self._terminal.append_line(
+            f"[calibrate: density_scale_file set to {target} -- "
+            f"save the TOML to keep it]")
 
     def _latest_run_snapshot(self) -> Path | None:
         """Path of the per-run `input.toml` snapshot of the most
@@ -881,6 +991,10 @@ class MainWindow(QMainWindow):
 
     def _on_run_error(self, message: str) -> None:
         self._terminal.append_line(f"[runner error: {message}]")
+        # A calibrate that failed to launch never reaches finished;
+        # clear the button's busy state here (idempotent when the
+        # finished signal does follow).
+        self._finish_calibrate(-1)
 
     def _refresh_run_status(self) -> None:
         if self._runner.is_running():

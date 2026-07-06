@@ -48,9 +48,12 @@ class SpodyRunner(QObject):
     # Lifecycle
     # ------------------------------------------------------------------
     def run(self, spody_bin: str, subcommand: str, toml_path: Path,
-            cwd: Path | None = None) -> None:
-        """Launch `spody_bin <subcommand> <toml_path>` with the working
-        directory set to `cwd` (when given) or to the TOML's parent.
+            cwd: Path | None = None,
+            extra_args: list[str] | None = None) -> None:
+        """Launch `spody_bin <subcommand> <toml_path> [extra_args...]`
+        with the working directory set to `cwd` (when given) or to the
+        TOML's parent. `extra_args` carries subcommand tails such as
+        calibrate's `<reference.bin> --window <h>`.
 
         The override matters for snapshots / WIP files that live deep
         inside `output/<ts>/`: running them with CWD = `toml.parent`
@@ -77,7 +80,8 @@ class SpodyRunner(QObject):
         self._proc.finished.connect(self._on_finished)
         self._proc.errorOccurred.connect(self._on_error)
 
-        self._proc.start(spody_bin, [subcommand, str(toml_path)])
+        self._proc.start(spody_bin,
+                         [subcommand, str(toml_path), *(extra_args or [])])
         if not self._proc.waitForStarted(3000):
             self.error.emit(f"failed to start: {spody_bin}")
             self._proc = None

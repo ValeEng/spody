@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -514,6 +515,43 @@ class SectionBuildersMixin:
             f, "force_model.space_weather_file", "space_weather_file",
             "CelesTrak space weather (*.csv);;All Files (*)",
         )
+        # Density calibration pair (drag-only, Earth-gated like the
+        # space-weather row; the engine enforces the XOR and the
+        # drag = true requirement). The file row carries an extra
+        # Calibrate... button that runs `spody calibrate` through the
+        # main-window runner (console streaming, Stop button) and
+        # auto-fills the path with the emitted k_nodes.csv -- see
+        # calibrateRequested in TomlForm and _action_calibrate in
+        # MainWindow.
+        self._add_float(f, "force_model.density_scale", "density_scale")
+        self._fm_ds_row = self._widgets["force_model.density_scale"]
+
+        dsf_edit = QLineEdit()
+        dsf_edit.textChanged.connect(self._touch)
+        dsf_browse = QPushButton("Browse...")
+        def _browse_dsf() -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Locate force_model.density_scale_file",
+                dsf_edit.text() or "",
+                "Density-scale nodes (*.csv *.txt);;All Files (*)")
+            if path:
+                dsf_edit.setText(path)
+        dsf_browse.clicked.connect(_browse_dsf)
+        self._calibrate_btn = QPushButton("Calibrate...")
+        self._calibrate_btn.setToolTip(
+            "Fit the k(t) node table against a reference trajectory by "
+            "running `spody calibrate` (manual ch. 12). Streams its "
+            "report to the console below and fills this row with the "
+            "emitted k_nodes.csv when it finishes.")
+        self._calibrate_btn.clicked.connect(self._on_calibrate_clicked)
+        dsf_row = QHBoxLayout()
+        dsf_row.setContentsMargins(0, 0, 0, 0)
+        dsf_row.addWidget(dsf_edit, 1)
+        dsf_row.addWidget(dsf_browse)
+        dsf_row.addWidget(self._calibrate_btn)
+        self._widgets["force_model.density_scale_file"] = dsf_edit
+        self._fm_dsf_row = hwrap(dsf_row)
+        f.addRow("density_scale_file", self._fm_dsf_row)
 
         self._add_strlist_checks(f, "force_model.third_bodies", "third_bodies",
                                  THIRD_BODIES_ALL)
@@ -556,7 +594,7 @@ class SectionBuildersMixin:
         # Mars atmosphere lands this becomes a per-body capability
         # lookup instead of a name check.
         for row in (self._fm_eop_row, self._fm_iau_row, self._fm_sw_row,
-                    self._fm_drag_row):
+                    self._fm_ds_row, self._fm_dsf_row, self._fm_drag_row):
             self._fm_force_form.setRowVisible(row, is_earth)
 
         if is_earth and self._store is not None:

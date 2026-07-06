@@ -453,6 +453,102 @@ class VisibilityMixin:
             repr(pos[0]), repr(pos[1]), repr(pos[2]),
         ])
 
+    def _on_calibrate_clicked(self) -> None:
+        """Minimal modal asking for the reference binary + the fit
+        window, then hands off through `calibrateRequested`. The main
+        window owns the heavy lifting (save-before-run gating, the
+        runner, console streaming, re-enabling the button): calibrate
+        runs take tens of seconds to minutes, so unlike the Suggest
+        button it must NOT block on a modal subprocess."""
+        from PySide6.QtWidgets import (
+            QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+            QHBoxLayout, QLineEdit, QPushButton, QWidget,
+        )
+        from ..constants import const
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Calibrate density scale")
+        form = QFormLayout(dlg)
+
+        ref_edit = QLineEdit()
+        ref_edit.setPlaceholderText(
+            "SPDYOUT_ full-state reference (convert gps / glonass / oem)")
+        ref_btn = QPushButton("Browse...")
+        def _browse_ref() -> None:
+            start = ref_edit.text() or str(
+                self._current_path.parent if self._current_path else "")
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Locate reference trajectory", start,
+                "SpOdy trajectory (*.bin);;All Files (*)")
+            if path:
+                ref_edit.setText(path)
+        ref_btn.clicked.connect(_browse_ref)
+        ref_row = QHBoxLayout()
+        ref_row.setContentsMargins(0, 0, 0, 0)
+        ref_row.addWidget(ref_edit, 1)
+        ref_row.addWidget(ref_btn)
+        ref_wrap = QWidget()
+        ref_wrap.setLayout(ref_row)
+        form.addRow("reference", ref_wrap)
+
+        win_edit = QLineEdit(
+            f"{const('SPODY_CAL_WINDOW_DEFAULT_H', 24.0):g}")
+        win_edit.setToolTip(
+            "Sliding fit-window length in hours. One k node is fitted "
+            "per window (at its centre); shorter windows follow the "
+            "density variability more closely but need enough drag "
+            "signal to stay observable.")
+        form.addRow("window [h]", win_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        ref_path = ref_edit.text().strip()
+        if not ref_path or not Path(ref_path).is_file():
+            QMessageBox.warning(
+                self, "Calibrate density scale",
+                "Pick an existing reference .bin first.")
+            return
+        try:
+            window_h = float(win_edit.text())
+        except ValueError:
+            window_h = 0.0
+        if not window_h > 0.0:
+            QMessageBox.warning(
+                self, "Calibrate density scale",
+                "The fit window must be a positive number of hours.")
+            return
+        self.calibrateRequested.emit(ref_path, window_h)
+
+    def set_calibrate_busy(self, busy: bool) -> None:
+        """Feedback on the [force_model] Calibrate... button while the
+        subprocess is running: disabled + relabelled, so a click has a
+        visible consequence even before the first console line lands.
+        Driven by MainWindow around the runner's lifecycle."""
+        self._calibrate_btn.setEnabled(not busy)
+        self._calibrate_btn.setText(
+            "Calibrating..." if busy else "Calibrate...")
+
+    def set_density_scale_file(self, path: str) -> None:
+        """Fill the [force_model] density_scale_file row -- the
+        auto-fill at the end of a successful calibration. Clears the
+        constant density_scale so the emitted TOML honours the
+        engine's XOR between the two keys. Marks the form modified
+        (via the widgets' textChanged), so the user still decides
+        whether to save."""
+        w = self._widgets.get("force_model.density_scale_file")
+        if isinstance(w, QLineEdit):
+            w.setText(path)
+        ds = self._widgets.get("force_model.density_scale")
+        if isinstance(ds, QLineEdit):
+            ds.clear()
+
     def _build_notes(self) -> QGroupBox:
         """Freeform notes attached to this TOML, emitted as a comment
         block at the end of the file.

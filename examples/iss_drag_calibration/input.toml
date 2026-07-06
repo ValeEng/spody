@@ -1,0 +1,85 @@
+# SpOdy input file -- ISS drag calibration bench.
+#
+# Propagates the International Space Station (~415 km, the most
+# drag-dominated regime SpOdy models) from the first state of the
+# NASA/JSC public trajectory ephemeris of 2024-07-03, across the 15
+# days the OEM covers. Mass, drag area and Cd come from the OEM's own
+# COMMENT block, so the ballistic coefficient is the operator's.
+#
+# This scenario is the working example for the density-calibration
+# workflow (manual ch. 11 for the method, ch. 12 for the commands):
+#
+#   1. Reference (bundled; regenerate with):
+#        spody convert oem examples/iss_drag_calibration/ISS_OEM_2024-07-03.txt \
+#                          examples/iss_drag_calibration/iss_oem_2024_07_03_15d_ref.bin
+#   2. Fit the density-scale node table (~3 min, 30 day-arcs):
+#        spody calibrate examples/iss_drag_calibration/input.toml \
+#                        examples/iss_drag_calibration/iss_oem_2024_07_03_15d_ref.bin \
+#                        --window 24
+#      or press "Calibrate..." next to density_scale_file in the GUI
+#      form. Expected (July 2024, quiet-to-moderate activity): 15
+#      nodes with k sliding 0.79 -> 0.52 across the span (NRLMSISE-00
+#      runs hot against the JSC drag model at ISS altitude, and the
+#      gap widens into the forecast); raw in-track rms ~2.5-3.0 km
+#      per 24 h window, 8-40 m after the fit; pooled k ~0.60.
+#   3. Point [force_model].density_scale_file at the emitted
+#      k_nodes.csv (the GUI fills it in automatically) and re-run
+#      this propagation: the 3-day in-track drift drops ~18x
+#      (8.4 km -> 0.5 km rms in the 2026-07 shipping test).
+#
+# Honest-numbers caveat: this OEM is JSC's *prediction* (tracking-
+# fresh only near its start), so the fit reproduces the JSC drag
+# model rather than independent truth -- exactly what an operator
+# calibrating against their own ephemeris service gets. The method
+# section in manual ch. 11 shows the same pipeline against
+# independent references.
+#
+# All paths are relative to this TOML file.
+
+[simulation]
+name       = "iss_drag_calibration"
+et_start_s = 773280069.1840384       # 2024-07-03 12:00:00 UTC (OEM record 0)
+duration_s = 1.296e+06               # 15 days = the full OEM span
+
+[spacecraft]
+mass_kg = 473008.90                  # OEM COMMENT MASS
+
+  [spacecraft.drag]
+  area_m2 = 1442.80                  # OEM COMMENT DRAG_AREA
+  Cd      = 2.70                     # OEM COMMENT DRAG_COEFF
+
+[initial_state]
+# OEM record 0 (EME2000 == ICRF per the SPICE convention), verbatim.
+frame        = "central_inertial"
+position_km  = [-4053.878376071140, 1516.158380989270, -5248.342246843150]
+velocity_kms = [-3.76331237308345, -6.58017659889217, 1.01601021932383]
+
+[force_model]
+central_body       = "Earth"
+harmonics_file     = "../../data/EIGEN-6C4/eigen-6c4.tab"
+harmonics_degree   = 70              # LEO standard; gravity is not the residual driver here
+eop_file           = "../../data/eop/finals2000A.all"
+iau2006_dir        = "../../data/iau2006"
+space_weather_file = "../../data/spaceweather/SW-All.csv"
+third_bodies       = ["Moon", "Sun"]
+srp                = false           # OEM lists SOLAR_RAD_AREA = 0; drag dominates by orders of magnitude
+drag               = true
+# Uncomment after running `spody calibrate` (step 2 above):
+# density_scale_file = "k_nodes.csv"
+
+[ephemeris]
+file = "../../data/DE440/de440.spody"
+
+[integrator]
+type     = "rkdp45"
+rel_tol  = 1.0e-11
+h_init_s = 30.0
+h_min_s  = 1.0e-5
+h_max_s  = 240.0                     # one accepted step per OEM cadence at most
+
+[output]
+mode       = "fixed"
+interval_s = 240.0                   # matches the OEM grid 1:1 for the Analysis-tab diff
+csv_file   = "output/iss_drag_calibration_state_icrf.csv"
+bin_file   = "output/iss_drag_calibration_state_icrf.bin"
+output_dir = "output"

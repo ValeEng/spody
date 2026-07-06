@@ -93,6 +93,11 @@ class TomlForm(SectionBuildersMixin, WidgetFactoriesMixin,
 
     modificationChanged = Signal(bool)
     runRequested        = Signal(str)    # subcommand to run ("propagate" / "batch")
+    # Emitted by the [force_model] Calibrate... button with the chosen
+    # reference .bin path + fit-window hours; MainWindow saves the TOML
+    # and launches `spody calibrate` through the shared runner so the
+    # report streams into the Run-tab console.
+    calibrateRequested  = Signal(str, float)
 
     # Style sheets for the Validate badge -- tiny, kept inline so the
     # button strip's visual language is self-contained in this file.

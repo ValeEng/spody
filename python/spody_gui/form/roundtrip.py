@@ -144,11 +144,17 @@ class RoundTripMixin:
             flat.pop("force_model.iau2006_dir", None)
             flat.pop("force_model.drag",        None)
             flat.pop("force_model.space_weather_file", None)
-        # The space weather table only matters to the drag force; keep
-        # the emitted TOML minimal when drag is off (the widget still
-        # remembers the path for the next toggle-on).
+            flat.pop("force_model.density_scale",      None)
+            flat.pop("force_model.density_scale_file", None)
+        # The space weather table and the density calibration pair only
+        # matter to the drag force; keep the emitted TOML minimal when
+        # drag is off (the widgets still remember their values for the
+        # next toggle-on). The density XOR itself is left to the engine
+        # validator so the form and CLI verdicts stay identical.
         if not flat.get("force_model.drag", False):
             flat.pop("force_model.space_weather_file", None)
+            flat.pop("force_model.density_scale",      None)
+            flat.pop("force_model.density_scale_file", None)
 
         # output.interval_s only applies to mode == "fixed"; in step
         # mode the field is hidden in the UI but the underlying widget
