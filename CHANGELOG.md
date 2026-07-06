@@ -56,9 +56,38 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   7 significant digits (max relative deviation 4.5e-7),
   plus a 20,000-case random sweep against an independent evaluation
   of the same Fortran with no deviation above single-precision
-  noise. Engine-side only for now &mdash; the drag force wiring
-  (TOML + GUI) is the next slice; no behaviour change in any
-  existing run (GPS-G11 regression bit-identical).
+  noise.
+
+- **Atmospheric drag (Earth).** New `force_model.drag` toggle
+  (optional, default `false` &mdash; existing TOMLs are untouched)
+  integrates cannonball drag with NRLMSISE-00 density: geodetic
+  WGS-84 sub-satellite point, observed previous-day F10.7 + 81-day
+  centered average + the 7-element 3-hour Ap history (storm-time
+  mode) from a CelesTrak `SW-All.csv` given via the new
+  `force_model.space_weather_file` key, air co-rotation in the
+  relative velocity. Ballistic input via the new
+  `[spacecraft.drag]` sub-block (`area_m2` XOR `am_drag`, plus
+  `Cd`) or the `debris.am_drag`/`debris.Cd` pair; all four are
+  batch override targets, as is the toggle. The engine refuses a
+  run whose window falls outside the space-weather table (the Ap
+  history needs 3 days of lead-in) and points at the CelesTrak
+  update URL. The form gains the matching Earth-only rows, the
+  SRP-style drag sub-blocks and the batch targets. Registry-driven
+  under the hood: a future Mars atmosphere is one registry row,
+  not a rewrite. Verified end-to-end on a 2-day ISS arc against
+  the NASA/JSC public OEM (radial/cross residuals at tens of
+  meters; the in-track drag signal has the right sign and
+  magnitude, with the expected offset from JSC's forecast-based
+  solar activity vs the observed July 2026 F10.7 spike + ap 76
+  storm), and the density the engine applies matches an
+  independent pymsis reconstruction to 1e-5 across the arc.
+  GPS-G11 7-day regression (drag off) bit-identical.
+  Setup-wizard integration: `SW-All.csv` is a new wizard card
+  (*Space weather* group, shows the last-observed date after
+  download) and joins `finals2000A.all` in the startup
+  freshness probe &mdash; CelesTrak regenerates the table daily,
+  so the probe offers a one-click refresh whenever the server
+  copy is newer.
 
 ### Changed
 

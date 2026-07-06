@@ -735,13 +735,18 @@ ch. 7; CHANGELOG.
 4. Atmospheric drag specifically must go through the per-body
    atmosphere callback declared in `spody_atmosphere.h` — the
    atmosphere model is a property of the body, never hardwired into
-   the force. For Earth the engine already ships the density model:
-   `spody_nrlmsise00.h` (native NRLMSISE-00 port, re-entrant). A
-   drag wrapper calls `spody_nrlmsise00_gtd7d` (the "effective
-   total mass density for drag" variant) and converts the native
-   CGS output to kg/m³ (× 1000) at the callback boundary; the
-   space-weather inputs (previous-day F10.7, 81-day centered
-   average, Ap) come from the shared `MappedSpaceWeather` handle.
+   the force. The worked example is Earth: the engine ships the
+   density model (`spody_nrlmsise00.h`, native re-entrant port) and
+   the app binds it in `src/atmosphere_nrlmsise00.c` — geodetic
+   conversion via `spody_bf_to_geodetic`, calendar labels via
+   `spody_mjd_to_doy`, space-weather inputs via
+   `spody_space_weather_msis_inputs`, then `spody_nrlmsise00_gtd7d`
+   (the "effective total mass density for drag" variant) with the
+   native CGS output converted to kg/m³ (× 1000) at the callback
+   boundary. The callback instance is registered on the body's row
+   in `central_body.c` (together with `spin_rad_s`); a new
+   atmosphere (Mars + MCD) is a new wrapper file + that one
+   registry row.
 5. **Validate the physics against SPICE-derived references** on a
    spot check before trusting a full run: per-force magnitude at a
    known state, then a short propagation against an independently

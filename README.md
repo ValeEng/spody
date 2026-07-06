@@ -207,6 +207,14 @@ Ordered roughly by what unlocks the most for users.
 - [x] Two object schemas: `[spacecraft]` (mass + area) and `[debris]`
       (A/m only, mass-irrelevant); mutually exclusive at parse with
       mode-tagged batch targets
+- [x] **Atmospheric drag (Earth)**: native NRLMSISE-00 port in
+      spody-core (validated against the official NRL reference
+      driver to the printed 7 digits), cannonball drag with air
+      co-rotation, CelesTrak space-weather input (observed daily
+      F10.7 + storm-time 3-hour Ap history), WGS-84 geodetic
+      sub-satellite point; `force_model.drag` +
+      `[spacecraft.drag]` / debris `am_drag`+`Cd`, all batch
+      targets
 - [x] Per-column batch modes: plain `target = "..."` (override) and
       inline `{ target = "...", mode = "delta" }` (additive
       perturbation); empty-string `target = ""` sentinel for metadata
@@ -287,9 +295,9 @@ Ordered roughly by what unlocks the most for users.
 
 **Pending**
 
-- [ ] Atmospheric drag model in spody-core (placeholder today)
 - [ ] More central bodies (Mars, Sun-Earth) in addition to Moon
-      and Earth
+      and Earth (Mars unlocks the second atmosphere model, MCD --
+      the drag plumbing is already per-body)
 - [ ] More CR3BP primary pairs (today's curated pair is
       Earth-Moon only)
 - [ ] More event kinds: apsides (altitude crossings shipped)

@@ -101,7 +101,8 @@ the engine derives `A/m` from the area and the mass.
 |-----------|-------|---------|-------|-------------|
 | `mass_kg` | float | &mdash; | `> 0` | Dry mass in kilograms. |
 
-The optional `[spacecraft.srp]` sub-table is detailed below.
+The optional `[spacecraft.srp]` and `[spacecraft.drag]` sub-tables
+are detailed below.
 
 ### `[debris]`
 
@@ -109,14 +110,17 @@ The inferred-body case: only the area-to-mass ratio matters. Use
 this section when you do not have or do not care about a mass
 value, typically for parameter sweeps over a debris cloud.
 
-| Key      | Type  | Default | Range | Description |
-|----------|-------|---------|-------|-------------|
-| `am_srp` | float | &mdash; | `> 0` | Area-to-mass ratio in m&sup2;/kg, used by SRP. |
-| `Cr`     | float | `1.5`   | `>= 0` | Reflectivity coefficient, only consulted when SRP is enabled. `1.0` = pure absorbing, `2.0` = pure mirror. |
+| Key       | Type  | Default | Range | Description |
+|-----------|-------|---------|-------|-------------|
+| `am_srp`  | float | &mdash; | `> 0` | Area-to-mass ratio in m&sup2;/kg, used by SRP. |
+| `Cr`      | float | `1.5`   | `>= 0` | Reflectivity coefficient, only consulted when SRP is enabled. `1.0` = pure absorbing, `2.0` = pure mirror. |
+| `am_drag` | float | &mdash; (optional) | `> 0` | Drag area-to-mass ratio in m&sup2;/kg. Optional pair with `Cd` (both or neither); may differ from `am_srp` &mdash; the drag cross-section is not the SRP cross-section. Required when `force_model.drag = true`. |
+| `Cd`      | float | &mdash; (optional) | `> 0` | Drag coefficient, only consulted when drag is enabled. |
 
 In Debris mode, every batch override target that mentions a mass
-or area (`spacecraft.mass_kg`, `spacecraft.srp.area_m2`) is
-unavailable; only `debris.am_srp` and `debris.Cr` are accepted.
+or area (`spacecraft.mass_kg`, `spacecraft.srp.area_m2`,
+`spacecraft.drag.area_m2`) is unavailable; only the `debris.*`
+targets are accepted.
 
 ### `[spacecraft.srp]` (optional)
 
@@ -132,6 +136,30 @@ allowed; setting both is a validation error.
 | `area_m2` | float | &mdash; | `> 0`  | Cross-sectional area in m&sup2;. The engine derives `A/m = area_m2 / mass_kg`. |
 | `am_srp`  | float | &mdash; | `> 0`  | Area-to-mass ratio in m&sup2;/kg, specified directly. Equivalent to `area_m2 / mass_kg`; use this form when you want sweep over `A/m` independently of `mass_kg`. |
 | `Cr`      | float | `1.5`   | `>= 0` | Reflectivity coefficient, same convention as in `[debris]`. |
+
+### `[spacecraft.drag]` (optional)
+
+The cannonball atmospheric-drag sub-block, same shape as SRP.
+Present only when `[spacecraft]` is the active object and the
+*Enable [spacecraft.drag]* checkbox is ticked; required whenever
+`force_model.drag = true`.
+
+Within this sub-block exactly one of `area_m2` and `am_drag` is
+allowed; setting both is a validation error.
+
+| Key       | Type  | Default | Range | Description |
+|-----------|-------|---------|-------|-------------|
+| `area_m2` | float | &mdash; | `> 0` | Drag cross-section in m&sup2;. The engine derives `A/m = area_m2 / mass_kg`. |
+| `am_drag` | float | &mdash; | `> 0` | Drag area-to-mass ratio in m&sup2;/kg, specified directly. |
+| `Cd`      | float | &mdash; | `> 0` | Drag coefficient. `~2.2` is the classic value for compact satellites in free-molecular flow; flat/panelled bodies run higher (the ISS ballistic value published by NASA/JSC is `2.40`). |
+
+The density model is NRLMSISE-00 (the engine's own validated port),
+evaluated at the geodetic (WGS-84) sub-satellite point with the
+observed daily F10.7 of the previous day, the 81-day centered
+average, and the 7-element 3-hour Ap history (storm-time mode) from
+`space_weather_file`. Air co-rotation with the Earth is included in
+the relative velocity. The per-step drag acceleration is written to
+the accelerations stream (`SPDYACC_`) like every other force.
 
 ## `[initial_state]`
 
@@ -206,6 +234,8 @@ Forces the propagator integrates against. Required.
 | `iau2006_dir`        | string (path)   | &mdash; (Earth only) | &ndash; | Path to the directory containing the IAU 2006 X / Y / s+XY/2 conventions tables (`tab5.2a.txt`, `tab5.2b.txt`, `tab5.2d.txt`). Required when `central_body = "Earth"`. Wizard-managed; same conditional form row as `eop_file`. |
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
 | `srp`                | bool            | `false` | &ndash; | Enable cannonball SRP. When `true` a `[spacecraft.srp]` block must be present (in Spacecraft mode) or `am_srp` must be set in `[debris]` (in Debris mode). |
+| `drag`               | bool            | `false` | &ndash; | Enable atmospheric drag (cannonball, NRLMSISE-00 density in the storm-time 3-hour-Ap mode). Requires a central body with a registered atmosphere model (`Earth` in this release), a `[spacecraft.drag]` block (or the `am_drag`/`Cd` pair in `[debris]`) and `space_weather_file`. The form shows this row only when the central body has an atmosphere. |
+| `space_weather_file` | string (path)   | &mdash; (drag only) | &ndash; | Path to the CelesTrak combined space-weather CSV (`SW-All.csv`: daily F10.7 + 3-hour Ap, 1957 to a ~45-day prediction tail plus monthly long-range rows). Required when `drag = true`. The run window must start at least 3 days after the table's first row (the Ap history looks back 57 h) and end inside the predicted horizon; the engine refuses the run otherwise and points at the update URL, `https://celestrak.org/SpaceData/SW-All.csv`. Wizard-managed (*Space weather* card) with the same daily startup freshness probe as `eop_file`. |
 
 ### Choosing a harmonics degree
 

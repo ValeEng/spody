@@ -65,7 +65,12 @@ servers and absolutely needs to run a propagation:
 - the IERS Earth-orientation files (`finals2000A.all` from the IERS
   Rapid Service plus the three IAU 2006 X/Y/s+XY/2 series tables
   `tab5.2{a,b,d}.txt`) needed by the engine's `R_ICRF↔ITRS`
-  rotation. All of these are Earth-specific.
+  rotation;
+- the CelesTrak combined space-weather table (`SW-All.csv`, daily
+  F10.7 + 3-hour Ap) feeding the NRLMSISE-00 drag density model,
+  needed only for runs with `force_model.drag = true`. Its card
+  shows the date of the last *observed* row after download. All of
+  these are Earth-specific.
 
 **Derived assets** are files SpOdy produces from raw ones on your
 machine:
@@ -243,31 +248,43 @@ The two conversions run sequentially when both DE440 and EIGEN-6C4
 are downloaded at the same time; the status line carries the
 currently-active conversion's progress.
 
-## Earth-orientation freshness check
+## Daily-table freshness checks (EOP + space weather)
 
-`finals2000A.all` is rebuilt by IERS every Thursday. Old copies
-still work for past dates, but the *predicted* portion (covering
-the next ~365 days from the file's vintage) drifts; for runs whose
-epoch is more than a few weeks past your local copy's vintage, the
-predicted UT1-UTC and polar-motion values are no longer the best
-estimates IERS can offer.
+Two of the wizard's assets are living tables that their upstreams
+keep regenerating:
 
-On every launch SpOdy issues a single lightweight HTTP HEAD
-request to the upstream `finals2000A.all` URL and compares the
+- `finals2000A.all` is rebuilt by IERS every Thursday. Old copies
+  still work for past dates, but the *predicted* portion (covering
+  the next ~365 days from the file's vintage) drifts; for runs
+  whose epoch is more than a few weeks past your local copy's
+  vintage, the predicted UT1-UTC and polar-motion values are no
+  longer the best estimates IERS can offer.
+- `SW-All.csv` (the CelesTrak space-weather table feeding the drag
+  density model, *Space weather* card) is regenerated **daily**:
+  yesterday's F10.7 / Ap observations only appear in a copy
+  downloaded today, and the ~45-day prediction tail ages just as
+  fast. A stale copy makes the engine either refuse a
+  near-present drag run (window past the predicted horizon) or
+  silently use older predictions where observations now exist.
+
+On every launch SpOdy issues one lightweight HTTP HEAD request per
+table (only for the ones already on disk) and compares the
 server's `Last-Modified` header against the local file's mtime
 (and the `Content-Length` against the local file's size). If the
 server's copy is newer, a non-blocking pop-up appears:
 
-> The IERS finals2000A.all on disk is older than the version
-> upstream. Open the setup wizard to refresh it?
+> A newer finals2000A.all / SW-All.csv is available on the
+> server. Download the latest now?
 
-Clicking **Open setup wizard** triggers the EOP card's download.
-The freshness check itself is silent on success and on transient
-network failure (no connectivity at launch is not an error). The
-GUI does not refresh the in-memory rotation provider mid-session
-either &mdash; it stat()s the file on every rotation call, so a
-fresh download from the open wizard takes effect on the next 3D
-plot redraw without restarting the app.
+Clicking **Yes** opens the wizard and triggers that card's
+download. The freshness check itself is silent on success and on
+transient network failure (no connectivity at launch is not an
+error). The GUI does not refresh the in-memory rotation provider
+mid-session either &mdash; it stat()s the file on every rotation
+call, so a fresh download from the open wizard takes effect on the
+next 3D plot redraw without restarting the app. The engine reads
+the space-weather file at run start, so a refreshed download is
+picked up by the next run automatically.
 
 ## When everything is green
 

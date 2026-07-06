@@ -58,7 +58,8 @@ widget on the right.
   chosen path back into the edit.
 - **Paths to wizard-managed assets** (`force_model.harmonics_file`,
   `force_model.eop_file`, `force_model.iau2006_dir`,
-  `ephemeris.file`): a **dropdown** of files the Setup wizard
+  `force_model.space_weather_file`, `ephemeris.file`): a
+  **dropdown** of files the Setup wizard
   has downloaded into the data dir, filtered by category and (for
   harmonics, EOP, IAU 2006) by `central_body`. A **Browse...**
   next to the dropdown adds an out-of-data-dir file as a one-off
@@ -66,9 +67,9 @@ widget on the right.
   `external/spody-core/raw_data/GRGM1200B/...` still round-trips.
   The dropdown refreshes automatically when the wizard finishes a
   new download or when `central_body` changes. The Earth-only
-  rows (`eop_file`, `iau2006_dir`) appear only when `central_body
-  = "Earth"`; switching back to Moon hides them and drops them
-  from the emitted TOML.
+  rows (`eop_file`, `iau2006_dir`, `space_weather_file`, `drag`)
+  appear only when `central_body = "Earth"`; switching back to
+  Moon hides them and drops them from the emitted TOML.
 - **Epoch (`simulation.et_start_s`)** &mdash; a dual-cell row: the
   ET value on the left, a UTC ISO 8601 cell on the right, two
   arrow buttons between them. **&rarr;** converts ET to UTC,
@@ -130,10 +131,13 @@ The choice also affects which override targets are available in
 the `[batch.columns]` mapping table (chapter 7). For instance,
 `spacecraft.srp.area_m2` only appears as a target when the radio
 is on Spacecraft, and `debris.am_srp` only when it is on Debris.
+The drag parameters follow the same rule
+(`spacecraft.drag.area_m2` / `spacecraft.drag.Cd` vs
+`debris.am_drag` / `debris.Cd`).
 
 ## Optional sub-blocks
 
-Three sections are not always required, and the form gates them
+Four sections are not always required, and the form gates them
 behind a checkbox:
 
 - **`[spacecraft.srp]`** &mdash; the SRP cannonball sub-block of
@@ -141,6 +145,13 @@ behind a checkbox:
   expose the sub-form; inside it a second pair of radios chooses
   between `area_m2` (with `A/m = area / mass`) and `am_srp`
   (the ratio specified directly).
+- **`[spacecraft.drag]`** &mdash; the atmospheric-drag sub-block,
+  identical in shape to SRP: an *Enable [spacecraft.drag]*
+  checkbox, an `area_m2` / `am_drag` radio pair and the `Cd`
+  coefficient. In Debris mode the equivalent is the *Enable drag
+  (am_drag + Cd)* checkbox inside the debris box. Remember to also
+  tick the `drag` toggle in `[force_model]` (visible for Earth) so
+  the engine actually integrates the force.
 - **`[events]`** &mdash; two independent opt-in sub-sections,
   each behind its own checkbox: *Enable eclipse detection*
   exposes the `eclipse_threshold` field, *Enable altitude
