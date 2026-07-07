@@ -19,7 +19,11 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
-from spody_io import EVENT_KIND_ECLIPSE, EVENT_KIND_IMPACT
+from spody_io import (
+    EVENT_KIND_ALT_CROSSING,
+    EVENT_KIND_ECLIPSE,
+    EVENT_KIND_IMPACT,
+)
 
 
 # ----------------------------------------------------------------------
@@ -27,8 +31,9 @@ from spody_io import EVENT_KIND_ECLIPSE, EVENT_KIND_IMPACT
 # NumpyTableModel.data when the cell value is an integer code we
 # want to surface as a label (instead of the raw enum int).
 _EVENT_KIND_LABEL = {
-    EVENT_KIND_IMPACT:  "IMPACT",
-    EVENT_KIND_ECLIPSE: "ECLIPSE",
+    EVENT_KIND_IMPACT:       "IMPACT",
+    EVENT_KIND_ECLIPSE:      "ECLIPSE",
+    EVENT_KIND_ALT_CROSSING: "ALT_CROSSING",
 }
 
 

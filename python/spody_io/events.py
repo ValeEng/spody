@@ -21,10 +21,16 @@ preamble (see `headers.py`):
   `external/spody-core/include/spody_events.h::EventRecord`:
 
       double t            sim time of trigger [s]
-      int32  kind         spody_event_kind enum (IMPACT=0, ECLIPSE=1)
+      int32  kind         spody_event_kind enum (IMPACT=0, ECLIPSE=1,
+                          ALT_CROSSING=2)
       int32  naif_id      body involved in the trigger
-      double radius_km    threshold used for the predicate
-      double distance_km  observed value at trigger (for IMPACT)
+      double radius_km    threshold used for the predicate (for
+                          ALT_CROSSING: the body's physical radius --
+                          the crossed altitude is
+                          distance_km - radius_km)
+      double distance_km  observed value at trigger (distance in km
+                          for IMPACT / ALT_CROSSING, eclipse fraction
+                          for ECLIPSE)
       double y[6]         interpolated state at trigger (km, km/s)
 
 - **SPDYEVTB** (v1) -- aggregated log written by `spody batch` when
@@ -58,9 +64,10 @@ from .headers import (
 )
 
 # Mirror of spody_event_kind in spody_events.h. Keep in sync if more
-# kinds are added (altitude crossings, apsides, ...).
-EVENT_KIND_IMPACT  = 0
-EVENT_KIND_ECLIPSE = 1
+# kinds are added (apsides, geodetic regions, ...).
+EVENT_KIND_IMPACT       = 0
+EVENT_KIND_ECLIPSE      = 1
+EVENT_KIND_ALT_CROSSING = 2
 
 # Per-run record (SPDYEVT_): 80 bytes.
 EVENT_DTYPE = np.dtype({
@@ -142,7 +149,7 @@ def _read_batch(fp: BinaryIO, path: Path) -> np.ndarray:
 
 # Re-export for backward-compat callers that imported HEADER_BYTES from here.
 __all__ = [
-    "EVENT_KIND_IMPACT", "EVENT_KIND_ECLIPSE",
+    "EVENT_KIND_IMPACT", "EVENT_KIND_ECLIPSE", "EVENT_KIND_ALT_CROSSING",
     "EVENT_DTYPE", "BATCH_EVENT_DTYPE",
     "read_events", "HEADER_BYTES",
 ]

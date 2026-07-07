@@ -187,12 +187,19 @@ def resolve_run_context(events_path: Path) -> dict | None:
 
     Returns None when the snapshot is missing (the caller surfaces a
     user-facing hint inside the plot itself). Returns a dict otherwise:
-        et_start_s     : float
-        duration_s     : float
-        ephemeris_path : Path | None
-        central_body   : str
-        cases_file     : Path | None  (resolved next to the snapshot)
-        toml_path      : Path
+        et_start_s         : float
+        duration_s         : float
+        ephemeris_path     : Path | None
+        central_body       : str
+        cases_file         : Path | None  (resolved next to the snapshot)
+        toml_path          : Path
+        altitude_crossings : list of {"body": str, "altitude_km": float,
+                             "action": str} -- one per configured
+                             [[events.altitude_crossing]] entry (empty
+                             when the section is absent). The Info tab's
+                             altitude-band analysis uses these as the
+                             exact band boundaries instead of clustering
+                             them back out of the trigger records.
     """
     toml_path = find_run_input_toml(events_path)
     if toml_path is None:
@@ -224,6 +231,18 @@ def resolve_run_context(events_path: Path) -> dict | None:
                     break
             except OSError:
                 continue
+    alt_crossings: list[dict] = []
+    for entry in cfg.get("events", {}).get("altitude_crossing", []):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            alt_crossings.append({
+                "body":        str(entry.get("body", "")),
+                "altitude_km": float(entry["altitude_km"]),
+                "action":      str(entry.get("action", "log")),
+            })
+        except (KeyError, TypeError, ValueError):
+            continue   # malformed entry: skip, the engine already ran
     return {
         "et_start_s":     float(sim.get("et_start_s", 0.0)),
         "duration_s":     float(sim.get("duration_s", 0.0)),
@@ -231,6 +250,7 @@ def resolve_run_context(events_path: Path) -> dict | None:
         "central_body":   str(force.get("central_body", "")),
         "cases_file":     cases_path,
         "toml_path":      toml_path,
+        "altitude_crossings": alt_crossings,
     }
 
 

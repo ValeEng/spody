@@ -29,9 +29,14 @@ from matplotlib import colormaps as mpl_colormaps
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 
-from spody_io import EVENT_KIND_ECLIPSE, EVENT_KIND_IMPACT
+from spody_io import (
+    EVENT_KIND_ALT_CROSSING,
+    EVENT_KIND_ECLIPSE,
+    EVENT_KIND_IMPACT,
+)
 
 from ..vtk_canvas import VtkCanvas
+from .altitude_bands import cluster_altitudes
 from .context import PlotContext, ctx_missing_message, resolve_run_context
 from .scene3d import add_reference_triads
 from .spec import PlotSpec
@@ -205,21 +210,84 @@ def _compute_impact_latlon(d: np.ndarray, mask: np.ndarray, info: dict,
 
 
 def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
+    """One y-row per event *series*: IMPACT, ECLIPSE, and one row per
+    crossed altitude (labelled with the altitude, not the raw enum
+    code). Altitude rows split ascending vs descending crossings by
+    marker (▲ up / ▼ down); the altitude values are clustered from the
+    records so the plot stays context-free (works with no input.toml).
+    Third-body altitude crossings get their NAIF id in the row label
+    when more than one body is involved."""
     if len(d) == 0:
         ax.set_title("No events recorded"); ax.set_xlabel("t [s]"); return
-    labels = {EVENT_KIND_IMPACT: "IMPACT", EVENT_KIND_ECLIPSE: "ECLIPSE"}
-    colors = {EVENT_KIND_IMPACT: "tab:red", EVENT_KIND_ECLIPSE: "tab:blue"}
-    kinds  = sorted(int(k) for k in np.unique(d["kind"]))
-    for k in kinds:
-        mask = d["kind"] == k
-        ax.scatter(d["t"][mask], np.full(mask.sum(), k),
-                   color=colors.get(k, "tab:gray"),
-                   label=labels.get(k, f"kind {k}"),
-                   marker="|", s=200)
-    ax.set_yticks(kinds)
-    ax.set_yticklabels([labels.get(k, str(k)) for k in kinds])
+
+    # Each series is drawn on its own row. Build them in a stable order
+    # (impacts on top, then eclipses, then altitudes ascending) so the
+    # y-axis reads consistently across files.
+    rows: list[tuple[str, list]] = []   # (label, [scatter kwargs dicts])
+
+    m_imp = d["kind"] == EVENT_KIND_IMPACT
+    if m_imp.any():
+        rows.append(("IMPACT", [dict(t=d["t"][m_imp], color="tab:red",
+                                     marker="|", s=200)]))
+    m_ecl = d["kind"] == EVENT_KIND_ECLIPSE
+    if m_ecl.any():
+        rows.append(("ECLIPSE", [dict(t=d["t"][m_ecl], color="tab:blue",
+                                      marker="|", s=200)]))
+
+    m_alt = d["kind"] == EVENT_KIND_ALT_CROSSING
+    if m_alt.any():
+        alt = d[m_alt]
+        naifs = np.unique(alt["naif_id"])
+        multi_body = len(naifs) > 1
+        alt_rows: list[tuple[float, str, list]] = []
+        for naif in naifs:
+            sub = alt[alt["naif_id"] == naif]
+            h = sub["distance_km"].astype(float) - sub["radius_km"].astype(float)
+            centers = cluster_altitudes(h)
+            k_idx = np.abs(h[:, None] - centers[None, :]).argmin(axis=1)
+            # Ascending vs descending from the radial velocity r·v at
+            # the trigger state (body-centric for the central body;
+            # for third bodies y is still central-frame so the sign is
+            # only exact when the body sits at the origin -- acceptable
+            # for a visual timeline).
+            r = sub["y"][:, 0:3].astype(float)
+            v = sub["y"][:, 3:6].astype(float)
+            up = np.einsum("ij,ij->i", r, v) > 0.0
+            for c, h_c in enumerate(centers):
+                cm = k_idx == c
+                label = f"alt {h_c:.4g} km"
+                if multi_body:
+                    label = f"NAIF {int(naif)}  " + label
+                draws = []
+                if (cm & up).any():
+                    draws.append(dict(t=sub["t"][cm & up], color="tab:green",
+                                      marker="^", s=44))
+                if (cm & ~up).any():
+                    draws.append(dict(t=sub["t"][cm & ~up], color="tab:green",
+                                      marker="v", s=44))
+                alt_rows.append((float(h_c), label, draws))
+        alt_rows.sort(key=lambda e: e[0])
+        rows += [(label, draws) for _h, label, draws in alt_rows]
+
+    for y, (_label, draws) in enumerate(rows):
+        for kw in draws:
+            t = kw.pop("t")
+            ax.scatter(t, np.full(len(t), y), **kw)
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels([label for label, _ in rows])
+    ax.set_ylim(-0.5, len(rows) - 0.5)
     ax.set_xlabel("t [s]")
     ax.set_title(f"Event timeline ({len(d)} triggers)")
+    if m_alt.any():
+        # One-off legend explaining the crossing-direction markers;
+        # the per-altitude identity is on the y axis, not the legend.
+        from matplotlib.lines import Line2D
+        ax.legend(handles=[
+            Line2D([0], [0], marker="^", color="tab:green", linestyle="",
+                   label="ascending"),
+            Line2D([0], [0], marker="v", color="tab:green", linestyle="",
+                   label="descending"),
+        ], loc="best", fontsize="small", framealpha=0.6)
     ax.grid(True, axis="x", alpha=0.3)
 
 

@@ -40,6 +40,7 @@ from .accel import (
 )
 from .events import (
     EVENT_DTYPE,
+    EVENT_KIND_ALT_CROSSING,
     EVENT_KIND_ECLIPSE,
     EVENT_KIND_IMPACT,
     read_events,
@@ -55,7 +56,7 @@ from .traj import TRAJ_DTYPE, read_trajectory
 
 __all__ = [
     "ACCEL_DTYPE", "EVENT_DTYPE", "TRAJ_DTYPE",
-    "EVENT_KIND_ECLIPSE", "EVENT_KIND_IMPACT",
+    "EVENT_KIND_ALT_CROSSING", "EVENT_KIND_ECLIPSE", "EVENT_KIND_IMPACT",
     "HEADER_BYTES",
     "SPODY_ACC_MAGIC", "SPODY_BIN_MAGIC", "SPODY_EVT_MAGIC",
     "SPODY_FM_MAX_THIRD",

@@ -28,8 +28,13 @@ from pathlib import Path
 
 import numpy as np
 
-from spody_io import EVENT_KIND_ECLIPSE, EVENT_KIND_IMPACT
+from spody_io import (
+    EVENT_KIND_ALT_CROSSING,
+    EVENT_KIND_ECLIPSE,
+    EVENT_KIND_IMPACT,
+)
 
+from .altitude_bands import analyze_altitude_bands, band_inputs_from_snapshot
 from .registry import KIND_LABEL
 
 
@@ -239,16 +244,19 @@ def info_rows_accel(data: np.ndarray
     return rows
 
 
-def info_rows_events(data: np.ndarray, snapshot: dict | None
+def info_rows_events(data: np.ndarray, snapshot: dict | None,
+                      central_body: "CentralBodySpec | None" = None
                       ) -> list[tuple[str, str | None]]:
     is_batch = "case_idx" in data.dtype.names
     impacts  = data[data["kind"] == EVENT_KIND_IMPACT]
     eclipses = data[data["kind"] == EVENT_KIND_ECLIPSE]
+    altcross = data[data["kind"] == EVENT_KIND_ALT_CROSSING]
     rows: list[tuple[str, str | None]] = [
         ("Events", SECTION),
         ("Total records", f"{len(data)}"),
         ("IMPACT count",  f"{len(impacts)}"),
         ("ECLIPSE count", f"{len(eclipses)}"),
+        ("ALT_CROSSING count", f"{len(altcross)}"),
     ]
     if is_batch:
         cases_with_events = np.unique(data["case_idx"]) if len(data) else np.array([])
@@ -258,9 +266,13 @@ def info_rows_events(data: np.ndarray, snapshot: dict | None
         rows.append(("Cases with impact", f"{len(cases_impacted)}"))
         if snapshot is not None and snapshot.get("cases_file") is not None:
             try:
-                # Count CSV lines minus header to get total cases.
+                # Count CSV data rows: skip '#' comments and blank
+                # lines (the engine's loader does), minus the header.
                 with snapshot["cases_file"].open() as fp:
-                    n_total = max(0, sum(1 for _ in fp) - 1)
+                    n_total = max(0, sum(
+                        1 for ln in fp
+                        if ln.strip() and not ln.lstrip().startswith("#")
+                    ) - 1)
                 rows.append(("Cases total (CSV)", f"{n_total}"))
                 rows.append(("Survivors (no impact)",
                              f"{max(0, n_total - len(cases_impacted))}"))
@@ -302,6 +314,89 @@ def info_rows_events(data: np.ndarray, snapshot: dict | None
             rows.append(("Duration min", fmt_duration(float(d_arr.min()))))
             rows.append(("Duration avg", fmt_duration(float(d_arr.mean()))))
             rows.append(("Duration max", fmt_duration(float(d_arr.max()))))
+    if len(altcross) > 0 and central_body is not None:
+        rows += _altitude_band_rows(data, altcross, snapshot,
+                                     central_body, is_batch)
+    return rows
+
+
+def _altitude_band_rows(data: np.ndarray, altcross: np.ndarray,
+                         snapshot: dict | None,
+                         central_body: "CentralBodySpec",
+                         is_batch: bool
+                         ) -> list[tuple[str, str | None]]:
+    """Altitude-band occupancy section. The user's sorted thresholds
+    (0 < h_a < h_b < ...) split the altitude axis into bands; the
+    reconstruction from the crossing records lives in
+    `analyze_altitude_bands` (see that module's docstring for the
+    exact rules and caveats)."""
+    thresholds, stop_thresholds, duration = band_inputs_from_snapshot(
+        snapshot, central_body.name)
+
+    rows: list[tuple[str, str | None]] = []
+    res = analyze_altitude_bands(data, central_body.naif_id,
+                                  thresholds_km=thresholds,
+                                  stop_thresholds_km=stop_thresholds,
+                                  duration_s=duration)
+    if res is not None:
+        rows.append((f"Altitude bands — h above {central_body.name} surface",
+                     SECTION))
+        thr_txt = " / ".join(fmt_num(h) for h in res.thresholds_km)
+        src = "snapshot" if res.from_snapshot else "clustered from records"
+        rows.append(("Thresholds [km]", f"{thr_txt}  ({src})"))
+        if is_batch:
+            rows.append(("Objects analysed",
+                         f"{res.n_objects} (with ≥ 1 crossing)"))
+        window_txt = fmt_duration(res.window_s)
+        trunc = []
+        if res.ended_by_impact:
+            trunc.append(f"{res.ended_by_impact} end at impact")
+        if res.ended_by_stop:
+            trunc.append(f"{res.ended_by_stop} end at stop trigger")
+        if trunc:
+            window_txt += f"  ({', '.join(trunc)})"
+        rows.append(("Analysis window", window_txt))
+        for i, band in enumerate(res.bands):
+            hi = ("∞" if math.isinf(band.hi_km)
+                  else fmt_num(band.hi_km))
+            rows.append((f"Band {i + 1}:  {fmt_num(band.lo_km)} – {hi} km",
+                         SECTION))
+            entries_txt = f"{band.entries}"
+            if band.starts_inside:
+                entries_txt += (f"  (+{band.starts_inside} starting inside)"
+                                if is_batch else "  (started inside)")
+            rows.append(("Entries", entries_txt))
+            time_txt = fmt_duration(band.total_time_s)
+            if not is_batch and res.window_s > 0.0:
+                pct = 100.0 * band.total_time_s / res.window_s
+                time_txt += f"  ({fmt_num(pct, decimals=4)} % of window)"
+            rows.append(("Object-time in band" if is_batch
+                         else "Time in band", time_txt))
+            if band.visits > 0:
+                rows.append(("Visit duration  min / avg / max",
+                             f"{fmt_duration(band.dwell_min_s)} / "
+                             f"{fmt_duration(band.dwell_mean_s)} / "
+                             f"{fmt_duration(band.dwell_max_s)}"
+                             f"  ({band.visits} visits)"))
+            if is_batch:
+                rows.append(("Population min / avg / max",
+                             f"{band.pop_min} / "
+                             f"{fmt_num(band.pop_mean, decimals=4)} / "
+                             f"{band.pop_max}"))
+                rows.append(("Objects visiting", f"{band.objects_visiting}"))
+
+    # Crossings measured from other bodies (third bodies, CR3BP
+    # primaries): the trigger state is not body-centric there, so no
+    # occupancy reconstruction -- counts and observed altitudes only.
+    others = altcross[altcross["naif_id"] != central_body.naif_id]
+    if len(others) > 0:
+        rows.append(("Altitude crossings — other bodies", SECTION))
+        for naif in np.unique(others["naif_id"]):
+            sub = others[others["naif_id"] == naif]
+            h = sub["distance_km"].astype(float) - sub["radius_km"].astype(float)
+            rows.append((f"NAIF {int(naif)}",
+                         f"{len(sub)} crossings, h {fmt_num(h.min())} – "
+                         f"{fmt_num(h.max())} km"))
     return rows
 
 

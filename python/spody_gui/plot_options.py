@@ -48,6 +48,11 @@ class PlotOptionsDialog(QDialog):
     (ICRF / body-fixed) for state-vector and Keplerian-angle plots."""
 
     exportCsvRequested = Signal()
+    # Emitted when the user clicks "Export altitude bands CSV". Only
+    # meaningful on an events file that carries altitude-crossing
+    # triggers for the central body; the button is greyed out
+    # otherwise (see set_bands_export_enabled).
+    exportBandsCsvRequested = Signal()
     # Emitted when the user flips the frame radio. Payload is one of
     # "icrf" / "bf"; AnalysisPanel stores the choice and re-renders
     # the active plot.
@@ -92,8 +97,23 @@ class PlotOptionsDialog(QDialog):
             "layers (impact maps, density plots) are not exported.")
         self._btn_export_csv.clicked.connect(self.exportCsvRequested.emit)
 
+        # Second export: the altitude-band occupancy table (one row per
+        # band). Only enabled on an events file with altitude-crossing
+        # triggers on the central body -- greyed out otherwise so the
+        # user isn't offered an export that would be empty.
+        self._btn_export_bands = QPushButton("Export altitude bands CSV...")
+        self._btn_export_bands.setToolTip(
+            "Save the altitude-band occupancy analysis (total time, "
+            "entries, dwell and population per band) as a CSV file. "
+            "Enabled only for events files that recorded altitude-"
+            "crossing triggers on the central body.")
+        self._btn_export_bands.clicked.connect(
+            self.exportBandsCsvRequested.emit)
+        self._btn_export_bands.setEnabled(False)
+
         row = QHBoxLayout()
         row.addWidget(self._btn_export_csv)
+        row.addWidget(self._btn_export_bands)
         row.addStretch(1)
 
         # In-dialog status line: shows "Saving to <path>...", "Saved
@@ -116,6 +136,13 @@ class PlotOptionsDialog(QDialog):
         loaded yet, or when the active plot is 3D (the dialog is
         meant for the matplotlib canvas only)."""
         self._btn_export_csv.setEnabled(on)
+
+    def set_bands_export_enabled(self, on: bool) -> None:
+        """Toggle the altitude-band CSV export button. The panel gates
+        this on the loaded file being an events log that carries
+        central-body altitude-crossing triggers (see
+        `_can_export_altitude_bands_csv`)."""
+        self._btn_export_bands.setEnabled(on)
 
     def set_status(self, text: str, ok: bool = True) -> None:
         """Write `text` into the status line; `ok=False` paints it red

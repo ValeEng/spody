@@ -100,6 +100,11 @@ from .analysis import (
     detect_kind,
     resolve_run_context,
 )
+from .analysis.altitude_bands import (
+    altitude_bands_per_object,
+    band_inputs_from_snapshot,
+    per_object_bands_to_csv,
+)
 from .analysis.info import (
     SECTION,
     info_rows_accel,
@@ -108,6 +113,7 @@ from .analysis.info import (
     info_rows_run_summary,
     info_rows_traj,
 )
+from spody_io import EVENT_KIND_ALT_CROSSING
 from .analysis.plots_diff import align_or_interp
 from .analysis.table_model import FIELD_DISPLAY_RENAME
 
@@ -712,7 +718,8 @@ class AnalysisPanel(QWidget):
         elif self._kind == "accel":
             rows += info_rows_accel(self._data)
         elif self._kind in ("events", "events_batch"):
-            rows += info_rows_events(self._data, snapshot)
+            rows += info_rows_events(self._data, snapshot,
+                                     self._central_body)
         # Diff overlay: only meaningful when the active plot is a diff
         # spec AND we have a cached aligned pair from `_plot_diff`.
         if (self._active_spec is not None
@@ -1355,6 +1362,8 @@ class AnalysisPanel(QWidget):
         if self._plot_options_dialog is not None:
             self._plot_options_dialog.set_export_enabled(
                 self._can_export_active_plot_csv())
+            self._plot_options_dialog.set_bands_export_enabled(
+                self._can_export_altitude_bands_csv())
         if self._stack.currentIndex() != 1:
             self._anim_bar.setVisible(False)
             # Drop the UTC overlay too: it's a 3D-only widget and a
@@ -1445,10 +1454,14 @@ class AnalysisPanel(QWidget):
             self._plot_options_dialog = PlotOptionsDialog(parent=self)
             self._plot_options_dialog.exportCsvRequested.connect(
                 self._export_active_plot_csv)
+            self._plot_options_dialog.exportBandsCsvRequested.connect(
+                self._export_altitude_bands_csv)
             self._plot_options_dialog.plotFrameChanged.connect(
                 self._on_plot_frame_changed)
         self._plot_options_dialog.set_export_enabled(
             self._can_export_active_plot_csv())
+        self._plot_options_dialog.set_bands_export_enabled(
+            self._can_export_altitude_bands_csv())
         self._plot_options_dialog.set_frame(self._plot_frame)
         self._refresh_plot_options_bf_availability()
         self._plot_options_dialog.clear_status()
@@ -1553,6 +1566,80 @@ class AnalysisPanel(QWidget):
         size_kb = dest_path.stat().st_size / 1024.0
         self._info_label.setText(
             f"Exported CSV: {dest_path}  ({size_kb:.1f} kB)")
+        if dlg is not None:
+            dlg.set_status(f"Saved {size_kb:.1f} kB")
+            dlg.hide()
+
+    def _can_export_altitude_bands_csv(self) -> bool:
+        """True iff the loaded file is an events log carrying at least
+        one altitude-crossing trigger measured from the central body --
+        the only crossings the band occupancy analysis reconstructs
+        (third-body crossings aren't body-centric, so their direction
+        isn't recoverable). Independent of which plot is showing: the
+        band CSV is derived from the events data, not the figure."""
+        if (self._kind not in ("events", "events_batch")
+                or self._data is None or self._central_body is None):
+            return False
+        d = self._data
+        return bool(((d["kind"] == EVENT_KIND_ALT_CROSSING)
+                     & (d["naif_id"] == self._central_body.naif_id)).any())
+
+    def _export_altitude_bands_csv(self) -> None:
+        """Write the altitude-band occupancy table -- one row per batch
+        element (ascending case id), paired `time / entries` columns per
+        band -- to a CSV file. Reuses the exact per-object analysis
+        (snapshot thresholds / stop actions / window) that backs the
+        Info tab's pooled view."""
+        if not self._can_export_altitude_bands_csv():
+            QMessageBox.information(
+                self, "Nothing to export",
+                "This file has no central-body altitude-crossing events "
+                "to analyse.")
+            return
+        snapshot = resolve_run_context(self._path)
+        thresholds, stop_thresholds, duration = band_inputs_from_snapshot(
+            snapshot, self._central_body.name)
+        res = altitude_bands_per_object(
+            self._data, self._central_body.naif_id,
+            thresholds_km=thresholds, stop_thresholds_km=stop_thresholds,
+            duration_s=duration)
+        if res is None:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "The altitude-band analysis produced no bands for this "
+                "file.")
+            return
+        thr, from_snapshot, rows = res
+        stem = self._path.stem if self._path is not None else "events"
+        suggested = f"{stem}_altitude_bands.csv"
+        start_dir = (str(self._working_dir / suggested)
+                     if self._working_dir is not None else suggested)
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Export altitude bands CSV", start_dir,
+            "CSV files (*.csv);;All files (*)")
+        if not dest:
+            return
+        dest_path = Path(dest)
+        dlg = self._plot_options_dialog
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        if dlg is not None:
+            dlg.set_status(f"Saving to {dest_path.name}...")
+        QApplication.processEvents()
+        try:
+            csv_text = per_object_bands_to_csv(
+                thr, from_snapshot, rows,
+                self._central_body.naif_id, self._central_body.name)
+            dest_path.write_text(csv_text, encoding="utf-8")
+        except OSError as exc:
+            if dlg is not None:
+                dlg.set_status(f"Export failed: {exc}", ok=False)
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        size_kb = dest_path.stat().st_size / 1024.0
+        self._info_label.setText(
+            f"Exported altitude bands CSV: {dest_path}  ({size_kb:.1f} kB)")
         if dlg is not None:
             dlg.set_status(f"Saved {size_kb:.1f} kB")
             dlg.hide()
