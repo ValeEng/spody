@@ -395,6 +395,50 @@ def altitude_bands_per_object(events: np.ndarray, central_naif: int,
     return prep.thr, prep.from_snapshot, rows
 
 
+def altitude_band_segments(events: np.ndarray, central_naif: int,
+                           thresholds_km: "list[float] | None" = None,
+                           stop_thresholds_km: "list[float] | None" = None,
+                           duration_s: "float | None" = None,
+                           ) -> "tuple[np.ndarray, bool, float, list] | None":
+    """Per-object band *segments* for the occupancy plots.
+
+    Returns `(thresholds_km, from_snapshot, window_s, segments)` where
+    `segments` is one entry per analysed object (sorted by id):
+    `(obj_id, [(band_idx, t_start, t_end), ...])`, the intervals sorted
+    by start time. `window_s` is the largest per-object end time (the
+    natural x-range for a population-vs-time plot). None when the file
+    carries no usable central-body crossing."""
+    prep = _prepare_streams(events, central_naif,
+                            thresholds_km, stop_thresholds_km)
+    if prep is None:
+        return None
+    n_bands = len(prep.thr) + 1
+    window_s = 0.0
+    out: list[tuple[int, list[tuple[int, float, float]]]] = []
+    for obj in sorted(prep.streams):
+        t_end, _cause, _start, intervals, _entries = _object_band_intervals(
+            prep.streams[obj], n_bands, prep.stop_idx,
+            duration_s, prep.impact_t.get(obj))
+        window_s = max(window_s, t_end)
+        segs = [(b, s, e) for b in range(n_bands) for (s, e) in intervals[b]]
+        segs.sort(key=lambda z: z[1])
+        out.append((int(obj), segs))
+    return prep.thr, prep.from_snapshot, window_s, out
+
+
+def band_edge_labels(thr: np.ndarray) -> list[str]:
+    """`['0-45 km', '45-60 km', '60-inf km', ...]` for the n+1 bands
+    defined by the sorted thresholds `thr`. Shared by the Info tab and
+    the band plots so band names read identically everywhere."""
+    n_bands = len(thr) + 1
+    out = []
+    for b in range(n_bands):
+        lo = 0.0 if b == 0 else float(thr[b - 1])
+        hi = "inf" if b == n_bands - 1 else f"{float(thr[b]):g}"
+        out.append(f"{lo:g}-{hi} km")
+    return out
+
+
 def _band_label(thr: np.ndarray, b: int) -> str:
     """Human/column-safe altitude range for band `b`: `<lo>-<hi>km`
     with `inf` for the open top band (no commas -> safe as a CSV

@@ -36,7 +36,14 @@ from spody_io import (
 )
 
 from ..vtk_canvas import VtkCanvas
-from .altitude_bands import cluster_altitudes
+from .altitude_bands import (
+    altitude_band_segments,
+    altitude_bands_per_object,
+    analyze_altitude_bands,
+    band_edge_labels,
+    band_inputs_from_snapshot,
+    cluster_altitudes,
+)
 from .context import PlotContext, ctx_missing_message, resolve_run_context
 from .scene3d import add_reference_triads
 from .spec import PlotSpec
@@ -194,7 +201,9 @@ def _compute_impact_latlon(d: np.ndarray, mask: np.ndarray, info: dict,
     et_start = info["et_start_s"]
     t_sim    = d["t"][mask]
     y_state  = d["y"][mask]
-    case_id  = d["case_idx"][mask].astype(int, copy=True)
+    case_id  = (d["case_idx"][mask].astype(int, copy=True)
+                if "case_idx" in (d.dtype.names or ())
+                else np.zeros(n, dtype=int))   # per-run file: single object
     r_icrf   = y_state[:, 0:3]
     lat_deg  = np.empty(n)
     lon_deg  = np.empty(n)
@@ -207,6 +216,46 @@ def _compute_impact_latlon(d: np.ndarray, mask: np.ndarray, info: dict,
         lon_deg[i] = np.degrees(np.arctan2(r_bf[1], r_bf[0]))
     t_days = t_sim.astype(float) / _SEC_PER_DAY
     return lat_deg, lon_deg, t_days, case_id
+
+
+def impacts_latlon_csv(d: np.ndarray, ctx: "PlotContext") -> str | None:
+    """CSV of impact points: `case_id, lat_deg, lon_deg, tof_s,
+    tof_days`, one row per IMPACT (ascending case id). Latitude and
+    longitude are in the central body's body-fixed frame (the same
+    projection the impact lat/lon maps use); time-of-flight is the
+    trigger time from the run epoch. Returns None when there is no
+    IMPACT row, no body-fixed orientation for the central body, or the
+    run snapshot / ephemeris needed for the projection can't be
+    resolved -- the caller surfaces that as a message."""
+    if ctx.central_body.bf_orientation is None:
+        return None
+    mask = d["kind"] == EVENT_KIND_IMPACT
+    if not mask.any():
+        return None
+    info = resolve_run_context(ctx.path)
+    if info is None or info["ephemeris_path"] is None:
+        return None
+    geom = _compute_impact_latlon(d, mask, info, ctx)
+    if geom is None:
+        return None
+    lat_deg, lon_deg, t_days, case_id = geom
+    tof_s = d["t"][mask].astype(float)          # same (mask) order as geom
+    order = np.argsort(case_id, kind="stable")
+    lines = [
+        "# SpOdy impact points (body-fixed lat/lon + time of flight)",
+        f"# body_name,{ctx.central_body.name}",
+        f"# body_naif,{ctx.central_body.naif_id}",
+        f"# bf_frame,{ctx.central_body.bf_frame_name}",
+        f"# n_impacts,{int(mask.sum())}",
+        "case_id,lat_deg,lon_deg,tof_s,tof_days",
+    ]
+    for i in order:
+        lines.append(",".join([
+            str(int(case_id[i])),
+            f"{lat_deg[i]:.6g}", f"{lon_deg[i]:.6g}",
+            f"{tof_s[i]:.6g}", f"{t_days[i]:.6g}",
+        ]))
+    return "\n".join(lines) + "\n"
 
 
 def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
@@ -706,8 +755,219 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
     canvas.add_points(r_bf_arr, rgba[:, :3], radius_km=marker_km)
 
 
+# ======================================================================
+# Altitude-band occupancy plots
+# ======================================================================
+# All four are `mode="context"` (they need the run snapshot's
+# thresholds / stop actions / duration) and HF-only (the reconstruction
+# measures altitude from the central body; the CR3BP synodic frame has
+# no comparable body-fixed altitude). They degrade to a message when
+# the file carries no central-body altitude crossings, exactly like the
+# impact views do for a file with no IMPACT rows. The band maths lives
+# in `analysis/altitude_bands.py`; these functions only draw.
+
+def _band_time_axis(window_s: float) -> tuple[float, str]:
+    """Pick a readable time unit (divisor, label) for a band plot's
+    axis from the analysis window: seconds for sub-minute orbits up to
+    days for multi-day debris decay."""
+    if window_s >= 2 * 86400.0:
+        return 86400.0, "days"
+    if window_s >= 2 * 3600.0:
+        return 3600.0, "h"
+    if window_s >= 2 * 60.0:
+        return 60.0, "min"
+    return 1.0, "s"
+
+
+def _band_colors(n: int) -> list:
+    """One colour per band from a sequential map so the visual order
+    (dark = low altitude, bright = high) matches the physical order."""
+    cmap = mpl_colormaps["viridis"]
+    return [cmap(i / max(1, n - 1)) for i in range(n)]
+
+
+def _band_inputs_for(ctx: "PlotContext") -> tuple:
+    """(thresholds, stop_thresholds, duration_s) from the run snapshot
+    for the context's central body; empty/None when no snapshot."""
+    info = resolve_run_context(ctx.path)
+    if info is not None:
+        return band_inputs_from_snapshot(info, ctx.central_body.name)
+    return [], [], None
+
+
+def _plot_bands_time(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
+    """Horizontal bar per altitude band = time spent in the band (total
+    for a single run, object-time summed over cases in batch). Lowest
+    band at the bottom so the axis reads like an altitude axis."""
+    title = f"Time per altitude band ({ctx.central_body.name})"
+    thresholds, stop, duration = _band_inputs_for(ctx)
+    res = analyze_altitude_bands(d, ctx.central_body.naif_id,
+                                 thresholds_km=thresholds,
+                                 stop_thresholds_km=stop, duration_s=duration)
+    if res is None:
+        ctx_missing_message(
+            ax, title, "No central-body altitude-crossing events here.")
+        return
+    is_batch = "case_idx" in d.dtype.names
+    labels = band_edge_labels(res.thresholds_km)
+    div, unit = _band_time_axis(res.window_s)
+    colors = _band_colors(len(res.bands))
+    y = np.arange(len(res.bands))
+    vals = np.array([b.total_time_s for b in res.bands]) / div
+    ax.barh(y, vals, color=colors, edgecolor="black", linewidth=0.4)
+    for i, b in enumerate(res.bands):
+        if b.total_time_s <= 0.0:
+            continue
+        if is_batch:
+            txt = f"{vals[i]:.4g}"
+        else:
+            pct = (100.0 * b.total_time_s / res.window_s
+                   if res.window_s > 0 else 0.0)
+            txt = f"{pct:.3g}%"
+        ax.text(vals[i], i, "  " + txt, va="center", fontsize="small")
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    xlabel = f"time in band [{unit}]"
+    if is_batch:
+        xlabel += "  (object-time, summed over cases)"
+    ax.set_xlabel(xlabel)
+    ax.set_title(title + (f"  --  {res.n_objects} objects" if is_batch else ""))
+    ax.grid(True, axis="x", alpha=0.3)
+
+
+def _plot_bands_gantt(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
+    """Occupancy timeline for a single object: one row per band, a
+    coloured bar for every interval the object spends in that band.
+    Reads as 'which altitude band, when' at a glance."""
+    title = f"Band occupancy timeline ({ctx.central_body.name})"
+    thresholds, stop, duration = _band_inputs_for(ctx)
+    seg = altitude_band_segments(d, ctx.central_body.naif_id,
+                                 thresholds_km=thresholds,
+                                 stop_thresholds_km=stop, duration_s=duration)
+    if seg is None:
+        ctx_missing_message(
+            ax, title, "No central-body altitude-crossing events here.")
+        return
+    thr, _from_snap, window_s, segments = seg
+    labels = band_edge_labels(thr)
+    colors = _band_colors(len(labels))
+    div, unit = _band_time_axis(window_s)
+    obj_id, segs = segments[0]         # per-run file -> exactly one object
+    for (b, s, e) in segs:
+        ax.barh(b, (e - s) / div, left=s / div, height=0.6,
+                color=colors[b], edgecolor="black", linewidth=0.3)
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels(labels)
+    ax.set_ylabel("altitude band")
+    ax.set_xlabel(f"t [{unit}]")
+    note = (f"  ({len(segments)} objects; showing case {obj_id})"
+            if len(segments) > 1 else "")
+    ax.set_title(title + note)
+    ax.grid(True, axis="x", alpha=0.3)
+
+
+def _plot_bands_population(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
+    """Batch: stacked step-area of how many objects sit in each band
+    over time. The stack height at t is the number of objects still
+    alive (not yet impacted / stopped); each colour band is that band's
+    instantaneous population -- the time-integral is the Info tab's
+    'population mean'."""
+    title = f"Band population over time ({ctx.central_body.name})"
+    thresholds, stop, duration = _band_inputs_for(ctx)
+    seg = altitude_band_segments(d, ctx.central_body.naif_id,
+                                 thresholds_km=thresholds,
+                                 stop_thresholds_km=stop, duration_s=duration)
+    if seg is None:
+        ctx_missing_message(
+            ax, title, "No central-body altitude-crossing events here.")
+        return
+    thr, _from_snap, window_s, segments = seg
+    n_bands = len(thr) + 1
+    labels = band_edge_labels(thr)
+    colors = _band_colors(n_bands)
+
+    # Common time grid = every segment boundary; count active segments
+    # per band in each cell via searchsorted (boundaries are grid nodes).
+    bounds = {0.0, window_s}
+    for _obj, segs in segments:
+        for (_b, s, e) in segs:
+            bounds.add(s)
+            bounds.add(e)
+    grid = np.array(sorted(bounds))
+    counts = np.zeros((n_bands, len(grid) - 1), dtype=int)
+    for _obj, segs in segments:
+        for (b, s, e) in segs:
+            lo = int(np.searchsorted(grid, s, side="left"))
+            hi = int(np.searchsorted(grid, e, side="left"))
+            counts[b, lo:hi] += 1
+
+    div, unit = _band_time_axis(window_s)
+    x = grid / div
+    counts_pad = np.hstack([counts, counts[:, -1:]])   # hold last cell
+    base = np.zeros(len(grid))
+    for b in range(n_bands):
+        top = base + counts_pad[b]
+        ax.fill_between(x, base, top, step="post", color=colors[b],
+                        alpha=0.85, linewidth=0.0, label=labels[b])
+        base = top
+    ax.set_xlim(float(x[0]), float(x[-1]))
+    ax.set_ylim(0, max(1, int(base.max())))
+    ax.set_xlabel(f"t [{unit}]")
+    ax.set_ylabel("objects in band")
+    ax.set_title(f"{title}  --  {len(segments)} objects")
+    ax.legend(loc="upper right", fontsize="small", framealpha=0.6,
+              title="altitude band")
+    ax.grid(True, alpha=0.3)
+
+
+def _plot_bands_heatmap(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
+    """Batch: heatmap of time-in-band, rows = cases (ascending id),
+    columns = bands. The visual companion of the per-element CSV
+    export -- spot at a glance which cases live low vs high."""
+    title = f"Per-case time in band ({ctx.central_body.name})"
+    thresholds, stop, duration = _band_inputs_for(ctx)
+    res = altitude_bands_per_object(d, ctx.central_body.naif_id,
+                                    thresholds_km=thresholds,
+                                    stop_thresholds_km=stop,
+                                    duration_s=duration)
+    if res is None:
+        ctx_missing_message(
+            ax, title, "No central-body altitude-crossing events here.")
+        return
+    thr, _from_snap, rows = res
+    labels = band_edge_labels(thr)
+    n_bands = len(labels)
+    ids = [obj for (obj, _pb) in rows]
+    times = np.array([[pb[b][0] for b in range(n_bands)]
+                      for (_obj, pb) in rows], dtype=float)
+    div, unit = _band_time_axis(float(times.max()) if times.size else 1.0)
+    im = ax.imshow(times / div, aspect="auto", cmap="viridis",
+                   origin="upper", interpolation="nearest")
+    ax.set_xticks(range(n_bands))
+    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize="small")
+    if len(rows) <= 40:
+        ax.set_yticks(range(len(rows)))
+        ax.set_yticklabels([f"case {i}" for i in ids], fontsize="x-small")
+    else:
+        ax.set_yticks([])
+        ax.set_ylabel(f"{len(rows)} cases  (case id ascending)")
+    ax.set_xlabel("altitude band")
+    ax.set_title(title)
+    cb = ax.figure.colorbar(im, ax=ax, label=f"time in band [{unit}]",
+                            fraction=0.046, pad=0.02)
+    cb.ax.tick_params(labelsize="x-small")
+
+
+_BAND_CAT = "Altitude bands"
+
 SPECS_SINGLE: list[PlotSpec] = [
     PlotSpec("Events timeline",             "2d", _plot_events_timeline),
+    PlotSpec("Time per band",               "2d", _plot_bands_time,
+             category=_BAND_CAT, mode="context",
+             models=("high_fidelity",)),
+    PlotSpec("Band occupancy timeline",     "2d", _plot_bands_gantt,
+             category=_BAND_CAT, mode="context",
+             models=("high_fidelity",)),
 ]
 
 # Timeline goes first so a fresh load always shows something sensible
@@ -737,5 +997,14 @@ SPECS_BATCH: list[PlotSpec] = [
              models=("high_fidelity",)),
     PlotSpec("Impact 3D on central body",   "3d",
              _plot_events_impact_3d,         mode="context",
+             models=("high_fidelity",)),
+    PlotSpec("Time per band",               "2d", _plot_bands_time,
+             category=_BAND_CAT, mode="context",
+             models=("high_fidelity",)),
+    PlotSpec("Band population over time",    "2d", _plot_bands_population,
+             category=_BAND_CAT, mode="context",
+             models=("high_fidelity",)),
+    PlotSpec("Per-case time in band",        "2d", _plot_bands_heatmap,
+             category=_BAND_CAT, mode="context",
              models=("high_fidelity",)),
 ]

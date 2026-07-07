@@ -113,8 +113,9 @@ from .analysis.info import (
     info_rows_run_summary,
     info_rows_traj,
 )
-from spody_io import EVENT_KIND_ALT_CROSSING
+from spody_io import EVENT_KIND_ALT_CROSSING, EVENT_KIND_IMPACT
 from .analysis.plots_diff import align_or_interp
+from .analysis.plots_events import impacts_latlon_csv
 from .analysis.table_model import FIELD_DISPLAY_RENAME
 
 
@@ -1360,10 +1361,8 @@ class AnalysisPanel(QWidget):
         # enabled/disabled state if the dialog was left open between
         # plot clicks.
         if self._plot_options_dialog is not None:
-            self._plot_options_dialog.set_export_enabled(
-                self._can_export_active_plot_csv())
-            self._plot_options_dialog.set_bands_export_enabled(
-                self._can_export_altitude_bands_csv())
+            self._plot_options_dialog.set_export_availability(
+                self._export_availability())
         if self._stack.currentIndex() != 1:
             self._anim_bar.setVisible(False)
             # Drop the UTC overlay too: it's a 3D-only widget and a
@@ -1452,16 +1451,12 @@ class AnalysisPanel(QWidget):
     def _on_open_plot_options(self) -> None:
         if self._plot_options_dialog is None:
             self._plot_options_dialog = PlotOptionsDialog(parent=self)
-            self._plot_options_dialog.exportCsvRequested.connect(
-                self._export_active_plot_csv)
-            self._plot_options_dialog.exportBandsCsvRequested.connect(
-                self._export_altitude_bands_csv)
+            self._plot_options_dialog.exportRequested.connect(
+                self._on_export_requested)
             self._plot_options_dialog.plotFrameChanged.connect(
                 self._on_plot_frame_changed)
-        self._plot_options_dialog.set_export_enabled(
-            self._can_export_active_plot_csv())
-        self._plot_options_dialog.set_bands_export_enabled(
-            self._can_export_altitude_bands_csv())
+        self._plot_options_dialog.set_export_availability(
+            self._export_availability())
         self._plot_options_dialog.set_frame(self._plot_frame)
         self._refresh_plot_options_bf_availability()
         self._plot_options_dialog.clear_status()
@@ -1500,6 +1495,28 @@ class AnalysisPanel(QWidget):
         bf_label = self._central_body.bf_frame_name if available else ""
         self._plot_options_dialog.set_bf_available(available, bf_label)
 
+    def _export_availability(self) -> "dict[str, bool]":
+        """Which CSV export types apply right now, keyed by the ids the
+        PlotOptionsDialog knows ('lines' = Line2D on the active figure,
+        'bands' = central-body altitude crossings in the loaded file).
+        Pushed into the dialog on every render and on open so the radio
+        list + Export button reflect the current plot / file."""
+        return {
+            "lines": self._can_export_active_plot_csv(),
+            "bands": self._can_export_altitude_bands_csv(),
+            "impacts": self._can_export_impacts_csv(),
+        }
+
+    def _on_export_requested(self, export_id: str) -> None:
+        """Route the dialog's Export click to the writer for the
+        selected type."""
+        if export_id == "lines":
+            self._export_active_plot_csv()
+        elif export_id == "bands":
+            self._export_altitude_bands_csv()
+        elif export_id == "impacts":
+            self._export_impacts_csv()
+
     def _can_export_active_plot_csv(self) -> bool:
         """True iff the matplotlib figure currently shows a 2D plot
         with at least one Line2D somewhere on it. Tile mode counts as
@@ -1510,6 +1527,46 @@ class AnalysisPanel(QWidget):
             if ax.get_lines():
                 return True
         return False
+
+    def _save_csv_text(self, csv_text: str, suggested: str,
+                       dialog_title: str, done_label: str) -> None:
+        """Shared save flow for every CSV export: file dialog (seeded in
+        the working dir), wait-cursor + in-dialog status, write, and a
+        confirmation in the panel info label that survives the dialog
+        auto-closing. `dialog_title` names the save dialog; `done_label`
+        prefixes the success line."""
+        start_dir = (str(self._working_dir / suggested)
+                     if self._working_dir is not None else suggested)
+        dest, _ = QFileDialog.getSaveFileName(
+            self, dialog_title, start_dir,
+            "CSV files (*.csv);;All files (*)")
+        if not dest:
+            return
+        dest_path = Path(dest)
+        dlg = self._plot_options_dialog
+        # Visible progress on a fast op: wait cursor + status label in
+        # the dialog. processEvents() flushes the paint so the user
+        # actually sees the message even when the write completes in a
+        # few ms. The cursor is restored unconditionally in `finally`.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        if dlg is not None:
+            dlg.set_status(f"Saving to {dest_path.name}...")
+        QApplication.processEvents()
+        try:
+            dest_path.write_text(csv_text, encoding="utf-8")
+        except OSError as exc:
+            if dlg is not None:
+                dlg.set_status(f"Export failed: {exc}", ok=False)
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        size_kb = dest_path.stat().st_size / 1024.0
+        self._info_label.setText(
+            f"Exported {done_label}: {dest_path}  ({size_kb:.1f} kB)")
+        if dlg is not None:
+            dlg.set_status(f"Saved {size_kb:.1f} kB")
+            dlg.hide()
 
     def _export_active_plot_csv(self) -> None:
         """Dump every Line2D on the current matplotlib figure to a CSV
@@ -1533,42 +1590,8 @@ class AnalysisPanel(QWidget):
                  if self._active_spec is not None else "plot")
         safe_label = "".join(c if c.isalnum() or c in "-_" else "_"
                              for c in label)
-        suggested = f"{stem}_{safe_label}.csv"
-        start_dir = (str(self._working_dir / suggested)
-                     if self._working_dir is not None else suggested)
-        dest, _ = QFileDialog.getSaveFileName(
-            self, "Export CSV", start_dir, "CSV files (*.csv);;All files (*)")
-        if not dest:
-            return
-        dest_path = Path(dest)
-        dlg = self._plot_options_dialog
-        # Visible progress on a fast op: wait cursor + status label in
-        # the dialog. processEvents() flushes the paint so the user
-        # actually sees the message even when the write completes in a
-        # few ms. The cursor is restored unconditionally in `finally`.
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        if dlg is not None:
-            dlg.set_status(f"Saving to {dest_path.name}...")
-        QApplication.processEvents()
-        try:
-            csv_text = _serialize_axes_to_csv(self._figure.axes)
-            dest_path.write_text(csv_text, encoding="utf-8")
-        except OSError as exc:
-            if dlg is not None:
-                dlg.set_status(f"Export failed: {exc}", ok=False)
-            QMessageBox.critical(self, "Export failed", str(exc))
-            return
-        finally:
-            QApplication.restoreOverrideCursor()
-        # Success: confirm in the panel info label (stays visible after
-        # the dialog auto-closes) and dismiss the dialog so the user
-        # is back at the canvas.
-        size_kb = dest_path.stat().st_size / 1024.0
-        self._info_label.setText(
-            f"Exported CSV: {dest_path}  ({size_kb:.1f} kB)")
-        if dlg is not None:
-            dlg.set_status(f"Saved {size_kb:.1f} kB")
-            dlg.hide()
+        self._save_csv_text(_serialize_axes_to_csv(self._figure.axes),
+                            f"{stem}_{safe_label}.csv", "Export CSV", "CSV")
 
     def _can_export_altitude_bands_csv(self) -> bool:
         """True iff the loaded file is an events log carrying at least
@@ -1610,39 +1633,48 @@ class AnalysisPanel(QWidget):
                 "file.")
             return
         thr, from_snapshot, rows = res
+        csv_text = per_object_bands_to_csv(
+            thr, from_snapshot, rows,
+            self._central_body.naif_id, self._central_body.name)
         stem = self._path.stem if self._path is not None else "events"
-        suggested = f"{stem}_altitude_bands.csv"
-        start_dir = (str(self._working_dir / suggested)
-                     if self._working_dir is not None else suggested)
-        dest, _ = QFileDialog.getSaveFileName(
-            self, "Export altitude bands CSV", start_dir,
-            "CSV files (*.csv);;All files (*)")
-        if not dest:
+        self._save_csv_text(csv_text, f"{stem}_altitude_bands.csv",
+                            "Export altitude bands CSV", "altitude bands CSV")
+
+    def _can_export_impacts_csv(self) -> bool:
+        """True iff the loaded file is an events log with at least one
+        IMPACT row AND the central body has a body-fixed orientation
+        (needed to project the impact state to lat/lon). Independent of
+        which plot is showing: the impact CSV is derived from the events
+        data, not the figure."""
+        if (self._kind not in ("events", "events_batch")
+                or self._data is None or self._central_body is None):
+            return False
+        if self._central_body.bf_orientation is None:
+            return False
+        return bool((self._data["kind"] == EVENT_KIND_IMPACT).any())
+
+    def _export_impacts_csv(self) -> None:
+        """Write the impact points -- case id, body-fixed lat/lon, time
+        of flight -- to a CSV file. Uses the same projection as the
+        impact lat/lon maps (`impacts_latlon_csv`)."""
+        if not self._can_export_impacts_csv():
+            QMessageBox.information(
+                self, "Nothing to export",
+                "This file has no impacts on a body with a body-fixed "
+                "frame for the lat/lon projection.")
             return
-        dest_path = Path(dest)
-        dlg = self._plot_options_dialog
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        if dlg is not None:
-            dlg.set_status(f"Saving to {dest_path.name}...")
-        QApplication.processEvents()
-        try:
-            csv_text = per_object_bands_to_csv(
-                thr, from_snapshot, rows,
-                self._central_body.naif_id, self._central_body.name)
-            dest_path.write_text(csv_text, encoding="utf-8")
-        except OSError as exc:
-            if dlg is not None:
-                dlg.set_status(f"Export failed: {exc}", ok=False)
-            QMessageBox.critical(self, "Export failed", str(exc))
+        ctx = self._build_plot_context(self._path)
+        csv_text = impacts_latlon_csv(self._data, ctx)
+        if csv_text is None:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "Could not project the impacts to lat/lon -- the run "
+                "snapshot or its ephemeris file could not be resolved "
+                "next to this events file.")
             return
-        finally:
-            QApplication.restoreOverrideCursor()
-        size_kb = dest_path.stat().st_size / 1024.0
-        self._info_label.setText(
-            f"Exported altitude bands CSV: {dest_path}  ({size_kb:.1f} kB)")
-        if dlg is not None:
-            dlg.set_status(f"Saved {size_kb:.1f} kB")
-            dlg.hide()
+        stem = self._path.stem if self._path is not None else "events"
+        self._save_csv_text(csv_text, f"{stem}_impacts.csv",
+                            "Export impact points CSV", "impact points CSV")
 
     def _resolve_central_body_from_snapshot(self) -> CentralBodySpec:
         """Read `force_model.central_body` from the loaded run's

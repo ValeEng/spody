@@ -15,13 +15,14 @@
 
 Counterpart of `scene_options.py` for matplotlib (2D) plots. A small
 non-modal dialog hosted by AnalysisPanel and opened from the `Plot
-options...` button on the matplotlib toolbar row; today it exposes a
-single Export-CSV action, with room to grow as new per-plot toggles
-arrive.
+options...` button on the matplotlib toolbar row; it exposes the plot
+frame selector and a CSV-export box (a radio list of export types +
+one Export button), with room to grow as new per-plot toggles arrive.
 
-The dialog itself owns no data: it emits signals (`exportCsvRequested`)
-that the analysis panel handles against whatever figure is currently
-shown.
+The dialog itself owns no data: it emits signals (`exportRequested`
+with the selected type id, `plotFrameChanged`) that the analysis panel
+handles against whatever figure / file is currently shown. Which
+export types are available is pushed in via `set_export_availability`.
 """
 from __future__ import annotations
 
@@ -30,7 +31,6 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QRadioButton,
@@ -47,16 +47,33 @@ class PlotOptionsDialog(QDialog):
     plots. Today it exposes Export CSV and the frame selector
     (ICRF / body-fixed) for state-vector and Keplerian-angle plots."""
 
-    exportCsvRequested = Signal()
-    # Emitted when the user clicks "Export altitude bands CSV". Only
-    # meaningful on an events file that carries altitude-crossing
-    # triggers for the central body; the button is greyed out
-    # otherwise (see set_bands_export_enabled).
-    exportBandsCsvRequested = Signal()
+    # Emitted when the user clicks Export. Payload is the id of the
+    # selected export type ("lines" / "bands"); AnalysisPanel routes it
+    # to the matching writer. The set of types and which are currently
+    # available is pushed in via `set_export_availability`.
+    exportRequested = Signal(str)
     # Emitted when the user flips the frame radio. Payload is one of
     # "icrf" / "bf"; AnalysisPanel stores the choice and re-renders
     # the active plot.
     plotFrameChanged   = Signal(str)
+
+    # The CSV export types the dialog offers, in display order:
+    # (id, radio label, tooltip). Availability per type is data-driven
+    # (pushed by the panel); the id is what `exportRequested` carries.
+    _EXPORT_TYPES = (
+        ("lines", "Plot lines (as drawn)",
+         "Every line on the current figure as CSV (tile and overlay "
+         "views supported). Scatter / bar / heat-map plots -- impact "
+         "maps, altitude-band views -- carry no line data."),
+        ("bands", "Altitude bands (per batch element)",
+         "The altitude-band occupancy table: one row per batch element "
+         "(ascending case id), a time + entries pair per band. Needs an "
+         "events file with central-body altitude crossings."),
+        ("impacts", "Impact points (lat/lon + time of flight)",
+         "One row per IMPACT: case id, body-fixed latitude / longitude, "
+         "and time of flight. Needs an events file with at least one "
+         "impact on a body that has a body-fixed frame."),
+    )
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -90,31 +107,27 @@ class PlotOptionsDialog(QDialog):
         frame_lay.addWidget(self._rb_icrf)
         frame_lay.addWidget(self._rb_bf)
 
-        self._btn_export_csv = QPushButton("Export CSV...")
-        self._btn_export_csv.setToolTip(
-            "Save every line drawn on the current figure as a CSV file. "
-            "Tile and overlay views are supported; scatter / heat-map "
-            "layers (impact maps, density plots) are not exported.")
-        self._btn_export_csv.clicked.connect(self.exportCsvRequested.emit)
-
-        # Second export: the altitude-band occupancy table (one row per
-        # band). Only enabled on an events file with altitude-crossing
-        # triggers on the central body -- greyed out otherwise so the
-        # user isn't offered an export that would be empty.
-        self._btn_export_bands = QPushButton("Export altitude bands CSV...")
-        self._btn_export_bands.setToolTip(
-            "Save the altitude-band occupancy analysis (total time, "
-            "entries, dwell and population per band) as a CSV file. "
-            "Enabled only for events files that recorded altitude-"
-            "crossing triggers on the central body.")
-        self._btn_export_bands.clicked.connect(
-            self.exportBandsCsvRequested.emit)
-        self._btn_export_bands.setEnabled(False)
-
-        row = QHBoxLayout()
-        row.addWidget(self._btn_export_csv)
-        row.addWidget(self._btn_export_bands)
-        row.addStretch(1)
+        # ---- CSV export ---------------------------------------------
+        # A box that lists the available CSV export types as radios and
+        # one Export button acting on the selected one. Types grey out
+        # individually when they don't apply (a bar / heat-map plot has
+        # no line data; a non-events file has no altitude bands), so the
+        # user sees WHICH exports exist and why one is unavailable,
+        # instead of a lone button that mysteriously greys.
+        export_box = QGroupBox("Export CSV")
+        export_lay = QVBoxLayout(export_box)
+        self._export_group = QButtonGroup(self)
+        self._export_radios: dict[str, QRadioButton] = {}
+        for tid, label, tip in self._EXPORT_TYPES:
+            rb = QRadioButton(label)
+            rb.setToolTip(tip)
+            self._export_group.addButton(rb)
+            self._export_radios[tid] = rb
+            export_lay.addWidget(rb)
+        self._btn_export = QPushButton("Export selected...")
+        self._btn_export.clicked.connect(self._on_export_clicked)
+        self._btn_export.setEnabled(False)
+        export_lay.addWidget(self._btn_export)
 
         # In-dialog status line: shows "Saving to <path>...", "Saved
         # (...)" on success (briefly, before the dialog auto-closes),
@@ -126,23 +139,38 @@ class PlotOptionsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(intro)
         lay.addWidget(frame_box)
-        lay.addLayout(row)
+        lay.addWidget(export_box)
         lay.addWidget(self._status)
         lay.addStretch(1)
 
-    def set_export_enabled(self, on: bool) -> None:
-        """Toggle the Export CSV button. Called by the panel whenever
-        the active plot changes -- disabled when there is no figure
-        loaded yet, or when the active plot is 3D (the dialog is
-        meant for the matplotlib canvas only)."""
-        self._btn_export_csv.setEnabled(on)
+    def _checked_export_id(self) -> str | None:
+        for tid, rb in self._export_radios.items():
+            if rb.isChecked():
+                return tid
+        return None
 
-    def set_bands_export_enabled(self, on: bool) -> None:
-        """Toggle the altitude-band CSV export button. The panel gates
-        this on the loaded file being an events log that carries
-        central-body altitude-crossing triggers (see
-        `_can_export_altitude_bands_csv`)."""
-        self._btn_export_bands.setEnabled(on)
+    def _on_export_clicked(self) -> None:
+        tid = self._checked_export_id()
+        if tid is not None and self._export_radios[tid].isEnabled():
+            self.exportRequested.emit(tid)
+
+    def set_export_availability(self, avail: "dict[str, bool]") -> None:
+        """Enable/disable each export-type radio from `avail`
+        (id -> bool). If the currently-selected type is unavailable,
+        the selection moves to the first available one; the Export
+        button is enabled iff at least one type is available. Called by
+        the panel on every render and on dialog open."""
+        first_ok: str | None = None
+        for tid, rb in self._export_radios.items():
+            ok = bool(avail.get(tid, False))
+            rb.setEnabled(ok)
+            if ok and first_ok is None:
+                first_ok = tid
+        checked = self._checked_export_id()
+        if (checked is None or not avail.get(checked, False)) \
+                and first_ok is not None:
+            self._export_radios[first_ok].setChecked(True)
+        self._btn_export.setEnabled(first_ok is not None)
 
     def set_status(self, text: str, ok: bool = True) -> None:
         """Write `text` into the status line; `ok=False` paints it red
