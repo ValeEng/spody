@@ -168,10 +168,10 @@ class WidgetFactoriesMixin:
         edit would.
 
         Range validation runs on the displayed (scaled) value, which
-        is fine for the only current consumer (`duration_s` uses
-        `_pos`, invariant under positive scaling); if a future field
-        wants a bound on the SI value, the validator needs to be
-        applied post-scale instead.
+        is fine for the current consumers (`duration_s` and
+        `output.interval_s` both use `_pos`, invariant under positive
+        scaling); if a future field wants a bound on the SI value, the
+        validator needs to be applied post-scale instead.
         """
         w = QLineEdit()
         w.textChanged.connect(self._touch)

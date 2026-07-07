@@ -254,8 +254,9 @@ def unit_suffix(key: str) -> str:
 
 
 # Conversion factors for seconds-valued fields rendered with a unit
-# combo (currently only `duration_s`). The TOML always carries seconds;
-# the combo is purely a display/typing aid driven by user preference.
+# combo (`duration_s` and `output.interval_s`). The TOML always carries
+# seconds; the combo is purely a display/typing aid driven by user
+# preference.
 DURATION_FACTORS: dict[str, float] = {
     "s":    1.0,
     "min":  60.0,

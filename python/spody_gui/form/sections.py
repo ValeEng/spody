@@ -651,7 +651,9 @@ class SectionBuildersMixin:
         self._output_form = QFormLayout(g)
         f = self._output_form
         self._add_enum (f, "output.mode",               "mode", OUTPUT_MODES)
-        self._add_float(f, "output.interval_s",         "interval_s")
+        # Unit combo (s | min | h | days) like simulation.duration_s: the
+        # TOML always carries seconds, the combo is a display/typing aid.
+        self._add_duration_seconds(f, "output.interval_s", "interval_s")
         self._output_interval_row = f.rowCount() - 1
 
         # output_dir: directory that holds all enabled streams. Empty =
