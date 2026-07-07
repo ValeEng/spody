@@ -8,6 +8,14 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Unit combo on `output.interval_s`.** The fixed-mode sampling
+  interval in the `[output]` form now carries the same
+  `s | min | h | days` unit combo as `simulation.duration_s`, so a
+  daily or weekly ephemeris cadence no longer has to be typed as a raw
+  second count. The TOML still stores SI seconds; the combo only
+  changes the displayed / typed unit (auto-picked on load), so the
+  engine and all readers are unchanged.
+
 - **Density calibration in the GUI + bundled ISS bench.** The
   `[force_model]` form gains the `density_scale` /
   `density_scale_file` rows (Earth-only, dropped from the emitted

@@ -252,7 +252,9 @@ Ordered roughly by what unlocks the most for users.
         CR3BP sections
       - UTC&lt;-&gt;ET converter bit-identical to SPICE `str2et` /
         `et2utc` (`deltet` algorithm + IERS leap seconds)
-      - Duration unit combo (`s | min | h | days`)
+      - Duration unit combo (`s | min | h | days`), shared by
+        `simulation.duration_s` and the `output.interval_s`
+        fixed-mode sampling interval
       - Embedded terminal pane streaming `spody`'s stdout/stderr live
       - **Analysis tab**: Plot / Table / **Info** split, file tree
         grouped by run folder (fully recursive scan), per-plot

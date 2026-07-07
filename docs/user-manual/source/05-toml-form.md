@@ -105,7 +105,10 @@ widget on the right.
   so the underlying seconds-value stays invariant. On load the
   form auto-picks the largest unit whose factor does not exceed
   the loaded magnitude (a `86400.0` TOML value comes back as
-  `1.0 days`, a `0.5` value stays as `0.5 s`).
+  `1.0 days`, a `0.5` value stays as `0.5 s`). The `[output]`
+  sampling interval (`output.interval_s`, shown only when
+  `output.mode = "fixed"`) carries the identical combo, so a daily
+  or weekly grid cadence can be typed in days rather than seconds.
 
 Hovering the cursor over a label or its widget shows a **tooltip**
 with the field's one-line description; range-validated fields also
