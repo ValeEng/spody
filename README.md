@@ -260,7 +260,11 @@ Ordered roughly by what unlocks the most for users.
         grouped by run folder (fully recursive scan), per-plot
         **Export CSV** action (every `Line2D` on the active
         figure, one section per subplot; tile and overlay views
-        supported), batch-event impact views (time-to-impact
+        supported), **altitude-band occupancy analysis** for
+        `altitude_crossing` events (per-band entries / time /
+        dwell / population in the Info tab, per-element
+        `time / entries` CSV export, per-altitude event-timeline
+        rows), batch-event impact views (time-to-impact
         histogram, survival timeline, equirect + Mollweide
         lat/lon maps, density heatmap, 3D body-textured scene
         with body-fixed + ICRF frame triads), diff-RIC trajectory

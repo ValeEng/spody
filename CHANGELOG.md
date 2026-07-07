@@ -8,6 +8,24 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Altitude-band occupancy analysis (Analysis tab).** The
+  `[[events.altitude_crossing]]` thresholds are now read as ordered
+  altitude bands (0 < h_a < h_b < ...) and the Info tab reports, per
+  band, the entries, time in band, per-visit duration and &mdash; in
+  batch &mdash; population min/avg/max and objects visiting,
+  reconstructed from the crossing records alone (direction from the
+  radial velocity at each trigger; the per-object window truncates at
+  impact or a stop-class crossing). The **Event timeline** plot gains
+  one row per crossed altitude (labelled with the altitude instead of
+  the raw enum), ascending/descending split by marker. A second
+  **Export altitude bands CSV...** action in *Plot options* &mdash;
+  enabled only for events files with central-body altitude crossings
+  &mdash; writes one row per batch element (ascending case id) with a
+  paired `time / entries` column set per band (entries count crossings
+  *into* a band only, never exits). `spody_io` exposes
+  `EVENT_KIND_ALT_CROSSING` and the events table labels the kind
+  (previously shown as the raw `2`).
+
 - **Unit combo on `output.interval_s`.** The fixed-mode sampling
   interval in the `[output]` form now carries the same
   `s | min | h | days` unit combo as `simulation.duration_s`, so a

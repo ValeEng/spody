@@ -392,15 +392,22 @@ The single-run events binary records every detected event
 #### Events timeline
 
 A horizontal-axis-time scatter plot with one marker per detected
-event, colour-coded by event kind. The y axis is purely visual
-(separate row per kind for readability).
+event. The y axis is one **series** per row: IMPACT, ECLIPSE, and
+&mdash; for altitude crossings &mdash; **one row per crossed
+altitude**, labelled with the altitude itself (e.g. `alt 45 km`)
+rather than the raw event-kind code. Altitude rows split ascending
+vs descending crossings by marker (&#9650; up / &#9660; down); the
+altitude values are clustered straight from the records, so the plot
+still works with no `input.toml` in sight. When more than one body is
+involved the altitude rows carry the body's NAIF id.
 
 **When to use.** Quick visualisation of when, in the simulation
 window, each event happens. For impact-prediction work, the
 first IMPACT marker gives the predicted collision time at a
-glance.
+glance; for altitude monitoring, each band's row shows the entry /
+exit cadence at a glance.
 
-**Overlay-safe.** No (multi-kind plot).
+**Overlay-safe.** No (multi-series plot).
 
 ## Batch-events plots (`SPDYEVTB`)
 

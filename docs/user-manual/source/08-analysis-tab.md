@@ -272,6 +272,21 @@ The button is hidden while the active plot is 3D &mdash; the 3D
 canvas uses VTK, not matplotlib, and its own Scene-options dialog
 (animation bar) covers the per-scene controls.
 
+### Export altitude bands CSV
+
+A second export next to *Export CSV*, enabled **only** when the
+loaded file is an events log carrying central-body altitude-crossing
+triggers (greyed out otherwise). It writes the altitude-band
+occupancy as a table with **one row per batch element** (ascending
+case id; a single row for a `propagate` run) and, for each band in
+ascending-altitude order, a **paired** `t_<lo>-<hi>km_s` (total time
+in band) and `entries_<lo>-<hi>km` (crossings *into* the band, never
+exits) column set. A `#`-comment header records the body, the
+thresholds and whether they came from the run snapshot or were
+clustered out of the records. Unlike *Export CSV* this reads the
+events data, not the figure, so it works from any plot in the events
+tree. The per-band totals reconcile with the Info tab's pooled view.
+
 ## 3D UTC overlay
 
 A small text overlay at the bottom-right of the 3D canvas shows
@@ -375,15 +390,17 @@ Column layout follows the file's dtype:
   on-disk name is misleading: the events files store the
   trigger metric in a `distance_km` slot, but the slot is a
   *jolly* (impact distance for IMPACT, eclipse fraction for
-  ECLIPSE, &hellip;), so the table header surfaces it as
-  `trigger_value`. The TOML schema and the engine's on-disk
-  format are unchanged &mdash; only the column label differs.
+  ECLIPSE, satellite-to-body distance for ALT_CROSSING &mdash;
+  subtract `radius_km` for the attained altitude), so the table
+  header surfaces it as `trigger_value`. The TOML schema and the
+  engine's on-disk format are unchanged &mdash; only the column
+  label differs.
 
 Floating-point cells are formatted with **12 significant digits**,
 enough to round-trip a typical km-scale state vector through the
 clipboard without surprise. Integer cells stay raw. The events
-`kind` column gets the symbolic label (`IMPACT`, `ECLIPSE`)
-instead of the enum integer.
+`kind` column gets the symbolic label (`IMPACT`, `ECLIPSE`,
+`ALT_CROSSING`) instead of the enum integer.
 
 ### Spreadsheet-style selection
 
@@ -497,6 +514,24 @@ non-zero:
 - *Impact timing* (any IMPACT row present) &mdash; first / last
   / median / mean impact time, each formatted as raw seconds
   with the friendly (min / h / d) equivalent in parentheses.
+- *Altitude bands* (any central-body `ALT_CROSSING` row present)
+  &mdash; the configured thresholds, sorted ascending, split the
+  altitude axis into bands `[surface, h_a)`, `[h_a, h_b)`, &hellip;,
+  `[h_top, &infin;)`. For each band the summary reports **Entries**
+  (crossings *into* the band), **Time in band** (with % of the
+  analysis window in a single run, or the summed *object-time* in
+  batch), **Visit duration** min / avg / max, and &mdash; in batch
+  &mdash; **Population** min / avg / max (objects simultaneously in
+  the band, time-averaged) plus **Objects visiting**. The timeline is
+  reconstructed from the crossing records alone (no trajectory file):
+  the crossed threshold comes from `distance_km - radius_km` snapped
+  to the nearest configured value, the direction from the sign of
+  **r&middot;v** at the trigger state, and each object's window closes
+  at the earliest of the planned duration, its impact, or its first
+  stop-class crossing. Thresholds entered out of order (or duplicated)
+  are sorted and de-duplicated, so the bands are always well-formed.
+  Crossings measured from a third body get a counts-only line (their
+  trigger state isn't body-centric, so occupancy isn't reconstructed).
 - *Eclipses* (any ECLIPSE row present) &mdash; **Trigger
   records** is the raw count of crossings (entry + exit). The
   engine emits one record per threshold crossing of the signed

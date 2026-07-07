@@ -562,6 +562,32 @@ single / tile / overlay modes; check it does *not* appear for
 models it doesn't support. **Document:** manual ch. 9 (plot
 catalog); CHANGELOG.
 
+**Non-plot analysis (Info-tab rows, export actions).** Not every
+analysis is a figure. Two adjacent extension points:
+
+- *Info-tab rows*: add an `info_rows_<kind>` builder in
+  `analysis/info.py` returning `(label, value)` pairs (a value of
+  `SECTION` is a bold header), then call it from
+  `_refresh_info_tab` in `analysis_panel.py`. Keep any non-trivial
+  reconstruction in its own module (the altitude-band occupancy lives
+  in `analysis/altitude_bands.py`, NOT inside `info.py`) so it is
+  unit-testable without Qt and reusable by an export. Formatting goes
+  through `fmt_num` / `fmt_duration` so precision stays uniform.
+- *A second export action*: `plot_options.py` hosts the export
+  buttons. A new one is a `Signal` + a `set_<name>_enabled` method on
+  `PlotOptionsDialog`, connected in `_on_open_plot_options` and
+  re-synced in `_sync_anim_bar_to_canvas` (fires after every render).
+  Gate it on the DATA, not the figure, when the export derives from
+  the loaded array rather than the drawn lines — the altitude-band CSV
+  is enabled by `_can_export_altitude_bands_csv` (central-body
+  `ALT_CROSSING` present), independent of which plot is showing. The
+  altitude-band feature is the worked template for both points.
+
+**Verify:** launch the GUI, load the right file kind, read the Info
+rows and (for an export) round-trip the CSV back through numpy;
+confirm the button greys out on a file that shouldn't offer it.
+**Document:** manual ch. 8 (Info tab / exports); CHANGELOG.
+
 ### 5.4 New output file kind
 
 **Files:** `src/sim_run.c` (writer), `python/spody_io/` (reader),
