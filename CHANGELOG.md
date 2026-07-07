@@ -4,7 +4,7 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
-## Unreleased
+## v0.3.0-beta &mdash; 2026-07-07
 
 ### Added
 
