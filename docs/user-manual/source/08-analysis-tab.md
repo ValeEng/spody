@@ -257,35 +257,47 @@ and the plot view.
 
 ### Export CSV
 
-**Export CSV** dumps every `Line2D` on the active figure (single,
-overlay and tile modes are all supported) as a `.csv` file. One
-section per subplot is written, separated by blank lines and a
-comment header carrying the subplot title; lines that share an
-x-array collapse to a single `x` column plus one column per series,
-others get paired `x_<label>, y_<label>` columns. Scatter / fill /
-heatmap layers (impact maps, density plots, the 3D scene) carry
-no `Line2D` and are skipped. The dialog shows a *Saving to&hellip;*
-status during the write and auto-closes on success; errors stay
-visible so the user can adjust the destination.
+The **Export CSV** box lists the CSV export types that apply to the
+current plot / file as a set of radio buttons, with one *Export*
+button that saves the selected one. Each type greys out on its own
+when it doesn't apply &mdash; so you see *which* exports exist and why
+one is unavailable, instead of a lone button that mysteriously greys.
+If the selected type becomes unavailable (you switch plots or files)
+the selection jumps to the first available one; the *Export* button
+is active whenever at least one type is available. The dialog shows a
+*Saving to&hellip;* status during the write and auto-closes on
+success; errors stay visible so you can adjust the destination.
 
-The button is hidden while the active plot is 3D &mdash; the 3D
-canvas uses VTK, not matplotlib, and its own Scene-options dialog
-(animation bar) covers the per-scene controls.
+Three export types today:
 
-### Export altitude bands CSV
+- **Plot lines (as drawn)** &mdash; every `Line2D` on the active
+  figure (single, overlay and tile modes supported). One section per
+  subplot, separated by blank lines and a comment header with the
+  subplot title; lines sharing an x-array collapse to a single `x`
+  column plus one column per series, others get paired
+  `x_<label>, y_<label>` columns. Scatter / fill / heatmap layers
+  (impact maps, density plots, altitude-band views) carry no `Line2D`,
+  so this type is greyed out there. Also greyed while the active plot
+  is 3D (that canvas is VTK, not matplotlib).
+- **Altitude bands (per batch element)** &mdash; enabled when the file
+  is an events log with central-body altitude crossings. **One row per
+  batch element** (ascending case id; a single row for a `propagate`
+  run) and, for each band in ascending-altitude order, a **paired**
+  `t_<lo>-<hi>km_s` (total time in band) and `entries_<lo>-<hi>km`
+  (crossings *into* the band, never exits) column set. A `#`-comment
+  header records the body, the thresholds and whether they came from
+  the run snapshot or were clustered out of the records. The per-band
+  totals reconcile with the Info tab's pooled view.
+- **Impact points (lat/lon + time of flight)** &mdash; enabled when
+  the file has at least one IMPACT and the central body has a
+  body-fixed frame. One row per impact: `case_id`, body-fixed
+  `lat_deg` / `lon_deg` (the same projection as the impact lat/lon
+  maps) and time of flight (`tof_s`, `tof_days`), rows ascending by
+  case id.
 
-A second export next to *Export CSV*, enabled **only** when the
-loaded file is an events log carrying central-body altitude-crossing
-triggers (greyed out otherwise). It writes the altitude-band
-occupancy as a table with **one row per batch element** (ascending
-case id; a single row for a `propagate` run) and, for each band in
-ascending-altitude order, a **paired** `t_<lo>-<hi>km_s` (total time
-in band) and `entries_<lo>-<hi>km` (crossings *into* the band, never
-exits) column set. A `#`-comment header records the body, the
-thresholds and whether they came from the run snapshot or were
-clustered out of the records. Unlike *Export CSV* this reads the
-events data, not the figure, so it works from any plot in the events
-tree. The per-band totals reconcile with the Info tab's pooled view.
+The band and impact exports read the events data, not the figure, so
+they work from any plot in the events tree (not only their matching
+view).
 
 ## 3D UTC overlay
 

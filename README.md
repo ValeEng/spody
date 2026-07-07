@@ -257,14 +257,17 @@ Ordered roughly by what unlocks the most for users.
         fixed-mode sampling interval
       - Embedded terminal pane streaming `spody`'s stdout/stderr live
       - **Analysis tab**: Plot / Table / **Info** split, file tree
-        grouped by run folder (fully recursive scan), per-plot
-        **Export CSV** action (every `Line2D` on the active
-        figure, one section per subplot; tile and overlay views
-        supported), **altitude-band occupancy analysis** for
+        grouped by run folder (fully recursive scan), a **CSV export
+        box** (a radio list of export types + one Export button, each
+        greying out by data availability: figure lines, altitude-band
+        per-element `time / entries`, impact `lat/lon + time of
+        flight`), **altitude-band occupancy analysis** for
         `altitude_crossing` events (per-band entries / time /
-        dwell / population in the Info tab, per-element
-        `time / entries` CSV export, per-altitude event-timeline
-        rows), batch-event impact views (time-to-impact
+        dwell / population in the Info tab, four dedicated plots
+        &mdash; time-per-band bars, single-object occupancy Gantt,
+        batch population-over-time, per-case heatmap &mdash; and
+        per-altitude event-timeline rows), batch-event impact views
+        (time-to-impact
         histogram, survival timeline, equirect + Mollweide
         lat/lon maps, density heatmap, 3D body-textured scene
         with body-fixed + ICRF frame triads), diff-RIC trajectory

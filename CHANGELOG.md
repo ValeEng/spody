@@ -15,16 +15,28 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   batch &mdash; population min/avg/max and objects visiting,
   reconstructed from the crossing records alone (direction from the
   radial velocity at each trigger; the per-object window truncates at
-  impact or a stop-class crossing). The **Event timeline** plot gains
-  one row per crossed altitude (labelled with the altitude instead of
-  the raw enum), ascending/descending split by marker. A second
-  **Export altitude bands CSV...** action in *Plot options* &mdash;
-  enabled only for events files with central-body altitude crossings
-  &mdash; writes one row per batch element (ascending case id) with a
-  paired `time / entries` column set per band (entries count crossings
-  *into* a band only, never exits). `spody_io` exposes
-  `EVENT_KIND_ALT_CROSSING` and the events table labels the kind
-  (previously shown as the raw `2`).
+  impact or a stop-class crossing). Four dedicated plots join the
+  events tree under an **Altitude bands** folder: *Time per band*
+  (bars), *Band occupancy timeline* (single-object Gantt), *Band
+  population over time* (batch stacked step-area of how many objects
+  sit in each band) and *Per-case time in band* (batch heatmap). The
+  **Event timeline** plot gains one row per crossed altitude (labelled
+  with the altitude instead of the raw enum), ascending/descending
+  split by marker. `spody_io` exposes `EVENT_KIND_ALT_CROSSING` and the
+  events table labels the kind (previously shown as the raw `2`).
+
+- **Reorganised CSV export (Plot options).** The single *Export CSV*
+  button becomes an **Export CSV box**: a radio list of export types
+  plus one *Export* button acting on the selected one. Each type greys
+  out by data availability, so the user sees which exports exist and
+  why one is unavailable. Three types today: **Plot lines (as drawn)**
+  (every `Line2D` on the figure, as before), **Altitude bands (per
+  batch element)** (one row per case, ascending, a `time / entries`
+  pair per band &mdash; entries count crossings *into* a band only,
+  never exits) and **Impact points (lat/lon + time of flight)** (one
+  row per IMPACT: case id, body-fixed latitude / longitude and time of
+  flight; enabled when the file has an impact on a body with a
+  body-fixed frame).
 
 - **Unit combo on `output.interval_s`.** The fixed-mode sampling
   interval in the `[output]` form now carries the same

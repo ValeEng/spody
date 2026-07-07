@@ -556,3 +556,52 @@ resets the camera.
 
 **Overlay-safe.** No (the view is already an N-marker overlay
 from a single file).
+
+## Altitude-band plots (events)
+
+When an events file carries `altitude_crossing` triggers on the
+central body, an **Altitude bands** folder appears in the plot tree.
+The thresholds, sorted ascending, split the altitude axis into bands
+(chapter 8, *Info tab &rarr; Altitude bands*); these views draw the
+occupancy reconstructed from the crossing records. All are
+high-fidelity only (the reconstruction measures altitude from the
+central body; the CR3BP synodic frame has no comparable altitude) and
+colour the bands with a sequential map (dark = low, bright = high) so
+the visual order matches the physical one. The time axis auto-scales
+(s / min / h / days) to the analysis window.
+
+#### Time per band
+
+Horizontal bar per band = time spent in it: total time (with the
+percentage of the window) for a `propagate` run, or the summed
+*object-time* over all cases for a batch. Lowest band at the bottom,
+so the axis reads like an altitude axis.
+
+**Overlay-safe.** No.
+
+#### Band occupancy timeline
+
+A single object's occupancy Gantt: one row per band, a coloured bar
+for every interval the object spends in that band. Reads as "which
+altitude band, when" at a glance. Per-run events file (one object).
+
+**Overlay-safe.** No.
+
+#### Band population over time (batch)
+
+Stacked step-area of how many objects sit in each band over time. The
+stack height at any instant is the number of objects still alive (not
+yet impacted or stopped); each coloured layer is that band's
+instantaneous population, whose time-integral is the Info tab's
+*population mean*.
+
+**Overlay-safe.** No (single-file aggregate).
+
+#### Per-case time in band (batch)
+
+Heatmap with one row per case (ascending id) and one column per band,
+coloured by the time that case spent in the band. The visual
+companion of the *Altitude bands* CSV export &mdash; spot at a glance
+which cases live low vs high.
+
+**Overlay-safe.** No (single-file aggregate).
