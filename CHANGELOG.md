@@ -4,6 +4,37 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
+## Unreleased
+
+### Added
+
+- **Events timeline (density) plot.** A companion to the marker
+  *Events timeline* for large files: the same y-rows (IMPACT, ECLIPSE,
+  one per crossed altitude) rendered as a time-binned count heatmap
+  (`np.histogram` per row) instead of individual markers. The marker
+  timeline is unchanged &mdash; on a million-event file its dense smear
+  still reads as an at-a-glance pattern; the density view stays fast
+  and legible where the scatter turns solid.
+
+### Changed
+
+- **Altitude-band analysis is vectorised and cached.** The per-band
+  occupancy reconstruction (Info tab, the four band plots, the CSV
+  exports) no longer loops over the crossing records in Python: one
+  `lexsort` groups every crossing by (object, time) and band
+  membership / entries / dwell / population come from `np.diff` /
+  `np.bincount` / `cumsum`. Results are bit-identical to the previous
+  implementation; it runs ~6x faster (a 2-million-event file drops from
+  ~6.2 s to ~1.1 s) and the only remaining loop is over the handful of
+  bands. A content-keyed cache shared by the Info tab, the plots and
+  the exports computes one reconstruction per loaded file instead of
+  re-running it on every Info-tab switch / plot click (subsequent
+  touches are effectively free), so large events files no longer freeze
+  the Analysis tab.
+- **Every events plot picks a readable time unit** (`s` / `min` / `h` /
+  `days`) from the plotted span, so days-long batch runs stop labelling
+  their axes with raw six-digit second counts.
+
 ## v0.3.0-beta &mdash; 2026-07-07
 
 ### Added

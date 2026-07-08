@@ -583,10 +583,32 @@ analysis is a figure. Two adjacent extension points:
   `ALT_CROSSING` present), independent of which plot is showing. The
   altitude-band feature is the worked template for both points.
 
+**Scale (millions of rows).** An events log can carry millions of
+records, and the Info tab re-runs its analysis on *every* switch to
+the tab. Two rules keep that from freezing the GUI:
+
+- *Vectorise the per-record work.* Do the O(N) step in numpy (one
+  `lexsort` to group, `np.diff` / `np.bincount` / `cumsum` to
+  aggregate), never a Python `for` over the records; leave Python
+  loops only over the handful of bands / series. `altitude_bands.py`
+  is the worked example (`_reconstruct` + the flat-segment plots). The
+  rewrite must stay **bit-identical** to the readable version &mdash;
+  guard it with the hand-computed + e2e cross-checks in
+  `tests/analysis/` (local-only) before trusting a run.
+- *Cache once per file.* Wrap the heavy function in a content-keyed
+  memo (see `_cache_key` / `_cached` in `altitude_bands.py`: keyed by
+  the array buffer address + size + first/last timestamps + params) so
+  the Info tab, the plots and the exports share one computation per
+  loaded file and repeat touches are free. Also: pick a readable time
+  unit from the plotted span (`_time_axis`) — don't hardcode seconds.
+
 **Verify:** launch the GUI, load the right file kind, read the Info
 rows and (for an export) round-trip the CSV back through numpy;
-confirm the button greys out on a file that shouldn't offer it.
-**Document:** manual ch. 8 (Info tab / exports); CHANGELOG.
+confirm the button greys out on a file that shouldn't offer it; for a
+vectorised rewrite, re-run the `tests/analysis/` checks (bit-identity)
+and eyeball the timing on a synthetic million-row array.
+**Document:** manual ch. 8 (Info tab / exports) + ch. 9 (plots);
+CHANGELOG.
 
 ### 5.4 New output file kind
 

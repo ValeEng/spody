@@ -266,8 +266,10 @@ Ordered roughly by what unlocks the most for users.
         dwell / population in the Info tab, four dedicated plots
         &mdash; time-per-band bars, single-object occupancy Gantt,
         batch population-over-time, per-case heatmap &mdash; and
-        per-altitude event-timeline rows), batch-event impact views
-        (time-to-impact
+        per-altitude event-timeline rows; vectorised + cached so
+        million-event logs don't stall the tab, with a density
+        event-timeline variant for that scale), batch-event impact
+        views (time-to-impact
         histogram, survival timeline, equirect + Mollweide
         lat/lon maps, density heatmap, 3D body-textured scene
         with body-fixed + ICRF frame triads), diff-RIC trajectory

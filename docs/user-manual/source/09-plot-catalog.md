@@ -409,6 +409,26 @@ exit cadence at a glance.
 
 **Overlay-safe.** No (multi-series plot).
 
+#### Events timeline (density)
+
+The aggregated companion to the marker timeline, for files with so
+many events that the scatter smears into a solid band. Same y-rows
+(IMPACT, ECLIPSE, one per crossed altitude), but each row is a
+**time-binned count heatmap** (300 bins) coloured by the number of
+events per bin instead of individual markers &mdash; the temporal
+density pattern stays legible at millions of events, and it draws
+several times faster than the scatter there. The marker timeline is
+kept unchanged for smaller files where individual events matter.
+
+**When to use.** Large batch / debris-cloud event logs, to read
+*where in time* the events concentrate rather than each one.
+
+**Overlay-safe.** No.
+
+The x axis of every events plot auto-scales its unit (`s` / `min` /
+`h` / `days`) to the plotted span, so a days-long batch reads in days
+rather than a six-digit second count.
+
 ## Batch-events plots (`SPDYEVTB`)
 
 When a batch run with `events_log` enabled finishes, the engine
