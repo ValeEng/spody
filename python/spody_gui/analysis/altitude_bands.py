@@ -108,26 +108,86 @@ def cluster_altitudes(h_obs: np.ndarray) -> np.ndarray:
     return np.asarray(centers)
 
 
+# --- reconstruction cache --------------------------------------------
+# The band reconstruction is the one O(N) step, and the Info tab re-runs
+# it on every switch to the Info tab while the four plots each call it
+# too. A small content-keyed cache makes all of them share one
+# reconstruction (and one pooled analysis) per loaded file, so only the
+# first touch pays and later tab switches / plot clicks are instant.
+# Keyed by the array's buffer address + byte size + first/last
+# timestamps + the analysis params: distinct files land on distinct
+# keys; the same file re-analysed with the same params reuses the
+# result. `None` results (no crossings) are cached too.
+_MISS = object()
+_BAND_CACHE: "dict[tuple, object]" = {}
+_BAND_CACHE_ORDER: "list[tuple]" = []
+_BAND_CACHE_MAX = 6
+
+
+def _cache_key(tag: str, events: np.ndarray, central_naif: int,
+               thresholds_km, stop_thresholds_km, duration_s):
+    if len(events) == 0:
+        return None
+    return (tag, events.ctypes.data, int(events.nbytes),
+            float(events["t"][0]), float(events["t"][-1]),
+            int(central_naif), tuple(thresholds_km or ()),
+            tuple(stop_thresholds_km or ()), duration_s)
+
+
+def _cached(key, compute):
+    if key is None:
+        return compute()
+    hit = _BAND_CACHE.get(key, _MISS)
+    if hit is not _MISS:
+        return hit
+    val = compute()
+    _BAND_CACHE[key] = val
+    _BAND_CACHE_ORDER.append(key)
+    if len(_BAND_CACHE_ORDER) > _BAND_CACHE_MAX:
+        _BAND_CACHE.pop(_BAND_CACHE_ORDER.pop(0), None)
+    return val
+
+
 @dataclass(frozen=True)
-class _Streams:
-    """Shared front-end product: the sorted thresholds and the
-    per-object crossing streams both the pooled analysis and the
-    per-object CSV are built from."""
-    thr: np.ndarray                          # sorted ascending
+class _Recon:
+    """Vectorised reconstruction product shared by the pooled analysis,
+    the per-object CSV and the segment plots. Everything is flat numpy
+    arrays so the per-record work stays in C: NO Python loop over the
+    (potentially millions of) crossing records. The only Python-level
+    loops downstream are over the handful of BANDS.
+
+    Segments are (band, start, end) intervals an object spent in a band,
+    already filtered to dur > 0, tagged with their group (object) index.
+    Entries are per-event band-crossings INTO a band (exits never
+    counted). Per-group arrays are ordered by ascending object id."""
+    thr: np.ndarray
     from_snapshot: bool
-    streams: dict                            # obj_id -> [(t, k_idx, up)]
-    stop_idx: set                            # band-boundary indices
-    impact_t: dict                           # obj_id -> earliest impact t
+    n_bands: int
+    n_objects: int
+    window_s: float
+    ended_by_impact: int
+    ended_by_stop: int
+    group_obj: np.ndarray        # (G,)  object id per group (ascending)
+    init_band: np.ndarray        # (G,)  band each object starts in
+    seg_band: np.ndarray         # (S,)  band of each segment
+    seg_start: np.ndarray        # (S,)
+    seg_end: np.ndarray          # (S,)
+    seg_group: np.ndarray        # (S,)  group index of each segment
+    ent_band: np.ndarray         # (E,)  band entered (one per crossing-in)
+    ent_group: np.ndarray        # (E,)  group index of the entering event
 
 
-def _prepare_streams(events: np.ndarray, central_naif: int,
-                     thresholds_km: "list[float] | None",
-                     stop_thresholds_km: "list[float] | None"
-                     ) -> "_Streams | None":
-    """Filter the central-body ALT_CROSSING records, derive the sorted
-    thresholds, and group the crossings into per-object streams tagged
-    with (time, nearest-threshold index, ascending?). Returns None when
-    there is no usable crossing (no records, or all tangent)."""
+def _reconstruct(events: np.ndarray, central_naif: int,
+                 thresholds_km: "list[float] | None",
+                 stop_thresholds_km: "list[float] | None",
+                 duration_s: "float | None") -> "_Recon | None":
+    """Fully vectorised band-timeline reconstruction. Same maths as the
+    old per-record Python loop (bit-identical), expressed as array ops:
+    one `lexsort` groups every crossing by (object, time), the band each
+    segment belongs to is `band_after` of the previous event within the
+    object, and the per-object window truncation (impact / stop /
+    duration, clamped to the last crossing) is a per-group reduce.
+    Returns None when there is no usable central-body crossing."""
     alt = events[(events["kind"] == EVENT_KIND_ALT_CROSSING)
                  & (events["naif_id"] == central_naif)]
     if len(alt) == 0:
@@ -140,91 +200,150 @@ def _prepare_streams(events: np.ndarray, central_naif: int,
     else:
         thr = cluster_altitudes(h_obs)
         from_snapshot = False
+    n_bands = len(thr) + 1
 
-    # Nearest-threshold index per record (snaps refined=false sloppiness
-    # back onto the configured boundary).
+    # Nearest-threshold index + direction (r.v sign), all vectorised.
     k_idx = np.abs(h_obs[:, None] - thr[None, :]).argmin(axis=1)
-
-    # Direction: sign of r.v at the trigger state (body-centric y).
     r = alt["y"][:, 0:3].astype(float)
     v = alt["y"][:, 3:6].astype(float)
     rdot = np.einsum("ij,ij->i", r, v)
-
-    stop_idx: set[int] = set()
-    for h_stop in (stop_thresholds_km or []):
-        stop_idx.add(int(np.abs(thr - float(h_stop)).argmin()))
-
-    is_batch = "case_idx" in (events.dtype.names or ())
-    impacts = events[events["kind"] == EVENT_KIND_IMPACT]
-    impact_t: dict[int, float] = {}
-    for rec in impacts:
-        key = int(rec["case_idx"]) if is_batch else 0
-        t_i = float(rec["t"])
-        impact_t[key] = min(t_i, impact_t.get(key, t_i))
-
-    obj_ids = (alt["case_idx"].astype(int) if is_batch
-               else np.zeros(len(alt), dtype=int))
-    streams: dict[int, list[tuple[float, int, bool]]] = {}
-    for i in range(len(alt)):
-        if rdot[i] == 0.0:
-            continue   # tangent grazing: direction undefined, drop
-        streams.setdefault(int(obj_ids[i]), []).append(
-            (float(alt["t"][i]), int(k_idx[i]), bool(rdot[i] > 0.0)))
-    if not streams:
+    valid = rdot != 0.0          # drop tangent grazings (direction undefined)
+    if not valid.any():
         return None
-    return _Streams(thr=thr, from_snapshot=from_snapshot, streams=streams,
-                    stop_idx=stop_idx, impact_t=impact_t)
+    t = alt["t"].astype(float)[valid]
+    k_idx = k_idx[valid]
+    up = (rdot[valid] > 0.0).astype(np.int64)
+    is_batch = "case_idx" in (events.dtype.names or ())
+    obj = (alt["case_idx"].astype(np.int64)[valid] if is_batch
+           else np.zeros(int(valid.sum()), dtype=np.int64))
+
+    # Stop-class thresholds -> band-boundary indices.
+    stop_bands: set[int] = set()
+    for h_stop in (stop_thresholds_km or []):
+        stop_bands.add(int(np.abs(thr - float(h_stop)).argmin()))
+
+    # Per-object earliest impact time (few impacts -> cheap dict).
+    impact_dict: dict[int, float] = {}
+    for rec in events[events["kind"] == EVENT_KIND_IMPACT]:
+        key = int(rec["case_idx"]) if is_batch else 0
+        ti = float(rec["t"])
+        if key not in impact_dict or ti < impact_dict[key]:
+            impact_dict[key] = ti
+
+    # --- sort by (object, time); one C-level sort over all records ----
+    order = np.lexsort((t, obj))
+    so, st, sk, sup = obj[order], t[order], k_idx[order], up[order]
+    N = len(so)
+    is_first = np.empty(N, bool)
+    is_first[0] = True
+    is_first[1:] = so[1:] != so[:-1]
+    is_last = np.empty(N, bool)
+    is_last[-1] = True
+    is_last[:-1] = so[:-1] != so[1:]
+    grp = np.cumsum(is_first) - 1               # group index 0..G-1
+    grp_starts = np.flatnonzero(is_first)
+    G = len(grp_starts)
+    group_obj = so[grp_starts]                  # ascending object id
+
+    # Band each crossing lands in (up -> k+1, down -> k). The band a
+    # segment sits in is band_after of the PREVIOUS event; the first
+    # event of each object is pinned to its start band instead.
+    band_after = sk + sup
+    band_during = np.empty(N, np.int64)
+    band_during[1:] = band_after[:-1]
+    start_band_all = sk + (1 - sup)             # up -> k, down -> k+1
+    band_during[is_first] = start_band_all[is_first]
+    seg_start = np.empty(N)
+    seg_start[1:] = st[:-1]
+    seg_start[is_first] = 0.0
+
+    # --- per-object window end: min(duration, impact, stop) but never
+    #     before the object's last crossing ----------------------------
+    t_last = st[is_last]                         # max time per group
+    if stop_bands:
+        is_stop = np.isin(sk, list(stop_bands))
+        stop_pg = np.minimum.reduceat(np.where(is_stop, st, np.inf),
+                                      grp_starts)
+    else:
+        stop_pg = np.full(G, np.inf)
+    impact_pg = np.full(G, np.inf)
+    for key, ti in impact_dict.items():
+        gi = int(np.searchsorted(group_obj, key))
+        if gi < G and group_obj[gi] == key:
+            impact_pg[gi] = ti
+    dur = duration_s if (duration_s is not None and duration_s > 0.0) else np.inf
+    val = np.full(G, float(dur))
+    cause = np.zeros(G, np.int8)                 # 0 = duration
+    m_imp = impact_pg < val
+    val = np.where(m_imp, impact_pg, val)
+    cause = np.where(m_imp, 1, cause)
+    m_stop = stop_pg < val
+    val = np.where(m_stop, stop_pg, val)
+    cause = np.where(m_stop, 2, cause)
+    t_end_pg = np.maximum(val, t_last)
+    ended_by_impact = int((cause == 1).sum())
+    ended_by_stop = int((cause == 2).sum())
+    window_s = float(t_end_pg.max())
+
+    # --- segments (dur > 0): regular [seg_start, t] in band_during,
+    #     plus one final [t_last, t_end] per object in its last band ----
+    reg_dur = st - seg_start
+    reg_m = reg_dur > 0.0
+    fin_band = band_after[is_last]               # per group (ascending)
+    fin_m = (t_end_pg - t_last) > 0.0
+    seg_band = np.concatenate([band_during[reg_m], fin_band[fin_m]])
+    seg_start_all = np.concatenate([seg_start[reg_m], t_last[fin_m]])
+    seg_end_all = np.concatenate([st[reg_m], t_end_pg[fin_m]])
+    seg_group = np.concatenate([grp[reg_m], np.arange(G)[fin_m]])
+
+    # Entries: a crossing that actually changes band (band change is
+    # essentially always true; the mask guards the rare snapped tie).
+    entry_m = band_after != band_during
+    return _Recon(
+        thr=thr, from_snapshot=from_snapshot, n_bands=n_bands, n_objects=G,
+        window_s=window_s, ended_by_impact=ended_by_impact,
+        ended_by_stop=ended_by_stop, group_obj=group_obj,
+        init_band=start_band_all[is_first],
+        seg_band=seg_band, seg_start=seg_start_all, seg_end=seg_end_all,
+        seg_group=seg_group, ent_band=band_after[entry_m],
+        ent_group=grp[entry_m])
 
 
-def _object_band_intervals(evs: list, n_bands: int, stop_idx: set,
-                           duration_s: "float | None",
-                           impact_time: "float | None"
-                           ) -> tuple:
-    """Reconstruct one object's band timeline from its sorted crossing
-    stream. Returns `(t_end, cause, start_band, intervals, entries)`:
+def _recon_cached(events, central_naif, thresholds_km,
+                  stop_thresholds_km, duration_s) -> "_Recon | None":
+    """Content-keyed memo around `_reconstruct` so the Info tab, the
+    plots and the CSV exports share one reconstruction per file."""
+    key = _cache_key("recon", events, central_naif,
+                     thresholds_km, stop_thresholds_km, duration_s)
+    return _cached(key, lambda: _reconstruct(
+        events, central_naif, thresholds_km, stop_thresholds_km, duration_s))
 
-      intervals[b] : list of (t_start, t_end) the object spent in band b
-      entries[b]   : number of times it crossed INTO band b (ENTRIES
-                     ONLY -- an up-crossing of threshold k counts once,
-                     against the band above; the matching departure from
-                     the band below is never tallied). The band the
-                     object starts in is `start_band` and is NOT an
-                     entry.
 
-    The window closes at the earliest of the planned duration, the
-    object's impact, or its first stop-class crossing -- but never
-    before the last logged crossing."""
-    evs = sorted(evs, key=lambda e: e[0])
-    t_last = evs[-1][0]
-    t_end = duration_s if (duration_s is not None and duration_s > 0.0) else None
-    cause = "duration"
-    if impact_time is not None and (t_end is None or impact_time < t_end):
-        t_end, cause = impact_time, "impact"
-    t_stop = next((t for (t, k, _up) in evs if k in stop_idx), None)
-    if t_stop is not None and (t_end is None or t_stop < t_end):
-        t_end, cause = t_stop, "stop"
-    if t_end is None or t_end < t_last:
-        t_end = t_last
-
-    intervals: list[list[tuple[float, float]]] = [[] for _ in range(n_bands)]
-    entries = [0] * n_bands
-    _t0, k0, up0 = evs[0]
-    band = k0 if up0 else k0 + 1
-    start_band = band
-    seg_start = 0.0
-    for (t_e, k_e, up_e) in evs:
-        if t_e > t_end:
-            break
-        if t_e > seg_start:
-            intervals[band].append((seg_start, t_e))
-        band_next = k_e + 1 if up_e else k_e
-        if band_next != band:          # zero-length segments collapse
-            entries[band_next] += 1
-        band = band_next
-        seg_start = t_e
-    if t_end > seg_start:
-        intervals[band].append((seg_start, t_end))
-    return t_end, cause, start_band, intervals, entries
+def _band_pop(starts: np.ndarray, ends: np.ndarray,
+              window_s: float) -> tuple[int, int, float]:
+    """Vectorised population sweep for ONE band: min / max / time-mean of
+    the number of objects simultaneously in the band over [0, window_s].
+    -1 (exit) sorts before +1 (entry) at equal times so an instantaneous
+    hand-over between objects doesn't spike the max; only levels held for
+    dt > 0 count (so tied-time transients drop out with zero weight)."""
+    n = starts.size
+    if n == 0:
+        return 0, 0, 0.0
+    times = np.concatenate([starts, ends])
+    deltas = np.concatenate([np.ones(n, np.int64), -np.ones(n, np.int64)])
+    order = np.lexsort((deltas, times))          # time primary, -1 before +1
+    st_s = times[order]
+    p_after = np.cumsum(deltas[order])           # population after each event
+    bounds = np.concatenate([[0.0], st_s, [float(window_s)]])
+    dts = np.diff(bounds)
+    levels = np.concatenate([[0], p_after])      # level held on each gap
+    held = dts > 0.0
+    if not held.any():
+        return 0, 0, 0.0
+    lv = levels[held]
+    integral = float((lv * dts[held]).sum())
+    return int(lv.min()), int(lv.max()), (integral / window_s
+                                          if window_s > 0.0 else 0.0)
 
 
 def analyze_altitude_bands(events: np.ndarray,
@@ -235,94 +354,56 @@ def analyze_altitude_bands(events: np.ndarray,
                             ) -> BandAnalysis | None:
     """Reconstruct pooled per-band occupancy from an events array
     (either the per-run or the batch dtype). Returns None when the file
-    has no usable central-body ALT_CROSSING record."""
-    prep = _prepare_streams(events, central_naif,
-                            thresholds_km, stop_thresholds_km)
-    if prep is None:
+    has no usable central-body ALT_CROSSING record. Vectorised via
+    `_reconstruct`; the only loop here is over the (few) bands. Result
+    is cached per file (the Info tab re-calls this on every tab switch)."""
+    key = _cache_key("analyze", events, central_naif,
+                     thresholds_km, stop_thresholds_km, duration_s)
+    return _cached(key, lambda: _analyze_impl(
+        events, central_naif, thresholds_km, stop_thresholds_km, duration_s))
+
+
+def _analyze_impl(events, central_naif, thresholds_km,
+                  stop_thresholds_km, duration_s) -> BandAnalysis | None:
+    rec = _recon_cached(events, central_naif,
+                        thresholds_km, stop_thresholds_km, duration_s)
+    if rec is None:
         return None
-    thr, streams = prep.thr, prep.streams
-    m = len(thr)
-    n_bands = m + 1
-
-    entries        = [0] * n_bands
-    starts_inside  = [0] * n_bands
-    visits         = [0] * n_bands
-    dwell: list[list[float]] = [[] for _ in range(n_bands)]
-    visited_by: list[set[int]] = [set() for _ in range(n_bands)]
-    # Population sweep input: per band, list of (t, +1/-1) deltas.
-    pop_deltas: list[list[tuple[float, int]]] = [[] for _ in range(n_bands)]
-
-    ended_by_impact = 0
-    ended_by_stop   = 0
-    window_s        = 0.0
-
-    for obj, evs in streams.items():
-        t_end, cause, start_band, intervals, obj_entries = \
-            _object_band_intervals(evs, n_bands, prep.stop_idx,
-                                   duration_s, prep.impact_t.get(obj))
-        if cause == "impact":
-            ended_by_impact += 1
-        elif cause == "stop":
-            ended_by_stop += 1
-        window_s = max(window_s, t_end)
-        starts_inside[start_band] += 1
-        for b in range(n_bands):
-            entries[b] += obj_entries[b]
-            for (s, e) in intervals[b]:
-                visits[b] += 1
-                dwell[b].append(e - s)
-                visited_by[b].add(obj)
-                pop_deltas[b].append((s, +1))
-                pop_deltas[b].append((e, -1))
+    thr, n_bands, m = rec.thr, rec.n_bands, len(rec.thr)
+    seg_dur = rec.seg_end - rec.seg_start
+    entries_pb = np.bincount(rec.ent_band, minlength=n_bands)
+    starts_pb = np.bincount(rec.init_band, minlength=n_bands)
 
     bands: list[BandStats] = []
     for b in range(n_bands):
-        d = np.asarray(dwell[b], dtype=float)
-        # Population sweep: -1 before +1 at equal t so an instantaneous
-        # handover between objects doesn't spike the max; only levels
-        # held for dt > 0 count towards min / max / mean.
-        deltas = sorted(pop_deltas[b], key=lambda e: (e[0], e[1]))
-        p, p_min, p_max, integral = 0, 0, 0, 0.0
-        i = 0
-        first_level = True
-        while i < len(deltas):
-            t_here = deltas[i][0]
-            while i < len(deltas) and deltas[i][0] == t_here:
-                p += deltas[i][1]
-                i += 1
-            t_next = deltas[i][0] if i < len(deltas) else window_s
-            if t_next > t_here:
-                if first_level and t_here > 0.0:
-                    p_min = 0   # band unoccupied before the first entry
-                    first_level = False
-                p_min = p if first_level else min(p_min, p)
-                p_max = max(p_max, p)
-                first_level = False
-                integral += p * (t_next - t_here)
+        sm = rec.seg_band == b
+        dur_b = seg_dur[sm]
+        pmin, pmax, pmean = _band_pop(rec.seg_start[sm], rec.seg_end[sm],
+                                      rec.window_s)
         bands.append(BandStats(
             lo_km=0.0 if b == 0 else float(thr[b - 1]),
             hi_km=float(thr[b]) if b < m else float("inf"),
-            entries=entries[b],
-            starts_inside=starts_inside[b],
-            total_time_s=float(d.sum()) if len(d) else 0.0,
-            dwell_min_s=float(d.min()) if len(d) else float("nan"),
-            dwell_mean_s=float(d.mean()) if len(d) else float("nan"),
-            dwell_max_s=float(d.max()) if len(d) else float("nan"),
-            visits=visits[b],
-            objects_visiting=len(visited_by[b]),
-            pop_min=p_min,
-            pop_max=p_max,
-            pop_mean=(integral / window_s) if window_s > 0.0 else 0.0,
+            entries=int(entries_pb[b]),
+            starts_inside=int(starts_pb[b]),
+            total_time_s=float(dur_b.sum()) if dur_b.size else 0.0,
+            dwell_min_s=float(dur_b.min()) if dur_b.size else float("nan"),
+            dwell_mean_s=float(dur_b.mean()) if dur_b.size else float("nan"),
+            dwell_max_s=float(dur_b.max()) if dur_b.size else float("nan"),
+            visits=int(sm.sum()),
+            objects_visiting=int(np.unique(rec.seg_group[sm]).size),
+            pop_min=pmin,
+            pop_max=pmax,
+            pop_mean=pmean,
         ))
 
     return BandAnalysis(
         thresholds_km=tuple(float(x) for x in thr),
-        from_snapshot=prep.from_snapshot,
+        from_snapshot=rec.from_snapshot,
         bands=tuple(bands),
-        n_objects=len(streams),
-        window_s=window_s,
-        ended_by_impact=ended_by_impact,
-        ended_by_stop=ended_by_stop,
+        n_objects=rec.n_objects,
+        window_s=rec.window_s,
+        ended_by_impact=rec.ended_by_impact,
+        ended_by_stop=rec.ended_by_stop,
     )
 
 
@@ -378,52 +459,54 @@ def altitude_bands_per_object(events: np.ndarray, central_naif: int,
     the time the object spent in band b and how many times it crossed
     INTO band b (entries only -- exits are never counted). Returns None
     when the file carries no usable central-body crossing."""
-    prep = _prepare_streams(events, central_naif,
-                            thresholds_km, stop_thresholds_km)
-    if prep is None:
+    rec = _recon_cached(events, central_naif,
+                        thresholds_km, stop_thresholds_km, duration_s)
+    if rec is None:
         return None
-    n_bands = len(prep.thr) + 1
-    rows: list[tuple[int, list[tuple[float, int]]]] = []
-    for obj in sorted(prep.streams):
-        _t_end, _cause, _start, intervals, entries = _object_band_intervals(
-            prep.streams[obj], n_bands, prep.stop_idx,
-            duration_s, prep.impact_t.get(obj))
-        per_band = [(float(sum(e - s for (s, e) in intervals[b])),
-                     int(entries[b]))
-                    for b in range(n_bands)]
-        rows.append((int(obj), per_band))
-    return prep.thr, prep.from_snapshot, rows
+    G, n_bands = rec.n_objects, rec.n_bands
+    # Scatter-add into (object x band) grids: O(segments) in C, no
+    # per-record Python loop.
+    time2d = np.zeros((G, n_bands), dtype=float)
+    np.add.at(time2d, (rec.seg_group, rec.seg_band), rec.seg_end - rec.seg_start)
+    ent2d = np.zeros((G, n_bands), dtype=np.int64)
+    np.add.at(ent2d, (rec.ent_group, rec.ent_band), 1)
+    rows = [(int(rec.group_obj[g]),
+             [(float(time2d[g, b]), int(ent2d[g, b])) for b in range(n_bands)])
+            for g in range(G)]
+    return rec.thr, rec.from_snapshot, rows
+
+
+@dataclass(frozen=True)
+class BandSegments:
+    """Flat per-segment arrays for the occupancy plots: each index is one
+    interval an object spent in a band. Kept as parallel numpy arrays (no
+    per-object nesting) so a million-segment batch stays vectorised --
+    the Gantt filters by `obj`, the population view uses them all."""
+    thr: np.ndarray
+    from_snapshot: bool
+    window_s: float
+    band: np.ndarray             # (S,) band index of each segment
+    start: np.ndarray            # (S,)
+    end: np.ndarray              # (S,)
+    obj: np.ndarray              # (S,) object id of each segment
 
 
 def altitude_band_segments(events: np.ndarray, central_naif: int,
                            thresholds_km: "list[float] | None" = None,
                            stop_thresholds_km: "list[float] | None" = None,
                            duration_s: "float | None" = None,
-                           ) -> "tuple[np.ndarray, bool, float, list] | None":
-    """Per-object band *segments* for the occupancy plots.
-
-    Returns `(thresholds_km, from_snapshot, window_s, segments)` where
-    `segments` is one entry per analysed object (sorted by id):
-    `(obj_id, [(band_idx, t_start, t_end), ...])`, the intervals sorted
-    by start time. `window_s` is the largest per-object end time (the
-    natural x-range for a population-vs-time plot). None when the file
-    carries no usable central-body crossing."""
-    prep = _prepare_streams(events, central_naif,
-                            thresholds_km, stop_thresholds_km)
-    if prep is None:
+                           ) -> "BandSegments | None":
+    """Per-object band *segments* for the occupancy plots, as flat numpy
+    arrays (see `BandSegments`). None when the file carries no usable
+    central-body crossing."""
+    rec = _recon_cached(events, central_naif,
+                        thresholds_km, stop_thresholds_km, duration_s)
+    if rec is None:
         return None
-    n_bands = len(prep.thr) + 1
-    window_s = 0.0
-    out: list[tuple[int, list[tuple[int, float, float]]]] = []
-    for obj in sorted(prep.streams):
-        t_end, _cause, _start, intervals, _entries = _object_band_intervals(
-            prep.streams[obj], n_bands, prep.stop_idx,
-            duration_s, prep.impact_t.get(obj))
-        window_s = max(window_s, t_end)
-        segs = [(b, s, e) for b in range(n_bands) for (s, e) in intervals[b]]
-        segs.sort(key=lambda z: z[1])
-        out.append((int(obj), segs))
-    return prep.thr, prep.from_snapshot, window_s, out
+    return BandSegments(
+        thr=rec.thr, from_snapshot=rec.from_snapshot, window_s=rec.window_s,
+        band=rec.seg_band, start=rec.seg_start, end=rec.seg_end,
+        obj=rec.group_obj[rec.seg_group])
 
 
 def band_edge_labels(thr: np.ndarray) -> list[str]:

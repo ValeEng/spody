@@ -55,6 +55,21 @@ from .spec import PlotSpec
 # runs, multi-day debris-cloud decay) day-level axes read better.
 _SEC_PER_DAY = 86400.0
 
+
+def _time_axis(span_s: float) -> tuple[float, str]:
+    """Pick a readable time unit (divisor, label) for an events / band
+    plot axis from the plotted span: seconds for a sub-minute orbit up
+    to days for a multi-day batch. Keeps every timeline / band view
+    from printing a raw six-digit second count on a days-long run."""
+    if span_s >= 2 * 86400.0:
+        return 86400.0, "days"
+    if span_s >= 2 * 3600.0:
+        return 3600.0, "h"
+    if span_s >= 2 * 60.0:
+        return 60.0, "min"
+    return 1.0, "s"
+
+
 # Cache for the grayscale-and-downsampled Mollweide central-body
 # background, keyed by (texture_path, mtime). Avoids re-loading +
 # resampling the 2K texture every time the user clicks an impact map
@@ -318,14 +333,19 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
         alt_rows.sort(key=lambda e: e[0])
         rows += [(label, draws) for _h, label, draws in alt_rows]
 
+    # Time unit from the full span of plotted events (days on a
+    # days-long batch, seconds on a single short orbit).
+    all_t = d["t"].astype(float)
+    div, unit = _time_axis(float(all_t.max() - all_t.min()) if len(all_t) else 0.0)
     for y, (_label, draws) in enumerate(rows):
         for kw in draws:
             t = kw.pop("t")
-            ax.scatter(t, np.full(len(t), y), **kw)
+            ax.scatter(np.asarray(t, dtype=float) / div,
+                       np.full(len(t), y), **kw)
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels([label for label, _ in rows])
     ax.set_ylim(-0.5, len(rows) - 0.5)
-    ax.set_xlabel("t [s]")
+    ax.set_xlabel(f"t [{unit}]")
     ax.set_title(f"Event timeline ({len(d)} triggers)")
     if m_alt.any():
         # One-off legend explaining the crossing-direction markers;
@@ -338,6 +358,66 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
                    label="descending"),
         ], loc="best", fontsize="small", framealpha=0.6)
     ax.grid(True, axis="x", alpha=0.3)
+
+
+def _plot_events_timeline_density(ax: Axes, d: np.ndarray) -> None:
+    """Aggregated companion to the marker timeline for large files: the
+    same y-rows (IMPACT, ECLIPSE, one per crossed altitude), but each
+    row is a time-binned **count heatmap** instead of individual
+    markers. `np.histogram` per row is vectorised, so this stays fast
+    and readable at millions of events where the scatter smears into a
+    solid band. No ascending/descending split -- it counts crossings."""
+    if len(d) == 0:
+        ax.set_title("No events recorded"); ax.set_xlabel("t [s]"); return
+
+    rows: list[tuple[str, np.ndarray]] = []
+    m_imp = d["kind"] == EVENT_KIND_IMPACT
+    if m_imp.any():
+        rows.append(("IMPACT", d["t"][m_imp].astype(float)))
+    m_ecl = d["kind"] == EVENT_KIND_ECLIPSE
+    if m_ecl.any():
+        rows.append(("ECLIPSE", d["t"][m_ecl].astype(float)))
+    m_alt = d["kind"] == EVENT_KIND_ALT_CROSSING
+    if m_alt.any():
+        alt = d[m_alt]
+        naifs = np.unique(alt["naif_id"])
+        multi_body = len(naifs) > 1
+        alt_rows: list[tuple[float, str, np.ndarray]] = []
+        for naif in naifs:
+            sub = alt[alt["naif_id"] == naif]
+            h = sub["distance_km"].astype(float) - sub["radius_km"].astype(float)
+            centers = cluster_altitudes(h)
+            k_idx = np.abs(h[:, None] - centers[None, :]).argmin(axis=1)
+            for c, h_c in enumerate(centers):
+                label = f"alt {h_c:.4g} km"
+                if multi_body:
+                    label = f"NAIF {int(naif)}  " + label
+                alt_rows.append((float(h_c), label,
+                                 sub["t"][k_idx == c].astype(float)))
+        alt_rows.sort(key=lambda e: e[0])
+        rows += [(label, ts) for _h, label, ts in alt_rows]
+
+    t_min = min(float(ts.min()) for _, ts in rows)
+    t_max = max(float(ts.max()) for _, ts in rows)
+    if t_max <= t_min:
+        t_max = t_min + 1.0
+    div, unit = _time_axis(t_max - t_min)
+    n_bins = 300
+    edges = np.linspace(t_min, t_max, n_bins + 1)
+    hist = np.zeros((len(rows), n_bins))
+    for i, (_label, ts) in enumerate(rows):
+        hist[i], _ = np.histogram(ts, bins=edges)
+    masked = np.ma.masked_where(hist == 0, hist)
+    pm = ax.pcolormesh(edges / div, np.arange(len(rows) + 1) - 0.5, masked,
+                       cmap="viridis", shading="flat")
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels([label for label, _ in rows])
+    ax.set_xlabel(f"t [{unit}]")
+    ax.set_title(f"Event timeline density  ({len(d)} triggers, "
+                 f"{n_bins} bins)")
+    cb = ax.figure.colorbar(pm, ax=ax, label="events per bin",
+                            fraction=0.046, pad=0.02)
+    cb.ax.tick_params(labelsize="x-small")
 
 
 def _plot_events_time_to_impact_hist(ax: Axes, d: np.ndarray) -> None:
@@ -766,19 +846,6 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
 # impact views do for a file with no IMPACT rows. The band maths lives
 # in `analysis/altitude_bands.py`; these functions only draw.
 
-def _band_time_axis(window_s: float) -> tuple[float, str]:
-    """Pick a readable time unit (divisor, label) for a band plot's
-    axis from the analysis window: seconds for sub-minute orbits up to
-    days for multi-day debris decay."""
-    if window_s >= 2 * 86400.0:
-        return 86400.0, "days"
-    if window_s >= 2 * 3600.0:
-        return 3600.0, "h"
-    if window_s >= 2 * 60.0:
-        return 60.0, "min"
-    return 1.0, "s"
-
-
 def _band_colors(n: int) -> list:
     """One colour per band from a sequential map so the visual order
     (dark = low altitude, bright = high) matches the physical order."""
@@ -810,7 +877,7 @@ def _plot_bands_time(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
         return
     is_batch = "case_idx" in d.dtype.names
     labels = band_edge_labels(res.thresholds_km)
-    div, unit = _band_time_axis(res.window_s)
+    div, unit = _time_axis(res.window_s)
     colors = _band_colors(len(res.bands))
     y = np.arange(len(res.bands))
     vals = np.array([b.total_time_s for b in res.bands]) / div
@@ -848,20 +915,21 @@ def _plot_bands_gantt(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
         ctx_missing_message(
             ax, title, "No central-body altitude-crossing events here.")
         return
-    thr, _from_snap, window_s, segments = seg
-    labels = band_edge_labels(thr)
+    labels = band_edge_labels(seg.thr)
     colors = _band_colors(len(labels))
-    div, unit = _band_time_axis(window_s)
-    obj_id, segs = segments[0]         # per-run file -> exactly one object
-    for (b, s, e) in segs:
-        ax.barh(b, (e - s) / div, left=s / div, height=0.6,
-                color=colors[b], edgecolor="black", linewidth=0.3)
+    div, unit = _time_axis(seg.window_s)
+    objs = np.unique(seg.obj)
+    obj0 = int(objs[0])                # per-run file -> the only object
+    m = seg.obj == obj0
+    for b, s, e in zip(seg.band[m], seg.start[m], seg.end[m]):
+        ax.barh(int(b), (e - s) / div, left=s / div, height=0.6,
+                color=colors[int(b)], edgecolor="black", linewidth=0.3)
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels)
     ax.set_ylabel("altitude band")
     ax.set_xlabel(f"t [{unit}]")
-    note = (f"  ({len(segments)} objects; showing case {obj_id})"
-            if len(segments) > 1 else "")
+    note = (f"  ({len(objs)} objects; showing case {obj0})"
+            if len(objs) > 1 else "")
     ax.set_title(title + note)
     ax.grid(True, axis="x", alpha=0.3)
 
@@ -881,32 +949,27 @@ def _plot_bands_population(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
         ctx_missing_message(
             ax, title, "No central-body altitude-crossing events here.")
         return
-    thr, _from_snap, window_s, segments = seg
-    n_bands = len(thr) + 1
-    labels = band_edge_labels(thr)
+    n_bands = len(seg.thr) + 1
+    labels = band_edge_labels(seg.thr)
     colors = _band_colors(n_bands)
 
-    # Common time grid = every segment boundary; count active segments
-    # per band in each cell via searchsorted (boundaries are grid nodes).
-    bounds = {0.0, window_s}
-    for _obj, segs in segments:
-        for (_b, s, e) in segs:
-            bounds.add(s)
-            bounds.add(e)
-    grid = np.array(sorted(bounds))
-    counts = np.zeros((n_bands, len(grid) - 1), dtype=int)
-    for _obj, segs in segments:
-        for (b, s, e) in segs:
-            lo = int(np.searchsorted(grid, s, side="left"))
-            hi = int(np.searchsorted(grid, e, side="left"))
-            counts[b, lo:hi] += 1
-
-    div, unit = _band_time_axis(window_s)
+    # Common time grid = every segment boundary. Per band, +1 at each
+    # segment start node and -1 at each end node, then cumsum gives the
+    # population step function -- vectorised (the only loop is over the
+    # few bands, never over the potentially millions of segments).
+    grid = np.unique(np.concatenate(
+        [[0.0], seg.start, seg.end, [seg.window_s]]))
+    div, unit = _time_axis(seg.window_s)
     x = grid / div
-    counts_pad = np.hstack([counts, counts[:, -1:]])   # hold last cell
     base = np.zeros(len(grid))
     for b in range(n_bands):
-        top = base + counts_pad[b]
+        m = seg.band == b
+        delta = np.zeros(len(grid))
+        if m.any():
+            np.add.at(delta, np.searchsorted(grid, seg.start[m]), 1.0)
+            np.add.at(delta, np.searchsorted(grid, seg.end[m]), -1.0)
+        pop = np.cumsum(delta)          # population on the cell at each node
+        top = base + pop
         ax.fill_between(x, base, top, step="post", color=colors[b],
                         alpha=0.85, linewidth=0.0, label=labels[b])
         base = top
@@ -914,7 +977,8 @@ def _plot_bands_population(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     ax.set_ylim(0, max(1, int(base.max())))
     ax.set_xlabel(f"t [{unit}]")
     ax.set_ylabel("objects in band")
-    ax.set_title(f"{title}  --  {len(segments)} objects")
+    n_obj = int(np.unique(seg.obj).size)
+    ax.set_title(f"{title}  --  {n_obj} objects")
     ax.legend(loc="upper right", fontsize="small", framealpha=0.6,
               title="altitude band")
     ax.grid(True, alpha=0.3)
@@ -940,7 +1004,7 @@ def _plot_bands_heatmap(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     ids = [obj for (obj, _pb) in rows]
     times = np.array([[pb[b][0] for b in range(n_bands)]
                       for (_obj, pb) in rows], dtype=float)
-    div, unit = _band_time_axis(float(times.max()) if times.size else 1.0)
+    div, unit = _time_axis(float(times.max()) if times.size else 1.0)
     im = ax.imshow(times / div, aspect="auto", cmap="viridis",
                    origin="upper", interpolation="nearest")
     ax.set_xticks(range(n_bands))
@@ -962,6 +1026,7 @@ _BAND_CAT = "Altitude bands"
 
 SPECS_SINGLE: list[PlotSpec] = [
     PlotSpec("Events timeline",             "2d", _plot_events_timeline),
+    PlotSpec("Events timeline (density)",   "2d", _plot_events_timeline_density),
     PlotSpec("Time per band",               "2d", _plot_bands_time,
              category=_BAND_CAT, mode="context",
              models=("high_fidelity",)),
@@ -980,6 +1045,7 @@ SPECS_SINGLE: list[PlotSpec] = [
 # comparable body-fixed surface coordinate.
 SPECS_BATCH: list[PlotSpec] = [
     PlotSpec("Events timeline",             "2d", _plot_events_timeline),
+    PlotSpec("Events timeline (density)",   "2d", _plot_events_timeline_density),
     PlotSpec("Time-to-impact histogram",    "2d",
              _plot_events_time_to_impact_hist),
     PlotSpec("Survival timeline per case",  "2d",
