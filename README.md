@@ -359,12 +359,13 @@ spody/
 │   ├── gps_g11_validation/   # Earth HF vs IGS SP3 (GPS G11, multi-day)
 │   ├── glonass_r03_validation/ # Earth HF vs MGEX SP3 (GLONASS R03, 7-day)
 │   └── cr3bp_em_l4/          # CR3BP Earth-Moon L4 30-day stability smoke test
-├── tests/                    # end-to-end CLI tests (stub)
 ├── python/
 │   ├── spody_gui/            # PySide6 frontend (Setup wizard, TOML editor, runner,
-│   │                         #  Analysis tab, VTK 3D, UTC<->ET converter, ...)
+│   │                         #  Analysis tab, UTC<->ET converter, ...)
 │   ├── spody_io/             # NumPy readers for the binary outputs (.bin / SPDYEVTB)
 │   ├── spopy/                # Pure-Python DE440 + ICRF<->Moon PA rotations
+│   ├── spoviz/               # 3D astrodynamics visualization library (VTK + numpy;
+│   │                         #  Qt only in spoviz.qt — renders offscreen without it)
 │   ├── pyproject.toml
 │   ├── build_bundle.py       # PyInstaller driver (rebuilds manual + packs the dist)
 │   └── spody_gui.spec        # PyInstaller spec, one-folder mode

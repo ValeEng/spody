@@ -208,7 +208,15 @@ spody_io/                # binary readers (NumPy only)
   accel.py               # read_accelerations(path)
   events.py              # read_events(path) + EVENT_KIND_* constants
 
-spody_gui/               # PySide6 desktop app (depends on spody_io)
+spoviz/                  # 3D astrodynamics visualization library (VTK + numpy)
+  scene.py               # Scene3D: Qt-free scene engine (layered renderers,
+                         #  bodies, trajectories, animation, sun light, skybox)
+  decoration.py          # ephemeris-driven third bodies / sunlight / BF triads
+  bodies.py              # NAIF ids, display colours, marker sizing knobs
+  textures.py            # equirectangular texture fixups (cached on disk)
+  qt.py                  # SceneWidget: the ONLY Qt module (QVTK host widget)
+
+spody_gui/               # PySide6 desktop app (depends on spody_io + spoviz)
   __main__.py            # `python -m spody_gui`
   main.py                # QApplication entry
   main_window.py         # MainWindow: tabs, menus, status, wiring
@@ -221,6 +229,6 @@ spody_gui/               # PySide6 desktop app (depends on spody_io)
   runner.py              # SpodyRunner (QProcess wrapper)
   terminal.py            # TerminalView (read-only output pane)
   analysis_panel.py      # Analysis tab: file picker + plot dispatch
-  vtk_canvas.py          # VtkCanvas: QVTK + Moon + trajectory + Sun arrow
+  vtk_canvas.py          # compat shim: VtkCanvas = spoviz.qt.SceneWidget
   astronomy.py           # low-precision Sun direction (analytic)
 ```

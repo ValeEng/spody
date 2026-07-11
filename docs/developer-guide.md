@@ -133,7 +133,10 @@ backward-compatible.
     + one spec entry here.**
   - `registry.py` — assembles `PLOTS` per file kind, owns
     `KIND_LABEL`, `READERS`, `detect_kind`.
-  - `scene3d.py` (shared VTK decoration), `overlays.py`, `info.py`,
+  - `scene3d.py` — GUI glue over `spoviz.decoration`: keeps the
+    historical `(canvas, ctx, times_s)` signatures, resolves the
+    run-folder snapshot / texture assets / `spody_const.h` radii,
+    then delegates to the library. Also `overlays.py`, `info.py`,
     `table_model.py` (events table).
   - `analysis_panel.py` (one level up) keeps only the widget + file
     plumbing.
@@ -152,6 +155,21 @@ backward-compatible.
   lockstep** — several are verified bit-identical against the C side.
 - `spody_io/` — pure readers for the wire formats above; no Qt, no
   spopy dependency.
+- `spoviz/` — the 3D astrodynamics visualization library (see §5.12
+  for the extension recipe). `scene.py` = `Scene3D`, the **Qt-free**
+  scene engine (layered multi-frustum renderers, textured bodies,
+  animated trajectories / triads / arrows, sun light, skybox,
+  picking, camera) that runs on any `(vtkRenderWindow, interactor)`
+  pair, including offscreen; `decoration.py` = ephemeris-driven
+  decoration (third bodies, sun illumination, animated body-fixed
+  frame) taking explicit callables/tables — no `PlotContext`, no
+  QSettings, no Qt; `bodies.py` = NAIF/colour/marker-sizing catalog;
+  `textures.py` = equirectangular pixel fixups with on-disk caches;
+  `qt.py` = `SceneWidget`, the ONLY module that imports PySide6.
+  Dependency direction: **spoviz never imports spody_gui or spopy**
+  (ephemeris objects come in duck-typed); the GUI reaches it through
+  the `spody_gui/vtk_canvas.py` shim (`VtkCanvas`) and the
+  `analysis/scene3d.py` glue.
 
 ## 2. Dev setup from zero
 
@@ -919,6 +937,71 @@ Checklist, in order:
    row and ch. 6/11 pointers if the subcommand feeds a TOML key),
    README feature list, CHANGELOG, this guide if the recipe moved.
 
+### 5.12 Touching the 3D scene (spoviz vs spody_gui)
+
+Since the 2026-07 extraction the 3D stack is layered like
+CesiumJS-vs-app. Decide WHERE the change goes before writing it:
+
+| layer   | file                              | owns |
+|---------|-----------------------------------|------|
+| library | `python/spoviz/scene.py`          | `Scene3D`: renderers, actors, the animation engine, sun light, skybox, camera, picking |
+| library | `python/spoviz/decoration.py`     | ephemeris-driven garnish: third bodies, sun illumination, animated body-fixed frame, reference triads |
+| library | `python/spoviz/bodies.py`         | NAIF ids, display colours, marker sizing / distance-compression knobs |
+| library | `python/spoviz/textures.py`       | equirectangular pixel fixups + their on-disk caches |
+| library | `python/spoviz/qt.py`             | `SceneWidget` — the only PySide6 import in the package |
+| app     | `spody_gui/vtk_canvas.py`         | compat shim: `VtkCanvas(SceneWidget)` + `MOON_RADIUS_KM` re-export |
+| app     | `spody_gui/analysis/scene3d.py`   | glue: `PlotContext` / run folder / assets / constants → explicit spoviz arguments |
+
+Checklist for a new 3D capability:
+
+1. **New scene primitive** (a new actor kind, marker style, overlay,
+   animation behaviour) → a method on `Scene3D` in
+   `spoviz/scene.py`. House rules there:
+   - positions in km, times in simulation seconds, rotation
+     sequences `(N, 3, 3)` with columns = local axes in scene
+     coordinates;
+   - **no Qt imports, ever** — the module must keep working on an
+     offscreen `vtkRenderWindow` with no QApplication in the
+     process;
+   - lengths/radii that depend on a body are **required
+     parameters**, not defaults: spoviz cannot read
+     `spody_const.h`, so physical numbers always come from the
+     caller (the GUI reads them via `constants.const(...)`).
+2. **New ephemeris-driven decoration** → a function in
+   `spoviz/decoration.py` that takes `scene` plus explicit inputs
+   only: `ephemeris` (duck-typed on `spopy.Ephemeris.position`),
+   `orientation_for` / `texture_for` callables,
+   `radius_km_by_name` mapping, optional `pump` (the GUI passes
+   `QApplication.processEvents`). Then add a same-name wrapper in
+   `analysis/scene3d.py` with the historical `(canvas, ctx,
+   times_s)` signature that resolves `resolve_run_context`, opens
+   the spopy ephemeris (`_run_ephemeris` already does both) and
+   feeds `constants.BODY_RADIUS_KM`. Plot modules keep importing
+   from `.scene3d` — they never see spoviz directly.
+3. **GUI-only behaviour** (which PlotSpec draws what, Scene-options
+   toggles, settings persistence) → stays in `spody_gui` (plot
+   modules / `analysis_panel.py`), calling the canvas as before.
+4. The plot functions receive `VtkCanvas`; every `Scene3D` method is
+   reachable on it by delegation (`canvas.add_x(...)` ≡
+   `canvas.scene.add_x(...)`, via `SceneWidget.__getattr__`). One
+   trap: if a new `Scene3D` method name collides with an existing
+   `QWidget` attribute (as `render` does), the QWidget name wins the
+   lookup and the delegation is silently bypassed — add an explicit
+   override in `spoviz/qt.py` like the existing `render()`.
+5. **Verify** both hosts:
+   - offscreen, no Qt: build a `vtkRenderWindow` with
+     `SetOffScreenRendering(1)` + a plain
+     `vtkRenderWindowInteractor`, construct `Scene3D`, drive the new
+     API, `render()`, and pixel-check via `vtkWindowToImageFilter`
+     (a scene with a central body lights >2 % of the pixels);
+   - the launched GUI (§3.3 rule — owner OK before committing).
+     QVTK gets **no valid pixel format under
+     `QT_QPA_PLATFORM=offscreen`**, so the widget path can only be
+     exercised in the real app.
+6. **Docs catch-up** (§3.3): CHANGELOG + python/README layout +
+   this section if the layering rules moved. The user manual only
+   changes when something is user-visible.
+
 ## 6. Verifying changes
 
 ### 6.1 Engine changes
@@ -964,7 +1047,7 @@ Rebuild **both** repos (core clone + app), then:
 In order of increasing cost:
 
 1. `python -m py_compile` sweep over `spody_gui`, `spopy`,
-   `spody_io` (catches syntax + 3.9 incompatibilities).
+   `spody_io`, `spoviz` (catches syntax + 3.9 incompatibilities).
 2. Import every touched module in isolation (catches circular
    imports and missing `from __future__ import annotations`).
 3. Offscreen form round-trip (no display needed):
@@ -977,8 +1060,11 @@ In order of increasing cost:
    No keys may be lost. (Known benign diffs: list-order
    normalization of `third_bodies`, output filenames re-derived from
    `simulation.name`.)
-4. `AnalysisPanel` needs a real GL context (VTK does not render
-   offscreen here) — verify 3D views by launching the app.
+4. `AnalysisPanel` needs a real GL context (QVTK gets no valid
+   pixel format under the offscreen QPA) — verify 3D views by
+   launching the app. The Qt-free `spoviz.Scene3D` DOES render
+   offscreen (see §5.12 step 5) — use that path for scene-engine
+   changes that don't touch the widget.
 5. **Always launch the GUI and exercise the changed surface before
    committing GUI work.** Watch the console: it must stay silent.
 

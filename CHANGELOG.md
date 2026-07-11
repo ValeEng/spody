@@ -18,6 +18,25 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **The 3D engine is now `spoviz`, an in-repo visualization
+  library.** `python/spoviz/` owns the whole time-dynamic 3D stack,
+  Cesium-style: `Scene3D` (pure VTK + numpy scene engine &mdash; layered
+  multi-frustum renderers, textured bodies, animated trajectories /
+  frame triads / direction arrows, day/night sun light, star-map
+  skybox, picking, camera), `spoviz.decoration` (ephemeris-driven
+  third bodies, sun illumination and animated body-fixed frame,
+  taking explicit callables/tables instead of GUI context),
+  `spoviz.bodies` (NAIF/colour/sizing catalog) and `spoviz.textures`
+  (equirectangular meridian-roll + ICRF skybox fixups). PySide6
+  appears in exactly one module (`spoviz.qt.SceneWidget`), so the
+  scene engine renders on an offscreen `vtkRenderWindow` with no Qt
+  in the process &mdash; the enabler for scripted/notebook renders and a
+  future bulk PNG export. The GUI is unchanged:
+  `spody_gui/vtk_canvas.py` is now a compatibility shim (`VtkCanvas`
+  subclasses `SceneWidget`) and `analysis/scene3d.py` keeps its
+  historical signatures as glue that resolves run folders, texture
+  assets and `spody_const.h` values before delegating to the
+  library.
 - **Altitude-band analysis is vectorised and cached.** The per-band
   occupancy reconstruction (Info tab, the four band plots, the CSV
   exports) no longer loops over the crossing records in Python: one
