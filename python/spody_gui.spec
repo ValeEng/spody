@@ -30,7 +30,8 @@
 # submodules that aren't auto-detected.
 
 # Explicit list of VTK modules we actually import (directly or via
-# side-effect) -- see vtk_canvas.py for the static imports. The
+# side-effect) -- see spoviz/scene.py + spoviz/qt.py for the static
+# imports (the 3D engine lives in the spoviz package). The
 # alternative `collect_submodules("vtkmodules")` pulls in the whole
 # subtree (VR / Web / GTK,Wx,Tk bindings / dozens of exotic IO
 # readers for Cesium3DTiles, CGNS, FLUENT, Exodus, EnSight, NetCDF,
@@ -43,13 +44,13 @@
 # PyInstaller hooks in _pyinstaller_hooks_contrib once we declare
 # the top-level imports below.
 vtk_hidden = [
-    # vtk_canvas.py uses the Qt integration class which PyInstaller's
+    # spoviz/qt.py uses the Qt integration class which PyInstaller's
     # static analysis can miss because of how it's lazy-imported.
     "vtkmodules.qt.QVTKRenderWindowInteractor",
     # Bridge between numpy arrays and vtk arrays; we use it in
     # set_central_body_texture / add_trajectory.
     "vtkmodules.util.numpy_support",
-    # The two side-effect imports in vtk_canvas.py (no symbols used,
+    # The two side-effect imports in spoviz/scene.py (no symbols used,
     # but loading the module registers the OpenGL / FreeType backends
     # with vtkRenderingCore). Listed explicitly so PyInstaller's
     # tree-shaking can't drop them.

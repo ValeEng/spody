@@ -11,15 +11,19 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Valerio (@ValeEng)" }]
 
-# Three packages live here:
+# Four packages live here:
 #   spody_io   -- standalone NumPy-based readers for the spody output
 #                 binaries; reusable from notebooks / scripts.
 #   spopy      -- pure-Python re-implementation of spody-core's read-
 #                 side helpers (DE440 ephemeris + ICRF<->Moon PA
 #                 rotations) that the GUI needs at interactive speed
 #                 without spawning subprocesses or loading a shared lib.
+#   spoviz     -- the 3D astrodynamics visualization library (VTK +
+#                 numpy scene engine, Cesium-like time-dynamic scenes;
+#                 Qt host widget in spoviz.qt only).
 #   spody_gui  -- the PySide6 desktop application that wraps the spody
-#                 binary and embeds viewers built on spody_io + spopy.
+#                 binary and embeds viewers built on spody_io + spopy
+#                 + spoviz.
 dependencies = [
     "PySide6    >= 6.5, < 7",
     "numpy      >= 1.20",
@@ -49,4 +53,4 @@ spody-gui = "spody_gui.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["spody_gui*", "spody_io*", "spopy*"]
+include = ["spody_gui*", "spody_io*", "spopy*", "spoviz*"]
