@@ -165,7 +165,11 @@ backward-compatible.
   frame) taking explicit callables/tables — no `PlotContext`, no
   QSettings, no Qt; `bodies.py` = NAIF/colour/marker-sizing catalog;
   `textures.py` = equirectangular pixel fixups with on-disk caches;
-  `qt.py` = `SceneWidget`, the ONLY module that imports PySide6.
+  `widgets.py` = opt-in in-scene UI chrome (PlaybackBar +
+  OptionsPanel on VTK widgets — standalone viewers only, the GUI
+  keeps its Qt controls); `qt.py` = `SceneWidget`, the ONLY module
+  that imports PySide6. Full API reference + examples in
+  `python/spoviz/README.md`.
   Dependency direction: **spoviz never imports spody_gui or spopy**
   (ephemeris objects come in duck-typed); the GUI reaches it through
   the `spody_gui/vtk_canvas.py` shim (`VtkCanvas`) and the
@@ -948,6 +952,7 @@ CesiumJS-vs-app. Decide WHERE the change goes before writing it:
 | library | `python/spoviz/decoration.py`     | ephemeris-driven garnish: third bodies, sun illumination, animated body-fixed frame, reference triads |
 | library | `python/spoviz/bodies.py`         | NAIF ids, display colours, marker sizing / distance-compression knobs |
 | library | `python/spoviz/textures.py`       | equirectangular pixel fixups + their on-disk caches |
+| library | `python/spoviz/widgets.py`        | opt-in in-scene UI chrome (PlaybackBar, OptionsPanel) — standalone viewers only, never the GUI |
 | library | `python/spoviz/qt.py`             | `SceneWidget` — the only PySide6 import in the package |
 | app     | `spody_gui/vtk_canvas.py`         | compat shim: `VtkCanvas(SceneWidget)` + `MOON_RADIUS_KM` re-export |
 | app     | `spody_gui/analysis/scene3d.py`   | glue: `PlotContext` / run folder / assets / constants → explicit spoviz arguments |

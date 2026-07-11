@@ -8,6 +8,18 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **spoviz in-scene playback widgets + API reference.**
+  `spoviz.widgets` adds an opt-in, pure-VTK UI layer for standalone
+  viewers (no Qt in the process): `PlaybackBar` (play/pause, speed
+  cycling, click-to-jump timeline slider, epoch readout through a
+  caller-supplied formatter) and `OptionsPanel` (menu button
+  dropping down declarative checkbox toggles). Button icons are
+  rendered at runtime with numpy — no font glyphs, no image assets.
+  The spody GUI keeps its Qt animation bar and Scene-options dialog
+  and never instantiates these. `python/spoviz/README.md` documents
+  the full library API (Scene3D, decoration, bodies, textures,
+  widgets, Qt host) with four end-to-end examples.
+
 - **Events timeline (density) plot.** A companion to the marker
   *Events timeline* for large files: the same y-rows (IMPACT, ECLIPSE,
   one per crossed altitude) rendered as a time-binned count heatmap

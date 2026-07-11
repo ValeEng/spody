@@ -209,11 +209,13 @@ spody_io/                # binary readers (NumPy only)
   events.py              # read_events(path) + EVENT_KIND_* constants
 
 spoviz/                  # 3D astrodynamics visualization library (VTK + numpy)
+  README.md              # full API reference + usage examples
   scene.py               # Scene3D: Qt-free scene engine (layered renderers,
                          #  bodies, trajectories, animation, sun light, skybox)
   decoration.py          # ephemeris-driven third bodies / sunlight / BF triads
   bodies.py              # NAIF ids, display colours, marker sizing knobs
   textures.py            # equirectangular texture fixups (cached on disk)
+  widgets.py             # opt-in in-scene UI: PlaybackBar + OptionsPanel (no Qt)
   qt.py                  # SceneWidget: the ONLY Qt module (QVTK host widget)
 
 spody_gui/               # PySide6 desktop app (depends on spody_io + spoviz)
