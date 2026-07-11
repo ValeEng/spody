@@ -33,6 +33,10 @@ library itself is host-agnostic:
   marker sizing, distance compression).
 * `spoviz.textures` -- equirectangular texture fixups (meridian
   roll, ICRF-aligned skybox re-projection) with on-disk caching.
+* `spoviz.widgets` -- opt-in in-scene UI chrome (playback bar,
+  options panel) built on VTK widgets, so a standalone window is a
+  self-contained viewer. The spody GUI does not use these (it has
+  its own Qt controls).
 
 Positions are km; times are simulation seconds on whatever epoch the
 caller's data uses; rotation-matrix sequences are (N, 3, 3) with
@@ -40,6 +44,6 @@ columns = local axes expressed in scene coordinates.
 """
 
 from .scene import Scene3D
-from . import bodies, decoration, textures
+from . import bodies, decoration, textures, widgets
 
-__all__ = ["Scene3D", "bodies", "decoration", "textures"]
+__all__ = ["Scene3D", "bodies", "decoration", "textures", "widgets"]
