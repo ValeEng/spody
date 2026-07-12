@@ -66,6 +66,12 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   `days`) from the plotted span, so days-long batch runs stop labelling
   their axes with raw six-digit second counts.
 
+### Fixed
+
+- **License metadata in `python/pyproject.toml`** wrongly declared
+  MIT; it now says Apache-2.0, matching the repository `LICENSE` and
+  the per-file headers. Metadata-only &mdash; no code change.
+
 ## v0.3.0-beta &mdash; 2026-07-07
 
 ### Added
