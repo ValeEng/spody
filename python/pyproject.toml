@@ -8,7 +8,7 @@ version = "0.3.0b0"   # semver "0.3.0-beta" in PEP 440 syntax
 description = "Desktop GUI + binary readers for the spody propagator"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "Valerio (@ValeEng)" }]
 
 # Four packages live here:
