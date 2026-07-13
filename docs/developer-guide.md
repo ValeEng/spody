@@ -120,6 +120,11 @@ backward-compatible.
     batch table.
   - `roundtrip.py` — generic dict ↔ widgets serialization.
   - `handlers.py` — bottom bar (Load/Save/Generate/Run).
+  - `cr3bp_convert.py` — the **From CR3BP...** popup (opened from
+    the `[initial_state]` frame row): CR3BP catalog state →
+    central-body ICRF at `et_start_s` via the instantaneous
+    pulsating-frame transform, in-process on spopy (explicit-inputs
+    QDialog, no back-references into the form).
   - `toml_form.py` — composes the five mixins over `QWidget`; keeps
     only state, signals and change-tracking.
 - `spody_gui/analysis/` — the Analysis-tab machinery:
@@ -766,13 +771,25 @@ this guide.
    `lookup_cr3bp_pair`; unknown pairs are rejected at load with a
    message that lists the known ones — your row updates that
    message for free).
-3. Mirror tuple in `CR3BP_PAIRS` in `form/catalog.py` for the combo.
+3. Mirror tuple in `CR3BP_PAIRS` in `form/catalog.py` for the combo,
+   plus its separation in `CR3BP_L_KM` right below (same constant as
+   step 1, read through `constants.py`).
 4. The two lists must stay in lockstep — grep both names whenever
    touching either.
+5. Free riders — check, don't code: the Keplerian↔Cartesian swap and
+   the **From CR3BP...** converter dialog
+   (`form/cr3bp_convert.py`, opened from the `[initial_state]`
+   frame row) both build their pair lists from `CR3BP_PAIRS` +
+   `CR3BP_L_KM` + the central-body registry, so the new pair shows
+   up in both automatically — but ONLY if both primaries are
+   registered central bodies with `naif_id` + `mu_km3_s2`
+   (recipe 5.6) and the ephemeris actually covers the pair
+   (`spopy.Ephemeris.position` must resolve both NAIF ids).
 
 **Verify:** a CR3BP run with the new pair (`cr3bp_em_l4` is the
 template scenario); the synodic 3D view shows both primaries at the
-right separation. **Document:** manual ch. 6; CHANGELOG.
+right separation; a From CR3BP... conversion round-trips a state of
+the new pair. **Document:** manual ch. 6; CHANGELOG.
 
 ### 5.8 New batch override target
 
@@ -1122,7 +1139,11 @@ Each entry: the rule, and the symptom you'll see if you break it.
   (cart/kep × ICRF/BF, kept to make representation swaps lossless)
   is invalidated by epoch/body/model changes — a new field that
   affects the state conversion must be added to that invalidation
-  list. *Symptom: stale numbers after a swap.*
+  list. Anything that writes the state widgets *programmatically*
+  must end with `_invalidate_ic_cache()` +
+  `_seed_ic_cache_from_visible()` so later swaps start from the
+  inserted values — `_on_cr3bp_from_clicked` (the From CR3BP...
+  insert) is the template. *Symptom: stale numbers after a swap.*
 - **`spopy.Ephemeris` is not thread-safe** (per-instance record
   cache): one instance per worker thread. *Symptom: garbled
   positions under concurrency.*

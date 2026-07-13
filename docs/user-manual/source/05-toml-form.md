@@ -308,6 +308,69 @@ underlying CR3BP schema details &mdash; barycenter offsets,
 omega derivation, impact-event auto-wiring &mdash; live in
 chapter 6.
 
+## Importing a CR3BP state (From CR3BP&hellip;)
+
+Next to the frame combo, high-fidelity runs get a
+**From CR3BP&hellip;** button (hidden under the `cr3bp` model,
+where the state is already synodic). It opens a popup that turns a
+CR3BP synodic-rotating state &mdash; the form the JPL periodic-orbit
+catalog hands out &mdash; into the `central_inertial` Cartesian
+state the engine propagates, so you can seed an HF run from a halo /
+NRHO / Lyapunov catalog point without leaving the GUI. Typical use:
+picking several points along one CR3BP orbit and testing each in the
+full-force model.
+
+The dialog fields, top to bottom:
+
+- **state vector** &mdash; all six components in one line,
+  separated by spaces and/or commas (paste a catalog row as-is).
+- **units** &mdash; `dimensional [km, km/s]` or `nondimensional`.
+- **L [km]** &mdash; the CR3BP characteristic length the state was
+  built with (defaults to the curated pair separation, e.g.
+  384&thinsp;400 km for Earth&ndash;Moon). Nondimensional input is
+  scaled by it (velocities by L&middot;&omega; with
+  &omega; = &radic;((&mu;&#8321;+&mu;&#8322;)/L&sup3;));
+  dimensional input is divided by it to recover the catalog state
+  before the epoch's actual geometry is applied.
+- **primaries** &mdash; one of the curated CR3BP pairs (chapter 6;
+  today Earth&ndash;Moon).
+- **coordinates centered on** &mdash; `barycenter` or either
+  primary, matching however your source quotes the state.
+- **epoch** &mdash; read-only: `simulation.et_start_s` from the
+  form (with its UTC twin). Change the epoch in `[simulation]` and
+  reopen to convert for a different date.
+- **output** &mdash; read-only: the state lands in
+  `force_model.central_body`-centered ICRF.
+
+**Convert** shows the resulting `position_km` / `velocity_kms`
+(selectable text) plus a sanity line: distance from the central
+body and the *actual* primary&ndash;primary distance at the epoch
+versus the L you entered. **Insert into form** writes the vectors
+into the Cartesian block, snaps `frame = central_inertial` and
+`kind = cartesian`, and re-seeds the swap cache (below) so
+subsequent kind / frame toggles round-trip from the inserted
+values. The dialog remembers its fields within the session, so
+converting the next point along the orbit is paste &rarr; Convert
+&rarr; Insert.
+
+The conversion uses the **instantaneous pulsating-frame transform**
+(chapter 10): the rotating frame is anchored to the *real* primary
+geometry read from the `[ephemeris]` file at `et_start_s` &mdash;
+actual separation, actual axes (x from primary&nbsp;1 to
+primary&nbsp;2, z along the orbital angular momentum), actual
+angular rate plus the radial pulsation &mdash; so both primaries
+land exactly on their DE440 positions. Keep in mind the physics: a
+CR3BP orbit is periodic only in the CR3BP, so the converted state
+is a *seed* &mdash; expect an NRHO-class orbit to stay on family
+for a few revolutions in the full model before departing.
+
+Three guard rails: an empty `et_start_s` pops a warning before the
+dialog opens; a missing / unreadable `[ephemeris]` file refuses the
+conversion (the real geometry comes from it); and a
+`central_body` that is not one of the selected primaries refuses
+too, because the output would be centered on a body the engine is
+not propagating around.
+
 ## Switching the initial-state flavour
 
 The `[initial_state]` section carries a `kind` combo above the

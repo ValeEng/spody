@@ -8,6 +8,23 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **From CR3BP... state converter in the Run form.** A button next
+  to the `[initial_state]` frame combo (high-fidelity only) opens a
+  popup that converts a CR3BP synodic-rotating state &mdash; the JPL
+  periodic-orbit catalog convention; dimensional or nondimensional
+  with its characteristic length L, centered on the barycenter or
+  either primary of a curated pair &mdash; into the central-body
+  ICRF cartesian state at `et_start_s`, and inserts it into the form
+  (frame/kind snap to `central_inertial`/`cartesian`, swap cache
+  re-seeded). The mapping is the instantaneous pulsating-frame
+  transform on the form's `[ephemeris]` file: actual primary
+  separation, axes and angular rate (plus radial pulsation) at the
+  epoch, so both primaries land exactly on their DE440 states.
+  Pure in-process spopy math &mdash; no engine call; the dialog
+  keeps its fields across reopens so testing several points along
+  one catalog orbit is paste &rarr; Convert &rarr; Insert. Manual
+  ch. 5 (dialog) + ch. 10 (pulsating frame convention).
+
 - **spoviz in-scene playback widgets + API reference.**
   `spoviz.widgets` adds an opt-in, pure-VTK UI layer for standalone
   viewers (no Qt in the process): `PlaybackBar` (play/pause, speed

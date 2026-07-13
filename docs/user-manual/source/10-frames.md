@@ -183,6 +183,43 @@ model, by CCSDS conjunction messages, and by the rest of the
 debris-evolution-tool ecosystem &mdash; so a binary export from
 those tools can be fed into SpOdy without a manual sign flip.
 
+## The synodic rotating frame (CR3BP)
+
+Under `dynamics_model = "cr3bp"` the state lives in the classic
+**synodic rotating frame**: origin at the barycenter, x-axis along
+primary&nbsp;1 &rarr; primary&nbsp;2, z along the orbital angular
+momentum, rotating at the constant
+&omega; = &radic;((&mu;&#8321;+&mu;&#8322;)/L&sup3;). The primaries
+sit frozen on the x-axis (primary&nbsp;1 at
+&minus;&mu;&#8322;/(&mu;&#8321;+&mu;&#8322;)&middot;L,
+primary&nbsp;2 at +&mu;&#8321;/(&mu;&#8321;+&mu;&#8322;)&middot;L).
+By convention the synodic axes coincide with the run's inertial
+axes at t&nbsp;=&nbsp;0 &mdash; the engine and
+`spopy.inertial_to_synodic` / `synodic_to_inertial` share this
+t&nbsp;=&nbsp;0 identity.
+
+### The instantaneous pulsating variant (From CR3BP&hellip;)
+
+The idealised frame above assumes circular primary motion at the
+fixed separation L. The **From CR3BP&hellip;** dialog (chapter 5),
+which seeds a *high-fidelity* run from a CR3BP catalog state, uses
+the **instantaneous pulsating** variant instead: at the requested
+epoch it reads the *real* primary geometry from the ephemeris
+&mdash; actual separation l\*, axes built from the actual relative
+position and velocity, angular rate &omega; = h/l\*&sup2; along
+the actual orbit normal, plus the radial rate l&#775;\* &mdash;
+and maps the nondimensionalised catalog state through it. Two
+properties make this the right bridge between the two worlds:
+both primaries land **exactly** on their DE440 states, and the
+transform degenerates to the t&nbsp;=&nbsp;0 identity convention
+when the real orbit is replaced by the circular idealisation.
+
+Because a CR3BP orbit is periodic only in the CR3BP, the mapped
+state is a **seed**, not a bound orbit: the full-force propagation
+shadows the catalog orbit for a while (a 9:2 NRHO holds a few
+revolutions) and then departs. That divergence is the physics of
+the ephemeris model, not a conversion error.
+
 ## Classical orbital elements
 
 The classical Keplerian elements are reported in the **central-

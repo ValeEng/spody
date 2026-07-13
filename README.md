@@ -184,6 +184,14 @@ Ordered roughly by what unlocks the most for users.
       converted to Cartesian by the engine, and to the synodic
       frame for CR3BP runs where the reference body is one of the
       two primaries)
+- [x] **From CR3BP... converter** in the GUI form: popup next to
+      the `[initial_state]` frame combo that maps a CR3BP catalog
+      state (dimensional or nondimensional, barycentric or
+      primary-centered) into the central-body ICRF state at
+      `et_start_s` via the instantaneous pulsating-frame transform
+      on the run's ephemeris, and inserts it into the form — seed
+      HF runs from periodic-orbit catalog points (halo / NRHO /
+      Lyapunov) without leaving the GUI
 - [x] `spody convert` CLI: `harmonics_icgem` (ICGEM .gfc → engine
       .tab format), `sp3` (IGS SP3 precise orbits → SpOdy
       reference binary, multi-file concat), `glonass` /
