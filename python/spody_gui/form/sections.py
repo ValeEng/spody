@@ -319,8 +319,27 @@ class SectionBuildersMixin:
         # Switching between `central_inertial` and `central_body_fixed`
         # does a live rotation of the currently typed cart / kep
         # values (same UX as the cartesian <-> keplerian swap).
-        self._add_enum(top, "initial_state.frame", "frame",
-                       FRAMES_BY_MODEL["high_fidelity"])
+        # The frame combo shares its row with the "From CR3BP..."
+        # converter button (HF-only: under the cr3bp model the state
+        # is already synodic, nothing to convert).
+        fr_combo = QComboBox()
+        for fv in FRAMES_BY_MODEL["high_fidelity"]:
+            fr_combo.addItem(fv)
+        fr_combo.currentIndexChanged.connect(self._touch)
+        self._widgets["initial_state.frame"] = fr_combo
+        self._cr3bp_from_btn = QPushButton("From CR3BP...")
+        self._cr3bp_from_btn.setToolTip(
+            "Convert a CR3BP synodic-rotating state (catalog "
+            "convention, dimensional or nondimensional) into the "
+            "central-body ICRF cartesian state at et_start_s, using "
+            "the actual primary geometry from the [ephemeris] file, "
+            "and drop it into the fields below.")
+        self._cr3bp_from_btn.clicked.connect(self._on_cr3bp_from_clicked)
+        fr_row = QHBoxLayout()
+        fr_row.setContentsMargins(0, 0, 0, 0)
+        fr_row.addWidget(fr_combo, 1)
+        fr_row.addWidget(self._cr3bp_from_btn)
+        top.addRow("frame", hwrap(fr_row))
         self._add_enum(top, "initial_state.kind", "kind",
                        ("cartesian", "keplerian"))
         frame_combo = self._widgets["initial_state.frame"]
@@ -1247,6 +1266,74 @@ class SectionBuildersMixin:
         except ValueError:
             return None
 
+    def _on_cr3bp_from_clicked(self) -> None:
+        """Open the "From CR3BP..." popup and, on accept, drop the
+        converted state into the cartesian block: frame snaps to
+        `central_inertial`, kind to `cartesian`, and the IC cache is
+        re-seeded from the inserted values so subsequent kind / frame
+        toggles round-trip from them. The dialog's field values are
+        stashed on the form so reopening it (one conversion per orbit
+        point is the expected workflow) starts from the last input."""
+        from PySide6.QtWidgets import QDialog
+        from ..central_bodies import resolve_central_body
+        from .cr3bp_convert import Cr3bpConvertDialog
+
+        et_s = self._form_et_start()
+        if et_s is None:
+            QMessageBox.warning(
+                self, "From CR3BP",
+                "Fill simulation.et_start_s first -- the synodic -> "
+                "ICRF rotation is anchored to the actual primary "
+                "geometry at the run's start epoch.")
+            return
+        pairs = []
+        for p1, p2 in CR3BP_PAIRS:
+            spec1 = resolve_central_body(p1)
+            spec2 = resolve_central_body(p2)
+            L = CR3BP_L_KM.get((p1, p2))
+            if spec1 is None or spec2 is None or L is None:
+                continue
+            pairs.append({
+                "name1": p1, "name2": p2,
+                "mu1": spec1.mu_km3_s2, "mu2": spec2.mu_km3_s2,
+                "naif1": spec1.naif_id, "naif2": spec2.naif_id,
+                "L": L,
+            })
+        if not pairs:
+            return
+        utc_text = ""
+        try:
+            from spopy.time import et_to_utc, format_utc_iso
+            utc_text = format_utc_iso(et_to_utc(float(et_s)))
+        except (ImportError, ValueError, OverflowError):
+            pass
+        cb_combo = self._widgets.get("force_model.central_body")
+        out_body = (cb_combo.currentText()
+                    if isinstance(cb_combo, QComboBox) else "")
+        dlg = Cr3bpConvertDialog(
+            self, pairs=pairs, et_s=float(et_s), utc_text=utc_text,
+            eph=self._cached_ephemeris_for_form(), out_body=out_body,
+            prefill=getattr(self, "_cr3bp_from_prefill", None))
+        accepted = (dlg.exec() == QDialog.DialogCode.Accepted)
+        self._cr3bp_from_prefill = dlg.snapshot()
+        if not accepted or dlg.result_rv is None:
+            return
+        r, v = dlg.result_rv
+        # Snap the combos BEFORE writing: their change handlers run
+        # best-effort conversions on the old values, and everything
+        # they produce is overwritten right below.
+        frame_combo = self._widgets.get("initial_state.frame")
+        kind_combo = self._widgets.get("initial_state.kind")
+        if isinstance(frame_combo, QComboBox):
+            frame_combo.setCurrentText("central_inertial")
+        if isinstance(kind_combo, QComboBox):
+            kind_combo.setCurrentText("cartesian")
+        self._write_vec3("initial_state.position_km",  r)
+        self._write_vec3("initial_state.velocity_kms", v)
+        self._invalidate_ic_cache()
+        self._seed_ic_cache_from_visible()
+        self._touch()
+
     def _on_input_frame_changed(self, new_frame: str) -> None:
         """User flipped the [initial_state].frame combo: when the
         swap is between `central_inertial` and `central_body_fixed`,
@@ -1440,6 +1527,11 @@ class SectionBuildersMixin:
         self._force_model_group.setVisible(is_hf)
         self._ephemeris_group.setVisible(is_hf)
         self._cr3bp_group.setVisible(not is_hf)
+        # From CR3BP... converter: only meaningful under HF (a cr3bp
+        # run takes the synodic state directly, nothing to convert).
+        # hasattr guard: this reflow can fire between section builds.
+        if hasattr(self, "_cr3bp_from_btn"):
+            self._cr3bp_from_btn.setVisible(is_hf)
         # Frame combo is owned exclusively by
         # `_refresh_input_frame_availability` (called below) -- having
         # this method ALSO rebuild it caused races where the BF entry
