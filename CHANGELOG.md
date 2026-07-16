@@ -35,6 +35,14 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Engine module split: tabulated-data primitives consolidated in
+  `spody_interp`.** `spody_bracket_index` and `spody_interp_linear`
+  moved out of `spody_math` (verbatim, no behaviour change), so all
+  interpolation — bracketing lookup, linear nodes, cubic Hermite
+  dense output, and the future SPK Type 9/13 interpolants — lives
+  in one module; `spody_math` stays algebra/geometry. Only affects
+  code including the engine headers directly.
+
 - **From CR3BP... converter uses exact ephemeris rates.** The
   pulsating-frame transform in the `[initial_state]` converter dialog
   derived the primary-primary relative velocity from a &plusmn;60 s

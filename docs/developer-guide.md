@@ -840,7 +840,7 @@ ch. 7; CHANGELOG.
 5. Model-calibration knobs follow the density-scale pattern: the
    engine owns a loader + evaluator pair (`MappedDensityScale` in
    `spody_atmosphere.{h,c}`, evaluated via the shared
-   `spody_interp_linear` from `spody_math` — put any new generic
+   `spody_interp_linear` from `spody_interp` — put any new generic
    bracketing/interpolation math there, not in the feature file), a
    `const` pointer slot on `ForceModelContext` where NULL means
    "factor = 1, feature off", and the multiply at exactly one point
@@ -918,12 +918,15 @@ Checklist, in order:
    `(jd0 - JD_J2000) * SECONDSxDAY + seconds-of-day`, then apply
    the timescale chain (`spody_tai_minus_utc`, `TT2TAI_SEC`,
    `spody_tdb_minus_tt`).
-3. **Any reusable math** the subcommand needs (interpolation,
-   vector primitives, ...) goes in `spody_math` — owner's standing
-   rule; `spody_dot3` / `spody_cross3` / `spody_bracket_index` /
-   `spody_interp_linear` are already there. Numeric defaults and
-   thresholds go in `spody_const.h` (`SPODY_CAL_*` is the
-   pattern), never inline.
+3. **Any reusable math** the subcommand needs goes in a shared
+   module, never in the feature file — owner's standing rule. The
+   split (2026-07): algebra/geometry primitives (`spody_dot3` /
+   `spody_cross3` / rotations / geodetic) live in `spody_math`;
+   anything that evaluates **tabulated data** (`spody_bracket_index`,
+   `spody_interp_linear`, the cubic Hermite dense output, future
+   Lagrange/spline for an SPK reader) lives in `spody_interp`.
+   Numeric defaults and thresholds go in `spody_const.h`
+   (`SPODY_CAL_*` is the pattern), never inline.
 4. **App side**: `src/<name>.c` in the app `CMakeLists.txt`,
    `cmd_<name>` + dispatch line + `usage()` entry + the subcommand
    list in `main.c`'s header comment. Outputs follow the run-folder
