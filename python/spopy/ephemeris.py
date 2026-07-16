@@ -70,9 +70,10 @@ NAIF mappings (matches `get_body_position_ssb` in the C source):
     301 -> Moon (centre)      399 -> Earth (centre)
 
 Position queries return central-body-relative km in the ICRF
-(equator-and-equinox at J2000) frame. Time is ET in seconds past
-J2000 TDB -- the same convention spody.exe uses for
-`simulation.et_start_s`.
+(equator-and-equinox at J2000) frame; velocity/state queries add the
+exact km/s rates from the analytic derivative of the same Chebyshev
+series (no finite differences). Time is ET in seconds past J2000 TDB
+-- the same convention spody.exe uses for `simulation.et_start_s`.
 """
 from __future__ import annotations
 
@@ -155,6 +156,26 @@ def _chebyshev_eval(tau: float, coeffs: np.ndarray) -> float:
     return float(coeffs[0]) + tau * v_k - v_kp1
 
 
+def _chebyshev_eval_deriv(tau: float, coeffs: np.ndarray) -> float:
+    """d/d(tau) of the Chebyshev series, via T'_k = k * U_{k-1} and the
+    same backward Clenshaw scheme on the second-kind series (the result
+    is simply b_0 for the U recurrence). Mirrors
+    `chebyshev_evaluate_derivative` in spody_ephemeris.c byte for byte.
+    The caller rescales by d(tau)/dt to get a physical rate."""
+    n = coeffs.size
+    if n <= 1:
+        return 0.0
+    two_x = 2.0 * tau
+    b_kp1 = 0.0
+    b_k   = 0.0
+    for k in range(n - 2, -1, -1):
+        # series term d_k = (k+1) * c_{k+1}
+        b_km1 = float(k + 1) * float(coeffs[k + 1]) + two_x * b_k - b_kp1
+        b_kp1 = b_k
+        b_k   = b_km1
+    return b_k
+
+
 class Ephemeris:
     """Read-only handle on a `.spody` JPL ephemeris binary.
 
@@ -182,8 +203,12 @@ class Ephemeris:
         # backed by the in-memory bytes.
         self._records = self._build_record_views()
         # Per-body 1-slot cache (mirrors EPH_CACHE_SLOTS in the C side).
+        # Velocity has its own valid flag: position-only queries leave
+        # the velocity slot stale (mirrors cache_vel_valid in C).
         self._cache_et:  list[float | None] = [None] * _N_BODY_SLOTS
         self._cache_pos: list[np.ndarray]   = [np.zeros(3) for _ in range(_N_BODY_SLOTS)]
+        self._cache_vel: list[np.ndarray]   = [np.zeros(3) for _ in range(_N_BODY_SLOTS)]
+        self._cache_vel_valid: list[bool]   = [False] * _N_BODY_SLOTS
 
     # ------------------------------------------------------------------
     # Header parsing
@@ -254,16 +279,24 @@ class Ephemeris:
         return views
 
     # ------------------------------------------------------------------
-    # Low-level: position of body i (DE440 slot index, 0..14) at ET
+    # Low-level: position (and optional velocity) of body i
+    # (DE440 slot index, 0..14) at ET
     # ------------------------------------------------------------------
-    def _position_idx(self, idx: int, et: float) -> np.ndarray:
+    def _posvel_idx(self, idx: int, et: float,
+                    want_vel: bool) -> tuple[np.ndarray, np.ndarray | None]:
+        """Mirrors `calculate_body_posvel` in spody_ephemeris.c byte for
+        byte: same lookup, same Chebyshev evaluations, same cache policy
+        (a position-only call invalidates the velocity slot)."""
         if not (0 <= idx < _N_BODY_SLOTS):
             raise ValueError(f"body slot index out of range: {idx}")
 
-        # cache hit -- mirrors `if (... map->cache_jd[idx] == et)` in C.
+        # cache hit -- mirrors `if (... map->cache_jd[idx] == et)` in C;
+        # a velocity request also needs the velocity slot to be valid.
         if (self._cache_et[idx] is not None
-                and self._cache_et[idx] == et):
-            return self._cache_pos[idx].copy()
+                and self._cache_et[idx] == et
+                and (not want_vel or self._cache_vel_valid[idx])):
+            pos = self._cache_pos[idx].copy()
+            return pos, (self._cache_vel[idx].copy() if want_vel else None)
 
         if not (self.start_epoch_et <= et <= self.end_epoch_et):
             raise ValueError(
@@ -302,14 +335,28 @@ class Ephemeris:
 
         set_length = 3 * n_coeffs
         offset = start_ix + set_id * set_length
-        result = np.empty(3)
+        pos = np.empty(3)
+        vel = np.empty(3) if want_vel else None
+        # the series runs over tau, so the physical rate is the tau-
+        # derivative rescaled by d(tau)/dt = 2 / set_duration -> km/s
+        dtau_dt = 2.0 / set_duration
         for i in range(3):
             ci = offset + i * n_coeffs
-            result[i] = _chebyshev_eval(tau, rec[ci:ci + n_coeffs])
+            pos[i] = _chebyshev_eval(tau, rec[ci:ci + n_coeffs])
+            if want_vel:
+                vel[i] = _chebyshev_eval_deriv(tau, rec[ci:ci + n_coeffs]) * dtau_dt
 
         self._cache_et[idx]  = et
-        self._cache_pos[idx] = result.copy()
-        return result
+        self._cache_pos[idx] = pos.copy()
+        if want_vel:
+            self._cache_vel[idx] = vel.copy()
+            self._cache_vel_valid[idx] = True
+        else:
+            self._cache_vel_valid[idx] = False
+        return pos, vel
+
+    def _position_idx(self, idx: int, et: float) -> np.ndarray:
+        return self._posvel_idx(idx, et, False)[0]
 
     # ------------------------------------------------------------------
     # NAIF-id position relative to the solar system barycentre
@@ -322,10 +369,12 @@ class Ephemeris:
         if naif == NAIF_SSB:
             return np.zeros(3)
         if naif == NAIF_EARTH:
-            # Earth_ssb = EMB_ssb - 1/(1+EMRAT) * r_moon_wrt_earth
+            # Earth_ssb = EMB_ssb - 1/(1+EMRAT) * r_moon_wrt_earth.
+            # Op order (reciprocal first, then scale) mirrors the C
+            # `f * temp[i]` accumulation for bit-identity.
             emb  = self._position_idx(IDX_EMB,             et)
             mge  = self._position_idx(IDX_MOON_GEOCENTRIC, et)
-            return emb - mge / (1.0 + EMRAT)
+            return emb + mge * (-1.0 / (1.0 + EMRAT))
         if naif == NAIF_MOON:
             # Moon_ssb = EMB_ssb + EMRAT/(1+EMRAT) * r_moon_wrt_earth
             emb  = self._position_idx(IDX_EMB,             et)
@@ -335,6 +384,29 @@ class Ephemeris:
         if idx is None:
             raise ValueError(f"unsupported NAIF body id: {naif}")
         return self._position_idx(idx, et)
+
+    def _state_ssb(self, naif: int,
+                   et: float) -> tuple[np.ndarray, np.ndarray]:
+        """(position, velocity) in ICRF relative to the solar system
+        barycentre, km and km/s. Matches `get_body_state_ssb` in
+        spody_ephemeris.c (same EMRAT split applied to both halves)."""
+        if naif == NAIF_SSB:
+            return np.zeros(3), np.zeros(3)
+        if naif == NAIF_EARTH:
+            emb_p, emb_v = self._posvel_idx(IDX_EMB,             et, True)
+            mge_p, mge_v = self._posvel_idx(IDX_MOON_GEOCENTRIC, et, True)
+            f = -1.0 / (1.0 + EMRAT)
+            return emb_p + mge_p * f, emb_v + mge_v * f
+        if naif == NAIF_MOON:
+            emb_p, emb_v = self._posvel_idx(IDX_EMB,             et, True)
+            mge_p, mge_v = self._posvel_idx(IDX_MOON_GEOCENTRIC, et, True)
+            f = EMRAT / (1.0 + EMRAT)
+            return emb_p + mge_p * f, emb_v + mge_v * f
+        idx = _NAIF_TO_IDX.get(naif)
+        if idx is None:
+            raise ValueError(f"unsupported NAIF body id: {naif}")
+        pos, vel = self._posvel_idx(idx, et, True)
+        return pos, vel
 
     # ------------------------------------------------------------------
     # Public API
@@ -355,6 +427,33 @@ class Ephemeris:
         target  = self._position_ssb(naif_target,  et)
         central = self._position_ssb(naif_central, et)
         return target - central
+
+    def state(self, naif_central: int, naif_target: int,
+              et: float) -> np.ndarray:
+        """Return [x, y, z, vx, vy, vz] of `naif_target` relative to
+        `naif_central` at the given ET, in ICRF km and km/s. Same
+        contract as `spody_get_ephstate` in spody-core: the position
+        half is bit-identical to `position()`, the velocity half is the
+        analytic derivative of the Chebyshev series (exact, no finite
+        differences)."""
+        # Fast path for the Earth <-> Moon pair.
+        if naif_central == NAIF_EARTH and naif_target == NAIF_MOON:
+            pos, vel = self._posvel_idx(IDX_MOON_GEOCENTRIC, et, True)
+            return np.concatenate((pos, vel))
+        if naif_central == NAIF_MOON and naif_target == NAIF_EARTH:
+            pos, vel = self._posvel_idx(IDX_MOON_GEOCENTRIC, et, True)
+            return np.concatenate((-pos, -vel))
+        tpos, tvel = self._state_ssb(naif_target,  et)
+        cpos, cvel = self._state_ssb(naif_central, et)
+        return np.concatenate((tpos - cpos, tvel - cvel))
+
+    def velocity(self, naif_central: int, naif_target: int,
+                 et: float) -> np.ndarray:
+        """Return the velocity of `naif_target` relative to
+        `naif_central` at the given ET, in ICRF km/s. Same contract as
+        `spody_get_ephvelocity` in spody-core (which is the velocity
+        half of `state()`)."""
+        return self.state(naif_central, naif_target, et)[3:].copy()
 
     def lunar_libration_angles(self, et: float) -> np.ndarray:
         """Lunar libration angles (phi, theta, psi) in radians at `et`.
@@ -437,6 +536,46 @@ if __name__ == "__main__":
         _check("out-of-range et raises", False, "did not raise")
     except ValueError:
         _check("out-of-range et raises", True)
+
+    # 7. state(): position half bit-identical to position(); velocity
+    #    half bit-identical to velocity(); across a mix of pairs.
+    ok_pos, ok_vel = True, True
+    for c, t in [(NAIF_EARTH, NAIF_MOON), (NAIF_MOON, NAIF_EARTH),
+                 (NAIF_EARTH, NAIF_SUN), (NAIF_SSB, NAIF_JUPITER)]:
+        s = eph.state(c, t, et_lro)
+        if not (s[:3] == eph.position(c, t, et_lro)).all():
+            ok_pos = False
+        if not (s[3:] == eph.velocity(c, t, et_lro)).all():
+            ok_vel = False
+    _check("state[:3] bit-identical to position()", ok_pos)
+    _check("state[3:] bit-identical to velocity()", ok_vel)
+
+    # 8. Analytic velocity matches a 5-point central finite difference
+    #    of position (h = 32 s keeps FD roundoff ~1e-9 km/s).
+    h = 32.0
+    ok_fd, max_fd = True, 0.0
+    for c, t in [(NAIF_EARTH, NAIF_MOON), (NAIF_EARTH, NAIF_SUN),
+                 (NAIF_SUN, NAIF_MARS)]:
+        v = eph.velocity(c, t, et_lro)
+        fd = (eph.position(c, t, et_lro - 2*h)
+              - 8.0 * eph.position(c, t, et_lro - h)
+              + 8.0 * eph.position(c, t, et_lro + h)
+              - eph.position(c, t, et_lro + 2*h)) / (12.0 * h)
+        err = float(np.max(np.abs(fd - v)))
+        max_fd = max(max_fd, err)
+        if err > 1e-6:
+            ok_fd = False
+    _check("velocity matches finite difference of position",
+           ok_fd, f"max |v - FD| = {max_fd:.3e} km/s")
+
+    # 9. Velocity symmetry on the fast path + magnitude sanity.
+    v_em = eph.velocity(NAIF_EARTH, NAIF_MOON, 0.0)
+    v_me = eph.velocity(NAIF_MOON, NAIF_EARTH, 0.0)
+    _check("velocity(399->301) == -velocity(301->399)",
+           (v_em == -v_me).all())
+    n_em = float(np.linalg.norm(v_em))
+    _check("geocentric Moon speed ~1 km/s",
+           0.8 < n_em < 1.2, f"|v| = {n_em:.5f} km/s")
 
     print()
     if failed:
