@@ -243,6 +243,7 @@ class MainWindow(QMainWindow):
         # _on_form_loaded_or_saved.
         self._form.modificationChanged.connect(self._refresh_title)
         self._form.runRequested.connect(self._action_run)
+        self._form.stopRequested.connect(self._action_stop)
         self._form.calibrateRequested.connect(self._action_calibrate)
         # Calibrate bookkeeping: while a `spody calibrate` run is in
         # flight we watch the streamed lines for the `nodes :` report
@@ -781,6 +782,7 @@ class MainWindow(QMainWindow):
         self._a_propagate.setEnabled(False)
         self._a_batch.setEnabled(False)
         self._a_stop.setEnabled(True)
+        self._form.set_running(True)
         self._status_timer.start()
         self._refresh_run_status()
 
@@ -790,6 +792,7 @@ class MainWindow(QMainWindow):
         self._a_propagate.setEnabled(True)
         self._a_batch.setEnabled(True)
         self._a_stop.setEnabled(False)
+        self._form.set_running(False)
         elapsed = self._runner.elapsed_seconds()
         verdict = "OK" if exit_code == 0 else f"exit {exit_code}"
         self._status_run.setText(f"{verdict} ({elapsed:.1f}s)")
@@ -993,8 +996,11 @@ class MainWindow(QMainWindow):
         self._terminal.append_line(f"[runner error: {message}]")
         # A calibrate that failed to launch never reaches finished;
         # clear the button's busy state here (idempotent when the
-        # finished signal does follow).
+        # finished signal does follow). The RUN/Stop pair resyncs to
+        # the actual runner state: error also fires for non-fatal
+        # conditions while a process is still in flight.
         self._finish_calibrate(-1)
+        self._form.set_running(self._runner.is_running())
 
     def _refresh_run_status(self) -> None:
         if self._runner.is_running():

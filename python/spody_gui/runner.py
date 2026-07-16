@@ -20,6 +20,7 @@ ones, even when the C process writes in arbitrary-sized chunks.
 """
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -89,14 +90,22 @@ class SpodyRunner(QObject):
         self.started.emit()
 
     def stop(self) -> None:
-        """Terminate the running process (graceful, then kill after 2 s)."""
+        """Kill the running process.
+
+        On Windows terminate() posts WM_CLOSE, which a console engine
+        with no message loop never receives -- waiting for it would
+        just freeze the GUI for the full grace period before killing
+        anyway, so go straight to kill(). Elsewhere terminate() sends
+        SIGTERM and gets a 2 s grace window first."""
         if not self.is_running():
             return
         assert self._proc is not None
-        self._proc.terminate()
-        if not self._proc.waitForFinished(2000):
-            self._proc.kill()
-            self._proc.waitForFinished(1000)
+        if sys.platform != "win32":
+            self._proc.terminate()
+            if self._proc.waitForFinished(2000):
+                return
+        self._proc.kill()
+        self._proc.waitForFinished(1000)
 
     # ------------------------------------------------------------------
     # State queries

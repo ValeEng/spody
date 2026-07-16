@@ -93,6 +93,9 @@ class TomlForm(SectionBuildersMixin, WidgetFactoriesMixin,
 
     modificationChanged = Signal(bool)
     runRequested        = Signal(str)    # subcommand to run ("propagate" / "batch")
+    # Emitted by the Stop button; MainWindow owns the runner and does
+    # the actual kill (same path as the Run > Stop menu action).
+    stopRequested       = Signal()
     # Emitted by the [force_model] Calibrate... button with the chosen
     # reference .bin path + fit-window hours; MainWindow saves the TOML
     # and launches `spody calibrate` through the shared runner so the
@@ -190,9 +193,23 @@ class TomlForm(SectionBuildersMixin, WidgetFactoriesMixin,
             "font-weight: bold; padding: 4px 16px; border-radius: 3px; }"
             "QPushButton:hover  { background-color: #3fb950; }"
             "QPushButton:pressed{ background-color: #238636; }"
+            "QPushButton:disabled{ background-color: #555555; color: #999999; }"
         )
+        btn_stop = QPushButton("Stop")
+        btn_stop.setStyleSheet(
+            "QPushButton { background-color: #da3633; color: white; "
+            "font-weight: bold; padding: 4px 16px; border-radius: 3px; }"
+            "QPushButton:hover  { background-color: #f85149; }"
+            "QPushButton:pressed{ background-color: #b62324; }"
+            "QPushButton:disabled{ background-color: #555555; color: #999999; }"
+        )
+        btn_stop.setEnabled(False)
+        btn_stop.setToolTip("Kill the running spody process (Ctrl+.)")
         btn_val.clicked.connect(self._on_validate_clicked)
         btn_run.clicked.connect(self._on_run_clicked)
+        btn_stop.clicked.connect(self.stopRequested)
+        self._run_btn  = btn_run
+        self._stop_btn = btn_stop
 
         self._validate_badge = QLabel("")
         self._validate_badge.setMinimumWidth(160)
@@ -201,6 +218,7 @@ class TomlForm(SectionBuildersMixin, WidgetFactoriesMixin,
         top_row.addWidget(self._path_label, 1)
         top_row.addWidget(btn_val)
         top_row.addWidget(btn_run)
+        top_row.addWidget(btn_stop)
         outer.addLayout(top_row)
 
         badge_row = QHBoxLayout()
@@ -345,6 +363,13 @@ class TomlForm(SectionBuildersMixin, WidgetFactoriesMixin,
                     cb.setToolTip(text)
             else:
                 w.setToolTip(text)
+
+    def set_running(self, running: bool) -> None:
+        """Flip the RUN/Stop button pair while a spody subprocess is in
+        flight. Driven by MainWindow around the runner's lifecycle
+        (same pattern as set_calibrate_busy)."""
+        self._run_btn.setEnabled(not running)
+        self._stop_btn.setEnabled(running)
 
     def is_modified(self) -> bool:
         return self._modified
