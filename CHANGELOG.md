@@ -25,6 +25,14 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   velocities with 60 s finite differences (~4 &micro;m/s error on
   the Moon) can now query them exactly.
 
+- **Stop button on the Run form.** A red **Stop** next to the green
+  **RUN** kills the engine process in flight (same action as
+  **Run &gt; Stop** / <kbd>Ctrl</kbd>+<kbd>.</kbd>, which stays);
+  RUN is now disabled while a run is active instead of erroring in
+  the console. On Windows the stop is an immediate kill &mdash;
+  previously the GUI froze for a 2 s graceful-close attempt the
+  console engine could never honour.
+
 ### Changed
 
 - **From CR3BP... converter uses exact ephemeris rates.** The

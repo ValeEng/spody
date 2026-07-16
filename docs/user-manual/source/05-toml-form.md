@@ -83,8 +83,9 @@ widget on the right.
   oem`) and a fit window in hours, then runs `spody calibrate`
   (chapter 12) through the same runner as RUN &mdash; the button
   flips to a disabled *Calibrating...*, the per-window report
-  streams into the Run-tab console (the toolbar **Stop** aborts
-  it), and on success the row is auto-filled with the emitted
+  streams into the Run-tab console (the red **Stop** button or
+  **Run &gt; Stop** aborts it), and on success the row is
+  auto-filled with the emitted
   `k_nodes.csv` path (clearing the constant, honouring the XOR)
   and the form is marked modified so you decide whether to save.
   The bundled `examples/iss_drag_calibration/` scenario is the

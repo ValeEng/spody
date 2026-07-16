@@ -96,7 +96,15 @@ Three action buttons sit at the top of the form column itself
   batch` (the form auto-detects which subcommand applies from the
   presence of a `[batch]` section). When the loaded TOML has
   unsaved edits, Save runs first &mdash; including the WIP
-  divert when applicable.
+  divert when applicable. While a run is in flight the button is
+  disabled.
+- **Stop** (red): kill the engine process currently running &mdash;
+  enabled only while one is. Same action as **Run &gt; Stop**
+  (<kbd>Ctrl</kbd>+<kbd>.</kbd>). A killed run terminates
+  immediately; the run folder keeps whatever output records were
+  already written (a truncated binary), and no notes stamping or
+  WIP cleanup happens &mdash; those are reserved for runs that
+  finish with exit 0.
 
 Detailed coverage of the form and the schema appears in chapters 5
 and 6.
@@ -165,9 +173,11 @@ switch.
   through keyboard shortcuts (<kbd>Ctrl</kbd>+<kbd>T</kbd>,
   <kbd>Ctrl</kbd>+<kbd>R</kbd>, <kbd>Ctrl</kbd>+<kbd>B</kbd>
   respectively).
-- **Stop** (<kbd>Ctrl</kbd>+<kbd>.</kbd>) &mdash; terminate the
-  current engine run. The signal sequence is graceful first, hard
-  kill after two seconds.
+- **Stop** (<kbd>Ctrl</kbd>+<kbd>.</kbd>) &mdash; kill the current
+  engine run; same action as the red **Stop** button on the form.
+  On Windows the process is killed outright (a console engine
+  cannot receive the graceful-close request); on Linux/macOS it
+  gets a SIGTERM with a two-second grace window first.
 
 ### Settings
 
