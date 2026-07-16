@@ -25,6 +25,16 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   velocities with 60 s finite differences (~4 &micro;m/s error on
   the Moon) can now query them exactly.
 
+### Changed
+
+- **From CR3BP... converter uses exact ephemeris rates.** The
+  pulsating-frame transform in the `[initial_state]` converter dialog
+  derived the primary-primary relative velocity from a &plusmn;60 s
+  central difference of ephemeris positions; it now queries
+  `spopy.Ephemeris.state()` directly (~5 &micro;m/s correction on the
+  Earth&ndash;Moon rate, which feeds l&#775;, the frame axes and the
+  angular-rate term of the converted velocity).
+
 ### Fixed
 
 - **&le;1 ULP Earth-position divergence in spopy.** The Earth branch
