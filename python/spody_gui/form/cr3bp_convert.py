@@ -257,16 +257,15 @@ class Cr3bpConvertDialog(QDialog):
         elif origin == 2:
             rho = rho + np.array([1.0 - mu, 0.0, 0.0])
 
-        # Instantaneous pulsating transform at the epoch.
+        # Instantaneous pulsating transform at the epoch. The relative
+        # velocity is the exact ephemeris rate (analytic Chebyshev
+        # derivative), not a finite difference.
         try:
-            r12 = self._eph.position(p["naif1"], p["naif2"], self._et_s)
-            v12 = (self._eph.position(p["naif1"], p["naif2"],
-                                      self._et_s + 60.0)
-                   - self._eph.position(p["naif1"], p["naif2"],
-                                        self._et_s - 60.0)) / 120.0
+            s12 = self._eph.state(p["naif1"], p["naif2"], self._et_s)
         except (ValueError, KeyError) as exc:
             self._fail(f"Ephemeris lookup failed at this epoch: {exc}")
             return
+        r12, v12 = s12[:3], s12[3:]
         l_inst = float(np.linalg.norm(r12))
         l_dot = float(r12 @ v12) / l_inst
         h_vec = np.cross(r12, v12)
