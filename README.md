@@ -304,10 +304,12 @@ Ordered roughly by what unlocks the most for users.
         rate, survivors; diff-aware overlay with |&Delta;r| /
         |&Delta;v| / RIC stats when a Diff plot is active)
       - Settings dialog for persisted asset paths
-- [x] **`spopy` Python package**: pure-NumPy DE440 reader + ICRF&lt;-&gt;
-      Moon PA rotations + Keplerian&harr;Cartesian + CR3BP
-      synodic&harr;primary-inertial conversions, bit-identical to
-      spody-core for the forward direction
+- [x] **`spopy` Python package**: pure-NumPy DE440 reader (position,
+      velocity and full state via the analytic Chebyshev derivative,
+      SPICE-validated) + ICRF&lt;-&gt;Moon PA rotations +
+      Keplerian&harr;Cartesian + CR3BP synodic&harr;primary-inertial
+      conversions, bit-identical to spody-core for the forward
+      direction
 - [x] **Release pipeline**: tag-triggered GitHub Actions workflow
       builds PyInstaller bundles for Win64 / Linux x86_64 / macOS
       arm64, computes sha256 sidecars, and drafts a GitHub release

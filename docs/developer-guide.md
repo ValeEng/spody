@@ -153,11 +153,14 @@ backward-compatible.
 - `spody_gui/setup_wizard.py` — first-run data download (DE440
   coverage profiles, EOP, textures).
 - `spopy/` — pure-Python re-implementations of spody-core read-side
-  functions, module-per-C-file: `ephemeris.py`, `eop.py`,
-  `earth_orientation.py`, `rotations.py`, `kepler.py`, `cr3bp.py`,
-  `time.py` (the zero-ULP twin of `spody_time.c`). **When you change
-  a core function, check for a spopy sibling and keep it in
-  lockstep** — several are verified bit-identical against the C side.
+  functions, module-per-C-file: `ephemeris.py` (`position()`,
+  `velocity()`, `state()` — the rates are the analytic Chebyshev
+  derivative, mirroring `spody_get_ephvelocity`/`spody_get_ephstate`),
+  `eop.py`, `earth_orientation.py`, `rotations.py`, `kepler.py`,
+  `cr3bp.py`, `time.py` (the zero-ULP twin of `spody_time.c`).
+  **When you change a core function, check for a spopy sibling and
+  keep it in lockstep** — several are verified bit-identical against
+  the C side.
 - `spody_io/` — pure readers for the wire formats above; no Qt, no
   spopy dependency.
 - `spoviz/` — the 3D astrodynamics visualization library (see §5.12
@@ -1098,6 +1101,23 @@ the C side in hexfloat (`printf("%a")`) over a dense ET sweep
 (thousands of epochs spanning 1972→2035, i.e. across every leap
 boundary) and compare against `spopy.time` with `float.fromhex` —
 equality must be exact (zero-ULP), not "close".
+
+The same hexfloat-sweep discipline applies to the ephemeris twins:
+anything touching the query path in `spody_ephemeris.c` /
+`spopy/ephemeris.py` (Chebyshev evaluation or its derivative, the
+granule/tau arithmetic, the EMRAT split, the per-body cache) must
+re-verify `spody_get_ephstate` against `spopy.Ephemeris.state`
+zero-ULP over a sweep of ETs spanning the file × a pair mix that
+covers the Earth↔Moon fast path, both EMRAT branches, an SSB
+shortcut and plain planet slots — all six components. Two extra
+edges beyond the time chain: (a) the twins must derive the record
+window the same way (nominal `start + i·seconds_per_record`), and
+(b) the *operation order* of the EMRAT split must match
+(multiply by the rounded reciprocal, never divide — the 2026-07
+Earth-branch fix is the cautionary tale). Cross-check physics
+against SPICE (`spkezr`, `de440s.bsp`): position and velocity must
+agree at roundoff level (~1e-7 km / ~1e-14 km/s), anything worse
+means real breakage, not noise.
 
 ### 6.4 Bundle changes
 

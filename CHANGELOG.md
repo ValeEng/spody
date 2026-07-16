@@ -4,6 +4,35 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
+## Unreleased
+
+### Added
+
+- **Exact ephemeris velocities and full state vectors.** spody-core
+  gains two public queries next to `spody_get_ephposition`:
+  `spody_get_ephvelocity` (ICRF km/s) and `spody_get_ephstate`
+  (`[x, y, z, vx, vy, vz]`, km and km/s). Rates come from the
+  analytic derivative of the DE440 position Chebyshev series
+  (second-kind Clenshaw recurrence rescaled by the granule width) —
+  exact by construction, no finite differences, no new data files;
+  the position half is bit-identical to the existing query, and the
+  per-handle cache keeps a separately-validated velocity slot so
+  mixed position/state call patterns never see stale rates.
+  `spopy.Ephemeris` mirrors the API with `velocity()` / `state()`
+  in zero-ULP lockstep with the C side. Validated against SPICE
+  (`spkezr` on `de440s.bsp`): max 1.2e-7 km / 1.4e-14 km/s over
+  3200 states spanning 1900&ndash;2100. Scripts that estimated body
+  velocities with 60 s finite differences (~4 &micro;m/s error on
+  the Moon) can now query them exactly.
+
+### Fixed
+
+- **&le;1 ULP Earth-position divergence in spopy.** The Earth branch
+  of the EMB&harr;Earth/Moon split in `spopy.ephemeris` divided by
+  `1+EMRAT` where spody-core multiplies by the rounded reciprocal;
+  the operation order now matches the C engine exactly (sub-mm
+  effect, but the bit-identity sweep demands zero-ULP).
+
 ## v0.3.1-beta &mdash; 2026-07-14
 
 ### Added
