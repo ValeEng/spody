@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
 )
 
 from spody_io import (
+    EVENT_KIND_ALT_CROSSING,
     EVENT_KIND_ECLIPSE,
     EVENT_KIND_IMPACT,
     read_events,
@@ -196,11 +197,21 @@ def _annotate_with_events(rows: list[_CaseRow], events_path: Path) -> None:
             row.last_t = t
 
 
+# One label per spody_event_kind. MAINTENANCE: every new
+# SPODY_EVENT_KIND_* added to spody_events.h must get a row here (and
+# in analysis/table_model.py::_EVENT_KIND_LABEL) or the view shows a
+# raw `kind=N` int -- see developer-guide.md recipe 5.5 step 5.
+_KIND_LABEL = {
+    EVENT_KIND_IMPACT:       "IMPACT",
+    EVENT_KIND_ECLIPSE:      "ECLIPSE",
+    EVENT_KIND_ALT_CROSSING: "ALT_CROSSING",
+}
+
+
 def _kind_label(kind: int | None) -> str:
-    if kind is None: return "(survived)"
-    if kind == EVENT_KIND_IMPACT:  return "IMPACT"
-    if kind == EVENT_KIND_ECLIPSE: return "ECLIPSE"
-    return f"kind={kind}"
+    if kind is None:
+        return "(survived)"
+    return _KIND_LABEL.get(kind, f"kind={kind}")
 
 
 # ----------------------------------------------------------------------
@@ -517,7 +528,12 @@ class RerunPanel(QWidget):
 
     def _sel_all(self)         -> None: self._set_all(lambda _: True)
     def _sel_none(self)        -> None: self._set_all(lambda _: False)
-    def _sel_survivors(self)   -> None: self._set_all(lambda r: r.last_kind is None)
+    # A survivor is any case that did NOT impact -- not "zero events".
+    # IMPACT is terminal (LOG_AND_STOP), so it is always the last event
+    # of a crashed case; non-terminal events (ECLIPSE / ALT_CROSSING)
+    # leave the case a survivor. This is the exact complement of the
+    # Crashed preset below.
+    def _sel_survivors(self)   -> None: self._set_all(lambda r: r.last_kind != EVENT_KIND_IMPACT)
     def _sel_crashed(self)     -> None: self._set_all(lambda r: r.last_kind == EVENT_KIND_IMPACT)
     def _sel_any_event(self)   -> None: self._set_all(lambda r: r.n_events > 0)
 
