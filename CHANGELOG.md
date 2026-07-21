@@ -33,7 +33,20 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   previously the GUI froze for a 2 s graceful-close attempt the
   console engine could never honour.
 
+### Fixed
+
+- **Re-run tab labelled altitude crossings as `kind=2`.** The
+  "last event" column mapped only IMPACT and ECLIPSE, so an
+  `ALT_CROSSING` (added later) fell through to the raw enum int. It
+  now reads `ALT_CROSSING`, matching the Analysis events table.
+
 ### Changed
+
+- **Re-run "Survivors" preset now means "did not impact".** It
+  previously selected only cases with *zero* events, so a case that
+  logged altitude crossings or eclipses but never crashed was
+  excluded from both Survivors and Crashed. Survivors is now the
+  exact complement of Crashed (IMPACT).
 
 - **Engine module split: tabulated-data primitives consolidated in
   `spody_interp`.** `spody_bracket_index` and `spody_interp_linear`

@@ -705,11 +705,19 @@ once before starting; they are the recipe in executable form).
 4. **Instantiate**: `build_events` in `sim_run.c` constructs the
    events array from the config — add your kind there, including the
    per-event `refined` opt-out if it's recurring.
-5. **GUI**: kind label in `analysis/table_model.py` (events table);
-   any dedicated view in `analysis/plots_events.py` (recipe 5.3);
-   form panel in `form/sections.py` following the collapsible
-   "Enable …" pattern of eclipse/altitude (checkbox + table + Add /
-   Remove, combos auto-tracking the model's valid bodies).
+5. **GUI kind→label maps — there are TWO, update both**:
+   `analysis/table_model.py::_EVENT_KIND_LABEL` (Analysis events
+   table) **and** `rerun_panel.py::_KIND_LABEL` (Re-run cases table's
+   "last event" column). Miss either and that view shows a raw
+   `kind=N` int instead of the name (this is exactly how
+   `ALT_CROSSING` slipped through the first time). Then any dedicated
+   view in `analysis/plots_events.py` (recipe 5.3); form panel in
+   `form/sections.py` following the collapsible "Enable …" pattern of
+   eclipse/altitude (checkbox + table + Add / Remove, combos
+   auto-tracking the model's valid bodies). If the kind is
+   *terminal* (LOG_AND_STOP, impact-like), also revisit the Re-run
+   survivor/crashed presets (`_sel_survivors` / `_sel_crashed`),
+   which classify on `last_kind == EVENT_KIND_IMPACT`.
 6. **Test scenario**: write a TOML that *provably* triggers the
    event a known number of times (pick an orbit where you can count
    the crossings by hand). Check count, ET ordering and refinement
@@ -718,9 +726,11 @@ once before starting; they are the recipe in executable form).
 **Break risk:** forgetting the refined case (events land on step
 boundaries, ~30 s error); parsing an array-of-tables as a single
 table; new descriptor fields that the flat `SpodyEvent` copy
-doesn't cover. **Verify:** the purpose-built scenario + one existing
-events example (`debris_impact_demo`) unchanged. **Document:**
-manual ch. 6 (events schema) + ch. 8 (events table); CHANGELOG.
+doesn't cover; **forgetting one of the two GUI kind-label maps**
+(step 5) so a view shows `kind=N`. **Verify:** the purpose-built
+scenario + one existing events example (`debris_impact_demo`)
+unchanged. **Document:** manual ch. 6 (events schema) + ch. 8
+(events table); CHANGELOG.
 
 ### 5.6 New central body
 
