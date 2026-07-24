@@ -175,6 +175,7 @@ class _Recon:
     seg_group: np.ndarray        # (S,)  group index of each segment
     ent_band: np.ndarray         # (E,)  band entered (one per crossing-in)
     ent_group: np.ndarray        # (E,)  group index of the entering event
+    ent_time: np.ndarray         # (E,)  sim time [s] of the entering crossing
 
 
 def _reconstruct(events: np.ndarray, central_naif: int,
@@ -306,7 +307,7 @@ def _reconstruct(events: np.ndarray, central_naif: int,
         init_band=start_band_all[is_first],
         seg_band=seg_band, seg_start=seg_start_all, seg_end=seg_end_all,
         seg_group=seg_group, ent_band=band_after[entry_m],
-        ent_group=grp[entry_m])
+        ent_group=grp[entry_m], ent_time=st[entry_m])
 
 
 def _recon_cached(events, central_naif, thresholds_km,
@@ -449,6 +450,7 @@ def altitude_bands_per_object(events: np.ndarray, central_naif: int,
                               thresholds_km: "list[float] | None" = None,
                               stop_thresholds_km: "list[float] | None" = None,
                               duration_s: "float | None" = None,
+                              t_max_s: "float | None" = None,
                               ) -> "tuple[np.ndarray, bool, list] | None":
     """Per-object band occupancy for the CSV export.
 
@@ -458,18 +460,41 @@ def altitude_bands_per_object(events: np.ndarray, central_naif: int,
     `(obj_id, per_band)` with `per_band[b] = (total_time_s, entries)`:
     the time the object spent in band b and how many times it crossed
     INTO band b (entries only -- exits are never counted). Returns None
-    when the file carries no usable central-body crossing."""
+    when the file carries no usable central-body crossing.
+
+    `t_max_s` (when set) restricts the statistics to the window
+    `[0, t_max_s]` of sim time: segments are clipped to that upper bound
+    (a segment straddling t_max_s contributes only its `[start, t_max_s]`
+    part) and only crossings at `t <= t_max_s` count as entries. The
+    reconstruction itself is window-independent and cached; this is a
+    cheap vectorised clip on top of it, so exporting several windows of
+    one file re-uses the same reconstruction. `None` = whole run."""
     rec = _recon_cached(events, central_naif,
                         thresholds_km, stop_thresholds_km, duration_s)
     if rec is None:
         return None
     G, n_bands = rec.n_objects, rec.n_bands
+
+    seg_group, seg_band = rec.seg_group, rec.seg_band
+    seg_dur = rec.seg_end - rec.seg_start
+    ent_group, ent_band = rec.ent_group, rec.ent_band
+    if t_max_s is not None:
+        # Clip segments to [0, t_max_s]; every object's first segment
+        # starts at 0, so the lower bound needs no handling. A segment
+        # fully past t_max_s drops out (clipped duration <= 0).
+        clipped_end = np.minimum(rec.seg_end, t_max_s)
+        seg_dur = clipped_end - rec.seg_start
+        keep = seg_dur > 0.0
+        seg_group, seg_band, seg_dur = seg_group[keep], seg_band[keep], seg_dur[keep]
+        ent_keep = rec.ent_time <= t_max_s
+        ent_group, ent_band = ent_group[ent_keep], ent_band[ent_keep]
+
     # Scatter-add into (object x band) grids: O(segments) in C, no
     # per-record Python loop.
     time2d = np.zeros((G, n_bands), dtype=float)
-    np.add.at(time2d, (rec.seg_group, rec.seg_band), rec.seg_end - rec.seg_start)
+    np.add.at(time2d, (seg_group, seg_band), seg_dur)
     ent2d = np.zeros((G, n_bands), dtype=np.int64)
-    np.add.at(ent2d, (rec.ent_group, rec.ent_band), 1)
+    np.add.at(ent2d, (ent_group, ent_band), 1)
     rows = [(int(rec.group_obj[g]),
              [(float(time2d[g, b]), int(ent2d[g, b])) for b in range(n_bands)])
             for g in range(G)]
@@ -533,14 +558,21 @@ def _band_label(thr: np.ndarray, b: int) -> str:
 
 def per_object_bands_to_csv(thr: np.ndarray, from_snapshot: bool,
                             rows: list, body_naif: int,
-                            body_name: str = "") -> str:
+                            body_name: str = "",
+                            t_max_s: "float | None" = None) -> str:
     """Serialise `altitude_bands_per_object` output as CSV: a
     `#`-comment metadata header, then ONE ROW PER OBJECT (ascending id)
     with, for each band in ascending-altitude order, a pair of columns
     `t_<lo>-<hi>km_s` (total time in band) and `entries_<lo>-<hi>km`
-    (crossings into the band, entries only)."""
+    (crossings into the band, entries only).
+
+    `t_max_s` is the analysis window's upper bound (from
+    `altitude_bands_per_object`); it is recorded in the metadata header
+    so the file states which slice of the run it covers. `None` =
+    whole run."""
     n_bands = len(thr) + 1
     thr_txt = ";".join(f"{h:g}" for h in thr)
+    window_txt = "full_run" if t_max_s is None else f"0..{t_max_s:g}"
     header = ["case_id"]
     for b in range(n_bands):
         lbl = _band_label(thr, b)
@@ -552,6 +584,7 @@ def per_object_bands_to_csv(thr: np.ndarray, from_snapshot: bool,
         f"# body_naif,{body_naif}",
         f"# thresholds_km,{thr_txt}",
         f"# threshold_source,{'snapshot' if from_snapshot else 'clustered_from_records'}",
+        f"# window_s,{window_txt}",
         f"# n_objects,{len(rows)}",
         "# columns: per band a (total time in band [s], entries into band) pair",
         ",".join(header),

@@ -1622,10 +1622,15 @@ class AnalysisPanel(QWidget):
         snapshot = resolve_run_context(self._path)
         thresholds, stop_thresholds, duration = band_inputs_from_snapshot(
             snapshot, self._central_body.name)
+        # Optional [0, N days] window typed in the Plot options dialog;
+        # None = whole run. Sim time is seconds from epoch, so days*86400.
+        win_days = (self._plot_options_dialog.altitude_window_days()
+                    if self._plot_options_dialog is not None else None)
+        t_max_s = win_days * 86400.0 if win_days is not None else None
         res = altitude_bands_per_object(
             self._data, self._central_body.naif_id,
             thresholds_km=thresholds, stop_thresholds_km=stop_thresholds,
-            duration_s=duration)
+            duration_s=duration, t_max_s=t_max_s)
         if res is None:
             QMessageBox.information(
                 self, "Nothing to export",
@@ -1635,9 +1640,11 @@ class AnalysisPanel(QWidget):
         thr, from_snapshot, rows = res
         csv_text = per_object_bands_to_csv(
             thr, from_snapshot, rows,
-            self._central_body.naif_id, self._central_body.name)
+            self._central_body.naif_id, self._central_body.name,
+            t_max_s=t_max_s)
         stem = self._path.stem if self._path is not None else "events"
-        self._save_csv_text(csv_text, f"{stem}_altitude_bands.csv",
+        suffix = "" if win_days is None else f"_0-{win_days:g}d"
+        self._save_csv_text(csv_text, f"{stem}_altitude_bands{suffix}.csv",
                             "Export altitude bands CSV", "altitude bands CSV")
 
     def _can_export_impacts_csv(self) -> bool:

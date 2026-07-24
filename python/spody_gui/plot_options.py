@@ -27,11 +27,14 @@ export types are available is pushed in via `set_export_availability`.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QRadioButton,
     QVBoxLayout,
@@ -122,8 +125,31 @@ class PlotOptionsDialog(QDialog):
             rb = QRadioButton(label)
             rb.setToolTip(tip)
             self._export_group.addButton(rb)
+            rb.toggled.connect(self._on_export_radio_toggled)
             self._export_radios[tid] = rb
             export_lay.addWidget(rb)
+
+        # Time window for the "bands" export: statistics restricted to
+        # [0, N] days of sim time (blank = whole run). Only meaningful
+        # for the altitude-band table, so the row enables itself only
+        # while that radio is selected. Info tab / plots are unaffected;
+        # this rides along the export path only.
+        win_row = QHBoxLayout()
+        self._win_label = QLabel("bands window: 0 to")
+        self._win_edit = QLineEdit()
+        self._win_edit.setPlaceholderText("full run")
+        self._win_edit.setMaximumWidth(80)
+        self._win_edit.setValidator(QDoubleValidator(0.0, 1.0e12, 6, self))
+        self._win_edit.setToolTip(
+            "Upper bound in days of sim time for the altitude-band CSV: "
+            "occupancy is counted only over [0, N] days. Leave blank for "
+            "the whole run.")
+        win_row.addWidget(self._win_label)
+        win_row.addWidget(self._win_edit)
+        win_row.addWidget(QLabel("days"))
+        win_row.addStretch(1)
+        export_lay.addLayout(win_row)
+
         self._btn_export = QPushButton("Export selected...")
         self._btn_export.clicked.connect(self._on_export_clicked)
         self._btn_export.setEnabled(False)
@@ -143,11 +169,38 @@ class PlotOptionsDialog(QDialog):
         lay.addWidget(self._status)
         lay.addStretch(1)
 
+        self._sync_window_row()   # disabled until the bands radio is picked
+
     def _checked_export_id(self) -> str | None:
         for tid, rb in self._export_radios.items():
             if rb.isChecked():
                 return tid
         return None
+
+    def _on_export_radio_toggled(self, _checked: bool) -> None:
+        """The bands-window row is only meaningful for the altitude-band
+        export, so it follows that radio's selection + availability."""
+        self._sync_window_row()
+
+    def _sync_window_row(self) -> None:
+        bands_rb = self._export_radios.get("bands")
+        active = bool(bands_rb is not None
+                      and bands_rb.isChecked() and bands_rb.isEnabled())
+        self._win_label.setEnabled(active)
+        self._win_edit.setEnabled(active)
+
+    def altitude_window_days(self) -> "float | None":
+        """Upper bound (days of sim time) typed for the altitude-band
+        export, or None when blank / not a positive number -- meaning
+        the whole run. The panel converts to seconds at export time."""
+        txt = self._win_edit.text().strip().replace(",", ".")
+        if not txt:
+            return None
+        try:
+            v = float(txt)
+        except ValueError:
+            return None
+        return v if v > 0.0 else None
 
     def _on_export_clicked(self) -> None:
         tid = self._checked_export_id()
@@ -171,6 +224,7 @@ class PlotOptionsDialog(QDialog):
                 and first_ok is not None:
             self._export_radios[first_ok].setChecked(True)
         self._btn_export.setEnabled(first_ok is not None)
+        self._sync_window_row()
 
     def set_status(self, text: str, ok: bool = True) -> None:
         """Write `text` into the status line; `ok=False` paints it red
