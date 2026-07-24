@@ -33,6 +33,17 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   previously the GUI froze for a 2 s graceful-close attempt the
   console engine could never honour.
 
+### Added
+
+- **Time window for the altitude-band CSV export.** The Plot options
+  dialog gains a `bands window: 0 to [N] days` field (active while the
+  Altitude bands export is selected): leave it blank for the whole run
+  or type an upper bound to restrict the per-element occupancy table to
+  the first *N* days of sim time. Segments straddling the bound are
+  clipped and only crossings up to it count as entries; the window is
+  recorded in the CSV `#`-header and the filename. The Info tab and the
+  band plots are unchanged &mdash; they still cover the whole run.
+
 ### Fixed
 
 - **Re-run tab labelled altitude crossings as `kind=2`.** The

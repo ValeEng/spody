@@ -286,8 +286,17 @@ Three export types today:
   `t_<lo>-<hi>km_s` (total time in band) and `entries_<lo>-<hi>km`
   (crossings *into* the band, never exits) column set. A `#`-comment
   header records the body, the thresholds and whether they came from
-  the run snapshot or were clustered out of the records. The per-band
-  totals reconcile with the Info tab's pooled view.
+  the run snapshot or were clustered out of the records.
+  A **`bands window: 0 to [N] days`** field appears next to the export
+  types while this one is selected: leave it blank to cover the whole
+  run (the default, reconciling with the Info tab's pooled view), or
+  type an upper bound to restrict the statistics to the first *N* days
+  of sim time. A segment straddling the bound contributes only its part
+  before it, and only crossings up to the bound count as entries; the
+  window and its bound are recorded in the `#`-header
+  (`window_s,0..<seconds>`) and the suggested filename gains a
+  `_0-<N>d` suffix. The Info tab is unaffected &mdash; it always
+  reflects the whole simulation.
 - **Impact points (lat/lon + time of flight)** &mdash; enabled when
   the file has at least one IMPACT and the central body has a
   body-fixed frame. One row per impact: `case_id`, body-fixed
