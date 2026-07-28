@@ -364,9 +364,36 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.third_mu            = w->third_mu;
     w->ctx.n_third             = w->n_third;
     w->ctx.enable_srp          = cfg->enable_srp;
-    /* Eclipse-occulter defaults: the central body shadows the satellite. */
-    w->ctx.srp_occulter_naif   = body->naif;
-    w->ctx.srp_occulter_radius = body->radius_km;
+    /* SRP occulters: the central body plus every third body, minus the
+     * Sun -- the light source cannot occult itself. The rule is
+     * deliberately "whatever you chose to model also casts a shadow":
+     * no extra TOML key, no hidden heuristic, and a body whose gravity
+     * is not in the run does not silently shade it either.
+     *
+     * Built once here, before the integration loop: membership is
+     * epoch-independent. Bodies that can never transit the Sun (the
+     * outer planets, seen from a terrestrial orbit) are NOT pruned --
+     * they are already a subset of the third bodies the RHS queries at
+     * the same epoch, so they add no ephemeris work, and the per-step
+     * screening inside spody_get_satlitfraction rejects them in a
+     * dozen flops. Radii come from the app-side body table. */
+    int n_occ = 0;
+    w->ctx.srp_occulter_naif  [n_occ] = body->naif;
+    w->ctx.srp_occulter_radius[n_occ] = body->radius_km;
+    n_occ++;
+    for (int i = 0; i < w->n_third; ++i) {
+        double occ_r_km = 0.0;
+        if (w->third_naif[i] == SUN_NAIF)   continue;
+        if (w->third_naif[i] == body->naif) continue;   /* defensive */
+        if (spody_lookup_body_by_naif(w->third_naif[i], NULL, NULL,
+                                      &occ_r_km) != 0 || occ_r_km <= 0.0) {
+            continue;                                   /* defensive */
+        }
+        w->ctx.srp_occulter_naif  [n_occ] = w->third_naif[i];
+        w->ctx.srp_occulter_radius[n_occ] = occ_r_km;
+        n_occ++;
+    }
+    w->ctx.srp_n_occulters     = n_occ;
     w->ctx.sun_radius          = SUN_RADIUS;
     /* Drag plumbing comes from the central-body registry: density
      * model + spin rate are body properties, the space weather handle
