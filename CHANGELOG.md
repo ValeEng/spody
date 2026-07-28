@@ -6,6 +6,43 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
+### Changed
+
+- **Every third body now casts a shadow, not just the central one.**
+  The SRP eclipse used to be computed against a single occulting body,
+  which the application always set to the central body. An object in
+  lunar orbit therefore never saw the **Earth occult the Sun** &mdash;
+  a first-order term in cislunar space, not a refinement &mdash; and an
+  Earth orbiter never felt a solar eclipse. The occulter list is now
+  the central body plus every third body except the Sun, built once at
+  setup: whatever you chose to model also casts a shadow, so there is
+  no new TOML key and no hidden heuristic.
+
+  When two bodies cover the Sun at the same time their shadows on the
+  solar disc may overlap, so the hidden area is their **union**, not
+  the sum: the engine subtracts the overlap pair by pair
+  (inclusion&ndash;exclusion). Terms needing three bodies over the same
+  piece of the Sun are dropped and the result is clamped into the
+  bracket `1 - sum(g_i) <= lit <= min_i (1 - g_i)`, which holds
+  whatever those terms would have been.
+
+  Measured on a lunar orbit through the total lunar eclipse of
+  2025-03-14 (A/m = 0.02 m&sup2;/kg, 12 h arc): the Earth occults the
+  Sun from 04:37 to 09:34 UTC, 167 of 721 samples change &mdash; up to
+  **full** occultation where the old model reported full sunlight
+  &mdash; for an accumulated &Delta;v of 9.2e-4 m/s, about 17 m of
+  position over the arc. On the 133 samples where the Moon's limb and
+  the Earth cut the solar disc at once, adding the two shadows without
+  the overlap correction would have been wrong by up to 0.18 of the
+  disc.
+
+  Runs with a single occulter are **unchanged bit for bit** (verified
+  against the previous implementation over 2.65M configurations
+  covering all four Montenbruck &amp; Gill branches); the eclipse
+  *event* stays deliberately per-occulter, so "eclipsed by the Moon"
+  and "eclipsed by the Earth" remain separate events with their own
+  thresholds and disagree with the force during a double eclipse.
+
 ### Added
 
 - **Exact ephemeris velocities and full state vectors.** spody-core

@@ -1040,6 +1040,76 @@ Checklist for a new 3D capability:
    this section if the layering rules moved. The user manual only
    changes when something is user-visible.
 
+### 5.13 Touching the eclipse / occulter model
+
+**Files:** spody-core `spody_eclipse.{h,c}` (geometry),
+`spody_forcemodels.{h,c}` (`srp_lit_fraction` + the two call sites),
+`spody_events.c` (the eclipse event); `src/sim_setup.c` (the list).
+
+The split to respect:
+
+- **`spody_eclipse.c` is pure geometry.** No `ForceModelContext`, no
+  ephemeris, no NAIF ids — it takes vectors and radii and returns a
+  number. That is what makes it testable from tvb without DE440.
+- **Who may cast a shadow is application policy**, decided once in
+  `sim_setup.c` before the run: central body ∪ third bodies, minus the
+  Sun (`SUN_NAIF`) and minus radius ≤ 0. The core consumes the list and
+  asks no questions — same layering as the central-body registry.
+- **The list is built before the integration loop**, never inside the
+  RHS: membership is epoch-independent. In batch it must be identical
+  across cases, or two cases of the same sweep would be running
+  different physics.
+
+Rules baked into the current code, in decreasing order of "you will
+regret ignoring this":
+
+1. **Fractions, not areas.** Every term is divided by the same
+   `PI * a²`, so the geometry returns *fractions of the solar disc*
+   and the factor never enters the arithmetic. This is not cosmetic:
+   it is what keeps the degenerate branches (`1.0`, `b²/a²`) exact
+   instead of routing them through a multiply-then-divide pair, and
+   therefore what keeps single-occulter runs bit-identical.
+2. **Beware operator association when touching the formulas.**
+   `PI*a*a` is `(PI*a)*a` and can differ from `PI*(a*a)` by 1 ULP,
+   which is enough to move a step-size accept/reject decision and
+   destroy the bit-identity regression of §6.1. Precompute `aa = a*a`.
+3. **The union, not the sum.** Two bodies over the Sun at once have
+   overlapping shadows on the disc; the hidden fraction is
+   `Σ g_i − Σ_{i<j} g_ij`. Third-order terms are dropped and the
+   result is clamped into `1 − Σg_i ≤ lit ≤ min_i(1 − g_i)`.
+   **INVARIANT: never remove that clamp.** It is what makes the
+   truncation safe — whatever the dropped terms would have been, the
+   answer stays inside a bracket that provably contains the truth.
+4. **Angles between occulters come from the chord**
+   (`2·asin(|û_i − û_j|/2)`), never from `acos(û_i·û_j)`. The bodies
+   are nearly aligned exactly when the correction matters and `acos`
+   loses half its digits there; with `acos` two superposed discs stop
+   cancelling and the pairwise term goes wrong in the 7th digit.
+5. **The screening test is exact, not an approximation.** "Satellite
+   on the sunward side of the body ⇒ lit" fails only below an altitude
+   of `R·(1/cos a − 1)` ≈ 70 m for the Earth, because the penumbra
+   never reaches the plane through the body centre. It is written as
+   `|s→occ|² > s→occ · s→sun` — a sign test with no sqrt and no
+   division.
+6. **The eclipse EVENT stays single-occulter on purpose.** "Eclipsed
+   by the Moon" and "eclipsed by the Earth" are separate events with
+   their own thresholds. Do not "fix" the disagreement between the
+   event fraction and the force fraction during a double eclipse.
+
+**Adding a body that can occult** is therefore nothing but making it
+available as a third body (recipe 5.6 / the app-side `BODY_TABLE`);
+there is no eclipse-specific registration and no TOML key.
+
+**Verify:** the two local tvb tests are the contract —
+`test_eclipse_multibody` checks the combination against an independent
+polar quadrature over the solar disc (an oracle that knows nothing
+about lenses or three-circle areas), `test_eclipse_legacy_parity`
+sweeps ~2.6M configurations against a frozen copy of the pre-2026-07
+implementation demanding *exact* equality. Then §6.1 bit-identity on
+`gps_g11_validation`, and a cislunar arc through a lunar eclipse for
+the multi-occulter path itself. **Document:** manual ch. 6 (*Which
+bodies cast a shadow*), CHANGELOG with the measured effect.
+
 ## 6. Verifying changes
 
 ### 6.1 Engine changes
@@ -1160,6 +1230,14 @@ Each entry: the rule, and the symptom you'll see if you break it.
   crossings fire from the RK45 dense-output path; other integrators
   don't provide it and `spody_event_check` has no fallback.
   *Symptom: recurring events silently absent from the events file.*
+- **The eclipse bracket clamp** (§5.13) is load-bearing, not a
+  safety net: the inclusion-exclusion sum is truncated after the
+  pairwise term, and the clamp into
+  `1 − Σg_i ≤ lit ≤ min_i(1 − g_i)` is what keeps the answer inside
+  a range that provably contains the truth. *Symptom: with three or
+  more bodies over the Sun the lit fraction drifts above the value
+  any single occulter alone would allow — physically impossible, and
+  it feeds straight into the SRP acceleration.*
 - **The run-folder contract.** The engine creates `output/<ts>/` and
   ts-prefixes every file; the GUI's rerun/analysis features parse
   exactly that layout (`_RUN_FOLDER_RE`). Change it in both places

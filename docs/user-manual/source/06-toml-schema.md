@@ -234,11 +234,44 @@ Forces the propagator integrates against. Required.
 | `eop_file`           | string (path)   | &mdash; (Earth only) | &ndash; | Path to the IERS Earth-orientation file (`finals2000A.all` from the IERS Rapid Service). Required when `central_body = "Earth"`, omitted otherwise. The form exposes this row as a wizard-populated dropdown that only appears when Earth is selected. |
 | `iau2006_dir`        | string (path)   | &mdash; (Earth only) | &ndash; | Path to the directory containing the IAU 2006 X / Y / s+XY/2 conventions tables (`tab5.2a.txt`, `tab5.2b.txt`, `tab5.2d.txt`). Required when `central_body = "Earth"`. Wizard-managed; same conditional form row as `eop_file`. |
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
-| `srp`                | bool            | `false` | &ndash; | Enable cannonball SRP. When `true` a `[spacecraft.srp]` block must be present (in Spacecraft mode) or `am_srp` must be set in `[debris]` (in Debris mode). |
+| `srp`                | bool            | `false` | &ndash; | Enable cannonball SRP. When `true` a `[spacecraft.srp]` block must be present (in Spacecraft mode) or `am_srp` must be set in `[debris]` (in Debris mode). The bodies that can eclipse the Sun are the central body plus every entry of `third_bodies` (see *Which bodies cast a shadow* below); there is no separate key. |
 | `drag`               | bool            | `false` | &ndash; | Enable atmospheric drag (cannonball, NRLMSISE-00 density in the storm-time 3-hour-Ap mode). Requires a central body with a registered atmosphere model (`Earth` in this release), a `[spacecraft.drag]` block (or the `am_drag`/`Cd` pair in `[debris]`) and `space_weather_file`. The form shows this row only when the central body has an atmosphere. |
 | `space_weather_file` | string (path)   | &mdash; (drag only) | &ndash; | Path to the CelesTrak combined space-weather CSV (`SW-All.csv`: daily F10.7 + 3-hour Ap, 1957 to a ~45-day prediction tail plus monthly long-range rows). Required when `drag = true`. The run window must start at least 3 days after the table's first row (the Ap history looks back 57 h) and end inside the predicted horizon; the engine refuses the run otherwise and points at the update URL, `https://celestrak.org/SpaceData/SW-All.csv`. Wizard-managed (*Space weather* card) with the same daily startup freshness probe as `eop_file`. |
 | `density_scale`      | float           | `1.0` (drag only) | `> 0` | Constant density calibration factor: the drag force uses `k × rho(NRLMSISE-00)`. Empirical thermosphere models carry a bias of 20&ndash;40% at 400&ndash;500 km around solar maximum (chapter 11, *Drag validation and ballistic calibration*); this key applies the calibrated correction without misdeclaring the physical `Cd`. Mutually exclusive with `density_scale_file`; requires `drag = true`. Batch-targetable as `force_model.density_scale`. |
 | `density_scale_file` | string (path)   | &mdash; (drag only) | &ndash; | Path to a time-varying calibration table: plain text, one `mjd,k` pair per line (UTC MJD, strictly ascending; `k > 0`; `#` starts a comment). The factor is linearly interpolated between nodes and **held at the end values outside the node span** (the engine prints a warning when the run window extends past the nodes). A single-node file is equivalent to the constant key. Mutually exclusive with `density_scale`; requires `drag = true`. `spody calibrate` (chapter 12) fits and writes this file automatically from a reference trajectory. |
+
+### Which bodies cast a shadow
+
+When `srp = true`, the Sun is dimmed by **the central body plus every
+body listed in `third_bodies`** (the Sun itself is skipped: it cannot
+occult itself). The rule is deliberately "whatever you chose to model
+also casts a shadow", so there is nothing extra to configure &mdash;
+and, symmetrically, a body whose gravity you left out will not shade
+the satellite either.
+
+Two consequences worth knowing:
+
+- **In cislunar space this matters a lot.** With `central_body =
+  "Moon"` and `"Earth"` among the third bodies, the satellite now goes
+  dark when the Earth passes in front of the Sun &mdash; which, seen
+  from lunar orbit, is exactly a lunar eclipse. On a 12 h arc through
+  the total lunar eclipse of 2025-03-14, an object with
+  A/m = 0.02 m&sup2;/kg picks up about 17 m of position change from
+  this term alone.
+- **Listing a planet has a (tiny) physical price.** Venus among the
+  third bodies means that during a transit of Venus the SRP dips by
+  about 0.1%. That is real physics, not an artefact; the outer planets
+  can never pass in front of the Sun as seen from an inner orbit, so
+  they cost nothing but a handful of arithmetic per step.
+
+If two bodies cover the Sun at the same time, their shadows on the
+solar disc are combined as a **union**, not a sum: the overlap is
+subtracted so it is not counted twice. The engine reports the combined
+value in the `eclipse_fraction` column of the accelerations file
+(chapter 8). The eclipse *event* (`events.eclipse_threshold`) is a
+separate mechanism that watches **one** occulting body at a time, so
+during a double eclipse the logged event fraction and the fraction
+used by the force are different numbers on purpose.
 
 ### Choosing a harmonics degree
 

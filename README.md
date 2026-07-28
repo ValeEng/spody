@@ -29,7 +29,10 @@ TOML (`high_fidelity`, the full force-model integrator, and
 elements referenced to the central body / one of the CR3BP
 primaries; the central-body input can also be expressed in the
 body-fixed basis at the run epoch, ITRS or PA, and the engine
-rotates to ICRF at sim setup), event detection (always-on multi-body IMPACT with
+rotates to ICRF at sim setup), **multi-occulter SRP eclipse** (every
+third body can shade the satellite, overlapping shadows combined by
+inclusion&ndash;exclusion, so the Earth darkens a lunar orbiter),
+event detection (always-on multi-body IMPACT with
 sub-millisecond Hermite + Brent localisation, opt-in ECLIPSE),
 TOML schema validation, per-force acceleration breakdown, run-
 folder layout with timestamp-prefixed snapshot + outputs, and a
