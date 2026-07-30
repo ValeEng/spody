@@ -6,6 +6,42 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
+### Changed
+
+- **Earth-centred propagation is roughly 9&times; faster.** The IAU 2006
+  precession-nutation series &mdash; 3084 terms, each a 14-term linear
+  combination plus a sine and a cosine &mdash; was re-evaluated at every
+  force evaluation, because the gravity field has to be computed in the
+  Earth-fixed frame and the frame was rebuilt from scratch each time.
+
+  Measured on the bundled GPS G11 case at degree 70: **73 of the 85
+  microseconds** spent per evaluation went into the rotation, not the
+  gravity field. The consequence was visible in a way that looked odd
+  until explained &mdash; the cost barely depended on the harmonic
+  degree, since going from degree 2 to degree 70 (850&times; the
+  coefficients) added only 12 &micro;s on top of a fixed 73.
+
+  `X`, `Y` and `s` are now interpolated with a cubic through nodes one
+  hour apart. They move about 650 and 340 milliarcseconds over eight
+  days, so the interpolation reproduces the exact series to 3&times;10
+  <sup>-7</sup> mas &mdash; tens of nanometres at GNSS radius, two
+  orders of magnitude below the uncertainty of the EOP inputs
+  themselves. The Earth rotation angle and polar motion are **not**
+  interpolated: ERA advances 15 arcsec per second, so interpolating it
+  is the one thing here that would genuinely cost accuracy, and both
+  are cheap closed forms.
+
+  The nodes sit on a fixed grid anchored at J2000 rather than a window
+  following the current time, so the result cannot depend on the step
+  sequence the integrator happened to take.
+
+  Effect on the bundled 7-day GPS G11 case: **6.28 s &rarr; 0.68 s**,
+  with the residual against IGS final orbits unchanged at 581 m and a
+  trajectory difference against the exact evaluation of 0.023 mm.
+  `spody_iau2006_xys` is unchanged and remains the exact path for
+  validating the series itself. Moon-centred propagation is unaffected
+  &mdash; it uses the lunar libration angles.
+
 ### Fixed
 
 - **Polar motion: the sign of `x_p` was inverted.** The Earth
