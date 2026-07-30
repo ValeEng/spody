@@ -6,6 +6,39 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
+### Fixed
+
+- **Polar motion: the sign of `x_p` was inverted.** The Earth
+  body-fixed rotation built its polar-motion matrix as
+  `R3(-s') . R2(+x_p) . R1(-y_p)`, but both pole coordinates enter
+  negated. The pole was therefore tilted by exactly `2*x_p` &mdash;
+  around 200 mas for a typical `x_p` of 0.1 arcsec.
+
+  What that was worth: about **6 m on the Earth's surface**, so
+  anything expressed in the body-fixed frame (impact latitude and
+  longitude, ground tracks, altitude crossings) carried that offset;
+  and about **0.2 m of in-track orbit error over a week** at GNSS
+  altitude. Moon-centred propagation is unaffected &mdash; it uses the
+  lunar libration angles, not this chain.
+
+  The routine carried a comment stating it had been verified
+  bit-perfect against `erfa.pom00`, SOFA's reference implementation.
+  It had been &mdash; against `pom00(-x_p, y_p, s')`. The check had
+  been handed an already-negated `x_p`, so it confirmed the error
+  instead of catching it, and the unit test never compared against
+  SOFA at all, so it passed either way.
+
+  The fix was found by propagating the same case through Orekit, Tudat
+  and GMAT with every input harmonised: all three agreed with each
+  other to within 4 cm and disagreed with SpOdy by 0.2 m, which pointed
+  straight at the body-fixed rotation. The rotation now matches
+  `erfa.pom00` to 0.000 mas across a spread of pole positions, and the
+  residual spread between the four propagators is 0.02&ndash;0.04 m
+  &mdash; SpOdy inside the group rather than outside it.
+
+  Published validation figures are unchanged at their quoted precision
+  (GPS G11 against IGS final orbits: 46 m at one day, 581 m at seven).
+
 ### Added
 
 - **`spody propagate` reports the integrator's workload.** After the

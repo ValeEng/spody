@@ -1254,6 +1254,21 @@ Each entry: the rule, and the symptom you'll see if you break it.
   crossings fire from the RK45 dense-output path; other integrators
   don't provide it and `spody_event_check` has no fallback.
   *Symptom: recurring events silently absent from the events file.*
+- **Frame chains are verified against SOFA, never against
+  themselves.** `spody_iau2006_polar_motion` shipped for months with
+  `x_p` inverted, under a comment asserting it was bit-perfect against
+  `erfa.pom00`. It was &mdash; against `pom00(-x_p, y_p, s')`, because
+  the check had been fed an already-negated `x_p`. A self-consistent
+  test cannot catch a sign that is wrong on both sides of the
+  comparison, and `test_earth_orientation` never called SOFA at all, so
+  it passed throughout. When touching any rotation, compare the
+  **matrix** against `erfa`/SOFA over a spread of inputs that includes
+  negative and zero values, and decompose the residual into spin
+  (about the pole) and tilt (of the pole) &mdash; they have very
+  different consequences, since a zonal field is invariant under spin.
+  *Symptom of breakage: an angular error that looks large but moves the
+  orbit little, or Earth-fixed outputs (impact lat/lon, ground tracks)
+  offset by metres while the orbit looks fine.*
 - **RK45 is the only adaptive integrator that exists.**
   `spody_integrator_method` declares `RK4`, `RK45`, `RK78` and
   `VERLET`, but `step_rk78` and `step_verlet` in
