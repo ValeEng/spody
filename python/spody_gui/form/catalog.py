@@ -147,7 +147,7 @@ TOOLTIPS: dict[str, str] = {
     "initial_state.velocity_kms":    "[vx, vy, vz] velocity in km/s, same frame as position.",
     "force_model.central_body":      "Central body of the propagation. Supported: " + ", ".join(f"'{n}'" for n in CENTRAL_BODIES) + ".",
     "force_model.harmonics_file":    "Spherical-harmonics coefficient file (e.g. GRGM1200B).",
-    "force_model.harmonics_degree":  "Truncation degree; ≥ 2 and ≤ the N declared in the chosen harmonics file (1200 for GRGM1200B Moon, 2190 for EIGEN-6C4 Earth; schema cap is 2200).",
+    "force_model.harmonics_degree":  "Truncation degree; ≥ 2 and ≤ the N declared in the chosen harmonics file (1200 for GRGM1200B Moon, 2190 for EIGEN-6C4 Earth; schema cap is 2200). Use 0 to switch harmonics off entirely: the central body stays a point mass, so with third bodies enabled the run becomes an ephemeris-driven restricted N-body problem.",
     "force_model.eop_file":          "IERS Earth Orientation Parameters file (finals2000A.all). Required when central_body = 'Earth'.",
     "force_model.iau2006_dir":       "Directory containing the IAU 2006/2000A series tables (tab5.2a.txt, tab5.2b.txt, tab5.2d.txt). Required when central_body = 'Earth'.",
     "force_model.third_bodies":      "Perturbing bodies; pick from the standard NAIF set.",
@@ -183,7 +183,7 @@ TOOLTIPS: dict[str, str] = {
 # (QDoubleValidator / QIntValidator) attached to the widget.
 def _pos    (v: float) -> str: return "" if v >  0.0 else "must be > 0"
 def _nonneg (v: float) -> str: return "" if v >= 0.0 else "must be >= 0"
-def _harm_deg(v: int)  -> str: return "" if 2 <= v <= 2200 else "must be in [2, 2200] (schema cap; file maximum is the effective ceiling: 1200 for GRGM1200B, 2190 for EIGEN-6C4)"
+def _harm_deg(v: int)  -> str: return "" if v == 0 or 2 <= v <= 2200 else "must be 0 (harmonics off, point-mass central body) or in [2, 2200] (schema cap; file maximum is the effective ceiling: 1200 for GRGM1200B, 2190 for EIGEN-6C4). Degree 1 only moves the origin to the centre of mass, which the central-body convention already assumes."
 def _frac01 (v: float) -> str: return "" if 0.0 <= v <= 1.0 else "must be in [0, 1]"
 
 def _ecc01    (v: float) -> str: return "" if 0.0 <= v < 1.0 else "must be in [0, 1) (hyperbolic / parabolic not supported)"

@@ -770,14 +770,30 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
                          cb_name, sizeof cb_name, err))) return rc;
     if ((rc = parse_central_body(cb_name, &cfg->central_body, err))) return rc;
 
-    char rel_harmonics[SPODY_MAX_PATH] = {0};
-    if ((rc = req_string(t, "force_model", "harmonics_file",
-                         rel_harmonics, sizeof rel_harmonics, err))) return rc;
-    resolve_path(toml_dir, rel_harmonics,
-                 cfg->harmonics_file, sizeof cfg->harmonics_file);
-
     if ((rc = req_int(t, "force_model", "harmonics_degree",
                       &cfg->harmonics_degree, err))) return rc;
+
+    /* harmonics_file is required only when harmonics are actually on.
+     * With harmonics_degree = 0 the central body stays a point mass,
+     * so demanding a gravity file would be asking for a 250 MB asset
+     * the run never reads. */
+    char rel_harmonics[SPODY_MAX_PATH] = {0};
+    if (cfg->harmonics_degree > 0) {
+        if ((rc = req_string(t, "force_model", "harmonics_file",
+                             rel_harmonics, sizeof rel_harmonics, err))) return rc;
+        resolve_path(toml_dir, rel_harmonics,
+                     cfg->harmonics_file, sizeof cfg->harmonics_file);
+    } else {
+        int has_file = 0;
+        if ((rc = opt_string(t, "harmonics_file", rel_harmonics,
+                             sizeof rel_harmonics, &has_file))) return rc;
+        if (has_file) {
+            resolve_path(toml_dir, rel_harmonics,
+                         cfg->harmonics_file, sizeof cfg->harmonics_file);
+        } else {
+            cfg->harmonics_file[0] = '\0';
+        }
+    }
     if ((rc = req_string_array(t, "force_model", "third_bodies",
                                cfg->third_body_names,
                                SPODY_MAX_THIRD_BODIES,
@@ -2010,16 +2026,25 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
      * little headroom for future ones. The ACTUAL usable maximum for
      * a given run is the N declared in the harmonics_file's header --
      * spody_load_HarmonicGravityData rejects degree > file_N at load
-     * time with a separate error. The lower bound is 2 since
-     * degree 0 (point mass) and degree 1 (CoM origin) are absorbed
-     * in the central-body convention. */
-    if (cfg->harmonics_degree < 2 || cfg->harmonics_degree > 2200) {
+     * time with a separate error.
+     *
+     * 0 is the explicit "harmonics off" switch: the central body stays
+     * a point mass, which together with third bodies gives an
+     * ephemeris-driven restricted N-body problem. Degree 1 remains
+     * rejected -- it would only shift the origin to the centre of mass,
+     * which the central-body convention already assumes. */
+    if (cfg->harmonics_degree == 1 ||
+        cfg->harmonics_degree < 0 || cfg->harmonics_degree > 2200) {
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "force_model.harmonics_degree = %d is outside the schema "
-                "range [2, 2200]. Note: the effective upper bound is the "
-                "N declared in the chosen harmonics_file (e.g. 1200 for "
-                "GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); this 2200 cap "
-                "is only the absolute schema ceiling.",
+                "force_model.harmonics_degree = %d is invalid. Use 0 to "
+                "switch harmonics off (point-mass central body), or a "
+                "degree in [2, 2200]. Degree 1 is meaningless here: it "
+                "only moves the origin to the centre of mass, which the "
+                "central-body convention already assumes. Note the "
+                "effective upper bound is the N declared in the chosen "
+                "harmonics_file (e.g. 1200 for GRGM1200B, 2190 for "
+                "EIGEN-6C4 / EGM2008); the 2200 cap is only the schema "
+                "ceiling.",
                 cfg->harmonics_degree);
         return SPODY_ERR_BAD_VALUE;
     }
@@ -2091,8 +2116,9 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
         }
     }
 
-    /* Data files must exist. */
-    if (!file_exists(cfg->harmonics_file)) {
+    /* Data files must exist. The gravity file is checked only when
+     * harmonics are on -- at degree 0 there may not be one at all. */
+    if (cfg->harmonics_degree > 0 && !file_exists(cfg->harmonics_file)) {
         spody_error_set(err, SPODY_ERR_FILE_NOT_FOUND,
                 "harmonics_file not found: %s", cfg->harmonics_file);
         return SPODY_ERR_FILE_NOT_FOUND;

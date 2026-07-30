@@ -68,16 +68,24 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
     }
     shared->init_med = 1;
 
-    /* Harmonics (shared). spody-core itself rejects degree > file_N. */
-    if (spody_load_HarmonicGravityData(&shared->hgd,
-                                       cfg->harmonics_file,
-                                       cfg->harmonics_degree) != 0) {
-        spody_error_set(err, SPODY_ERR_IO,
-                "spody_load_HarmonicGravityData failed for '%s' at N=%d",
-                cfg->harmonics_file, cfg->harmonics_degree);
-        goto fail;
+    /* Harmonics (shared). spody-core itself rejects degree > file_N.
+     *
+     * harmonics_degree = 0 means "no harmonics at all": the central
+     * body stays a point mass, so with third bodies enabled the run is
+     * an ephemeris-driven restricted N-body problem. Nothing is loaded
+     * and init_hgd stays 0, which leaves ctx.hg NULL and makes the
+     * engine skip the harmonic term (it already guards on ctx->hg). */
+    if (cfg->harmonics_degree > 0) {
+        if (spody_load_HarmonicGravityData(&shared->hgd,
+                                           cfg->harmonics_file,
+                                           cfg->harmonics_degree) != 0) {
+            spody_error_set(err, SPODY_ERR_IO,
+                    "spody_load_HarmonicGravityData failed for '%s' at N=%d",
+                    cfg->harmonics_file, cfg->harmonics_degree);
+            goto fail;
+        }
+        shared->init_hgd = 1;
     }
-    shared->init_hgd = 1;
 
     /* Earth-only: EOP table + IAU 2006/2000A_R06 series tables.
      * Both required by spody_bf_rotation_earth at every RHS evaluation.
@@ -270,8 +278,10 @@ int spody_build_worker(const InputConfig *cfg,
     spody_setup_MappedEphemeris(&w->eph, &shared->med);
     w->init_eph = 1;
 
-    spody_setup_HarmonicGravity(&w->hg, &shared->hgd);
-    w->init_hg = 1;
+    if (shared->init_hgd) {
+        spody_setup_HarmonicGravity(&w->hg, &shared->hgd);
+        w->init_hg = 1;
+    }
 
     /* Earth-only: per-thread EOP / IAU 2006 handles bound to the
      * shared, read-only data. We bind them whenever the Shared has
@@ -352,7 +362,7 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.naif_central        = body->naif;
     w->ctx.get_bf_rotation     = body->bf_rotation;
     w->ctx.sat                 = &w->sat;
-    w->ctx.hg                  = &w->hg;
+    w->ctx.hg                  = w->init_hg ? &w->hg : NULL;
     w->ctx.eph                 = &w->eph;
     /* EOP / IAU 2006 slots are body-specific. spody_bf_rotation_earth
      * reads them on every step; spody_bf_rotation_moon (and any other
