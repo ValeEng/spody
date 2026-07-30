@@ -229,8 +229,8 @@ Forces the propagator integrates against. Required.
 | Key                  | Type            | Default | Range | Description |
 |----------------------|-----------------|---------|-------|-------------|
 | `central_body`       | string          | &mdash; | `Moon`, `Earth` | Central body of the propagation. Two bodies are supported in this release. The choice drives the gravity-model coefficient set, the body-fixed rotation provider (lunar PA libration angles from DE440 for Moon, IAU 2006/2010 + IERS EOP for Earth), and the list of valid `third_bodies`. |
-| `harmonics_file`     | string (path)   | &mdash; | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for GRGM1200B / Moon; `eigen-6c4.tab` for EIGEN-6C4 / Earth, produced by the wizard from the upstream `.gfc`). In the form this row is a **dropdown of harmonics files the wizard has downloaded**, filtered by `central_body`. A **Browse...** button next to the combo adds an out-of-data-dir file as a one-off `(custom)` entry, so legacy TOMLs pointing at e.g. `external/spody-core/raw_data/...` keep round-tripping. Relative paths resolve against the TOML's directory. |
-| `harmonics_degree`   | int             | &mdash; | `[2, 2200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. The effective upper bound is whatever the chosen `harmonics_file` declares (1200 for GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); the `2200` cap is the absolute schema ceiling. See *Choosing a harmonics degree* below for guidance. |
+| `harmonics_file`     | string (path)   | &mdash; (required unless `harmonics_degree = 0`) | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for GRGM1200B / Moon; `eigen-6c4.tab` for EIGEN-6C4 / Earth, produced by the wizard from the upstream `.gfc`). In the form this row is a **dropdown of harmonics files the wizard has downloaded**, filtered by `central_body`. A **Browse...** button next to the combo adds an out-of-data-dir file as a one-off `(custom)` entry, so legacy TOMLs pointing at e.g. `external/spody-core/raw_data/...` keep round-tripping. Relative paths resolve against the TOML's directory. Optional when `harmonics_degree = 0`, since nothing reads it. |
+| `harmonics_degree`   | int             | &mdash; | `0` or `[2, 2200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. The effective upper bound is whatever the chosen `harmonics_file` declares (1200 for GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); the `2200` cap is the absolute schema ceiling. **`0` switches the gravity field off entirely**: the central body stays a point mass, so together with `third_bodies` the run becomes an ephemeris-driven restricted N-body problem (see *Turning the gravity field off* below). Degree `1` is rejected &mdash; it would only move the origin to the centre of mass, which the central-body convention already assumes. See *Choosing a harmonics degree* below for guidance. |
 | `eop_file`           | string (path)   | &mdash; (Earth only) | &ndash; | Path to the IERS Earth-orientation file (`finals2000A.all` from the IERS Rapid Service). Required when `central_body = "Earth"`, omitted otherwise. The form exposes this row as a wizard-populated dropdown that only appears when Earth is selected. |
 | `iau2006_dir`        | string (path)   | &mdash; (Earth only) | &ndash; | Path to the directory containing the IAU 2006 X / Y / s+XY/2 conventions tables (`tab5.2a.txt`, `tab5.2b.txt`, `tab5.2d.txt`). Required when `central_body = "Earth"`. Wizard-managed; same conditional form row as `eop_file`. |
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
@@ -306,6 +306,41 @@ At GNSS altitudes the harmonics contribution is already tiny
 compared to the central two-body term, so degree 70 is comfortably
 above the noise floor of the rest of the force model (luni-solar
 third-body gravity, SRP) for most use cases.
+
+### Turning the gravity field off
+
+`harmonics_degree = 0` removes the harmonic term altogether: the
+central body becomes a point mass and `harmonics_file` may be
+omitted. This is not a degenerate setting, it is a deliberate
+baseline, useful in three situations.
+
+**Isolating what the gravity field contributes.** Run the same
+scenario at degree 0 and at your working degree, and the difference
+between the two trajectories *is* the harmonics contribution &mdash;
+no algebra, no separate acceleration breakdown.
+
+**A restricted N-body problem on real ephemerides.** With
+`third_bodies` populated, degree 0 gives point-mass central body plus
+point-mass perturbers pulled from DE440. That is the classical
+restricted problem, except the perturbers move on their true
+ephemeris rather than the idealised circular orbits assumed by
+`dynamics_model = "cr3bp"` (chapter 6, `[simulation]`). It is the
+natural bridge between the two dynamics models: same restricted
+setup, real geometry.
+
+**A cheap first look.** Degree 0 costs nothing per evaluation, so it
+is a fast way to check that an epoch, an initial state and a duration
+are sane before paying for a high-degree run.
+
+On the bundled GPS G11 example (7 days, IGS precise orbits as
+reference), degree 0 leaves a 115 km residual against a 581 m one at
+degree 70 with third bodies &mdash; which is simply the size of the
+Earth's oblateness effect over a week at that altitude.
+
+Degree `1` is rejected rather than accepted-and-ignored: it would
+only shift the origin to the centre of mass, which the central-body
+convention already assumes, so a TOML asking for it has almost
+certainly confused degree with something else.
 
 ## `[ephemeris]`
 

@@ -501,6 +501,30 @@ GUI — because each step is testable on its own:
    `spody_validate_input`, *not* in the parser. Error messages name
    the TOML key verbatim and, when the value comes from a known set,
    list the accepted values — users grep for these strings.
+   **Sentinel value that relaxes another key's requirement.** When a
+   key gains an "off" value that makes a *sibling* key pointless
+   (`harmonics_degree = 0` makes `harmonics_file` unnecessary), three
+   places have to agree or the schema contradicts itself:
+
+   - **Parse order**: read the switch key *before* the key it
+     governs, then choose `req_string` or `opt_string` on the fly.
+     `parse_force_model` parses `harmonics_degree` first for exactly
+     this reason. Note the two helpers have different signatures —
+     `opt_string(tbl, key, out, outsz, &present)` takes no section
+     name and no `SpodyError`.
+   - **Validator**: guard the file-exists check with the same
+     condition (`if (degree > 0 && !file_exists(...))`), otherwise
+     the run dies on a file it would never have opened.
+   - **Setup**: skip the load and leave the `init_*` flag at 0, then
+     make the consumer's pointer NULL (`w->ctx.hg = w->init_hg ?
+     &w->hg : NULL`). The engine's force model already guards on
+     `ctx->hg`, so a NULL is the supported way to say "not modelled" —
+     don't invent a separate boolean.
+
+   Keep rejecting values that are *meaningless* rather than merely
+   off: `harmonics_degree = 1` stays an error, because silently
+   accepting it would hide a user's confusion about what degree means.
+
 4. **Batch (only if the key should be overridable per case)**: add a
    row to `FIELD_TABLE` in `toml_input.c`:
 
@@ -1230,6 +1254,23 @@ Each entry: the rule, and the symptom you'll see if you break it.
   crossings fire from the RK45 dense-output path; other integrators
   don't provide it and `spody_event_check` has no fallback.
   *Symptom: recurring events silently absent from the events file.*
+- **RK45 is the only adaptive integrator that exists.**
+  `spody_integrator_method` declares `RK4`, `RK45`, `RK78` and
+  `VERLET`, but `step_rk78` and `step_verlet` in
+  `spody_integrators.c` are stubs returning
+  `SPODY_INTEG_ERR_NULL`. Don't read the enum as a menu, and don't
+  document RK78 as available. *Symptom: a run configured for RK78
+  fails immediately with a null-ish integrator error rather than
+  falling back.*
+- **The integrator cost counters count attempts, not successes.**
+  `n_rhs` in `IntegratorAllData` is incremented at the RHS call site,
+  so it includes evaluations spent on trial steps that were later
+  rejected; `n_accepted` and `n_rejected` split the outcomes. They are
+  zeroed in `spody_setup_integrator` and never reset afterwards, so a
+  caller reusing one workspace across several drive calls reads the
+  *cumulative* total. *Symptom of misuse: per-segment costs that look
+  monotonically increasing because the counters were never
+  re-zeroed.*
 - **The eclipse bracket clamp** (§5.13) is load-bearing, not a
   safety net: the inclusion-exclusion sum is truncated after the
   pairwise term, and the clamp into

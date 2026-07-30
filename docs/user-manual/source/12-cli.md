@@ -77,6 +77,33 @@ diagnostics to stdout, with errors on stderr. The GUI streams
 this into the terminal pane; on the command line you see it in
 your shell.
 
+**Cost report.** The run ends with two lines: the time it took, and
+what the integrator actually did.
+
+```
+  done in 6.394 s (final state at t=603900 s)
+  integrator: 11232 accepted steps, 0 rejected, 78624 RHS evaluations
+```
+
+The timing brackets the integration only &mdash; parsing, ephemeris
+loading and harmonics loading all happen before the clock starts, so
+a 250 MB gravity file does not inflate the figure.
+
+The three counters measure the work rather than the machine, which is
+what makes them comparable between runs on different hardware, and
+between a build with and without optimisations. `RHS evaluations`
+counts every evaluation of the dynamics, including those spent on
+trial steps that were later rejected: that work was really done.
+`rejected` climbing into the same order of magnitude as `accepted` is
+the signature of a step-size controller fighting the problem &mdash;
+usually too tight a `rel_tol`, an `h_max_s` that lets the step grow
+past what the dynamics allow, or a close approach.
+
+Reading the counters against the accuracy you get is the cheapest way
+to find out whether a tighter tolerance is buying anything. Past the
+point where the force model's own error dominates, more evaluations
+buy nothing at all.
+
 **Exit codes.**
 
 - `0` &mdash; the propagation reached `duration_s` without an

@@ -6,7 +6,48 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
+### Added
+
+- **`spody propagate` reports the integrator's workload.** After the
+  timing line it now prints how many steps were accepted, how many
+  trial steps were rejected, and how many times the dynamics were
+  evaluated:
+
+  ```
+    done in 6.394 s (final state at t=603900 s)
+    integrator: 11232 accepted steps, 0 rejected, 78624 RHS evaluations
+  ```
+
+  Wall-clock time alone cannot compare the cost of a propagation across
+  machines, compilers or system load; the evaluation count can, because
+  it measures the work rather than how fast this box happened to do it.
+  It also makes the tolerance/cost trade-off legible: on the bundled
+  GPS G11 example, tightening `rel_tol` from `1e-10` to `1e-14`
+  multiplies the RHS evaluations by ten and leaves the residual against
+  the IGS precise orbits unchanged at 581 m, because past that point
+  the error is the force model's, not the integrator's.
+
+  The counters live in the engine (`spody-core`), so they cover every
+  caller, and `n_rhs` includes the evaluations spent on rejected steps
+  &mdash; that work really was done.
+
 ### Changed
+
+- **`force_model.harmonics_degree = 0` switches the gravity field
+  off.** The engine could always run without one, but the input schema
+  could not say so: `harmonics_file` was mandatory and the degree was
+  clamped to `[2, 2200]`. Degree `0` now means a point-mass central
+  body, and `harmonics_file` becomes optional because nothing reads it.
+
+  Combined with `third_bodies`, this gives a pure ephemeris-driven
+  restricted N-body problem &mdash; the two-body baseline you want when
+  isolating what the gravity field actually contributes, or when
+  reproducing a restricted three-body setup against real planetary
+  ephemerides rather than the idealised `cr3bp` dynamics model.
+
+  Degree `1` remains rejected: it would only shift the origin to the
+  centre of mass, which the central-body convention already assumes.
+  The GUI validator and tooltip follow the same rule.
 
 - **Every third body now casts a shadow, not just the central one.**
   The SRP eclipse used to be computed against a single occulting body,
