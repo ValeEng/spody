@@ -312,6 +312,9 @@ static int cmd_propagate(int argc, char **argv) {
 
     spody_log_printf("  done in %.3f s (final state at t=%.6g s)\n",
            wall_s, w.integ.t);
+    spody_log_printf("  integrator: %zu accepted steps, %zu rejected, "
+           "%zu RHS evaluations\n",
+           w.integ.n_accepted, w.integ.n_rejected, w.integ.n_rhs);
     spody_free_worker(&w);
     spody_free_shared(&shared);
     spody_log_close_mirror(); spody_free_input(&cfg);
