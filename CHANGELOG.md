@@ -4,7 +4,7 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
-## Unreleased
+## v0.4.0-beta &mdash; 2026-08-01
 
 ### Added
 
@@ -41,6 +41,180 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   the three high-fidelity frames re-expresses the typed values in
   place. `spopy.rotations.icrf_to_orbit_plane` is the twin of the
   engine branch.
+
+- **`spody propagate` reports the integrator's workload.** After the
+  timing line it now prints how many steps were accepted, how many
+  trial steps were rejected, and how many times the dynamics were
+  evaluated:
+
+  ```
+    done in 6.394 s (final state at t=603900 s)
+    integrator: 11232 accepted steps, 0 rejected, 78624 RHS evaluations
+  ```
+
+  Wall-clock time alone cannot compare the cost of a propagation across
+  machines, compilers or system load; the evaluation count can, because
+  it measures the work rather than how fast this box happened to do it.
+  It also makes the tolerance/cost trade-off legible: on the bundled
+  GPS G11 example, tightening `rel_tol` from `1e-10` to `1e-14`
+  multiplies the RHS evaluations by ten and leaves the residual against
+  the IGS precise orbits unchanged at 581 m, because past that point
+  the error is the force model's, not the integrator's.
+
+  The counters live in the engine (`spody-core`), so they cover every
+  caller, and `n_rhs` includes the evaluations spent on rejected steps
+  &mdash; that work really was done.
+
+- **Exact ephemeris velocities and full state vectors.** spody-core
+  gains two public queries next to `spody_get_ephposition`:
+  `spody_get_ephvelocity` (ICRF km/s) and `spody_get_ephstate`
+  (`[x, y, z, vx, vy, vz]`, km and km/s). Rates come from the
+  analytic derivative of the DE440 position Chebyshev series
+  (second-kind Clenshaw recurrence rescaled by the granule width) —
+  exact by construction, no finite differences, no new data files;
+  the position half is bit-identical to the existing query, and the
+  per-handle cache keeps a separately-validated velocity slot so
+  mixed position/state call patterns never see stale rates.
+  `spopy.Ephemeris` mirrors the API with `velocity()` / `state()`
+  in zero-ULP lockstep with the C side. Validated against SPICE
+  (`spkezr` on `de440s.bsp`): max 1.2e-7 km / 1.4e-14 km/s over
+  3200 states spanning 1900&ndash;2100. Scripts that estimated body
+  velocities with 60 s finite differences (~4 &micro;m/s error on
+  the Moon) can now query them exactly.
+
+- **Stop button on the Run form.** A red **Stop** next to the green
+  **RUN** kills the engine process in flight (same action as
+  **Run &gt; Stop** / <kbd>Ctrl</kbd>+<kbd>.</kbd>, which stays);
+  RUN is now disabled while a run is active instead of erroring in
+  the console. On Windows the stop is an immediate kill &mdash;
+  previously the GUI froze for a 2 s graceful-close attempt the
+  console engine could never honour.
+
+- **Time window for the altitude-band CSV export.** The Plot options
+  dialog gains a `bands window: 0 to [N] days` field (active while the
+  Altitude bands export is selected): leave it blank for the whole run
+  or type an upper bound to restrict the per-element occupancy table to
+  the first *N* days of sim time. Segments straddling the bound are
+  clipped and only crossings up to it count as entries; the window is
+  recorded in the CSV `#`-header and the filename. The Info tab and the
+  band plots are unchanged &mdash; they still cover the whole run.
+
+### Changed
+
+- **The rotated-preview button now writes the file too**, and is
+  relabelled **Rotate + refresh** (was *Refresh preview*). It rotates
+  the source CSV to `<stem>_wrt_icrf.csv` and then redraws the preview,
+  so the file a run would consume can be opened and checked
+  beforehand. The *automatic* refresh &mdash; which fires on the source
+  path, the frame combo and the column table &mdash; stays read-only:
+  it redraws the table and never touches the filesystem.
+
+- **Earth-centred propagation is roughly 9&times; faster.** The IAU 2006
+  precession-nutation series &mdash; 3084 terms, each a 14-term linear
+  combination plus a sine and a cosine &mdash; was re-evaluated at every
+  force evaluation, because the gravity field has to be computed in the
+  Earth-fixed frame and the frame was rebuilt from scratch each time.
+
+  Measured on the bundled GPS G11 case at degree 70: **73 of the 85
+  microseconds** spent per evaluation went into the rotation, not the
+  gravity field. The consequence was visible in a way that looked odd
+  until explained &mdash; the cost barely depended on the harmonic
+  degree, since going from degree 2 to degree 70 (850&times; the
+  coefficients) added only 12 &micro;s on top of a fixed 73.
+
+  `X`, `Y` and `s` are now interpolated with a cubic through nodes one
+  hour apart. They move about 650 and 340 milliarcseconds over eight
+  days, so the interpolation reproduces the exact series to 3&times;10
+  <sup>-7</sup> mas &mdash; tens of nanometres at GNSS radius, two
+  orders of magnitude below the uncertainty of the EOP inputs
+  themselves. The Earth rotation angle and polar motion are **not**
+  interpolated: ERA advances 15 arcsec per second, so interpolating it
+  is the one thing here that would genuinely cost accuracy, and both
+  are cheap closed forms.
+
+  The nodes sit on a fixed grid anchored at J2000 rather than a window
+  following the current time, so the result cannot depend on the step
+  sequence the integrator happened to take.
+
+  Effect on the bundled 7-day GPS G11 case: **6.28 s &rarr; 0.68 s**,
+  with the residual against IGS final orbits unchanged at 581 m and a
+  trajectory difference against the exact evaluation of 0.023 mm.
+  `spody_iau2006_xys` is unchanged and remains the exact path for
+  validating the series itself. Moon-centred propagation is unaffected
+  &mdash; it uses the lunar libration angles.
+
+- **`force_model.harmonics_degree = 0` switches the gravity field
+  off.** The engine could always run without one, but the input schema
+  could not say so: `harmonics_file` was mandatory and the degree was
+  clamped to `[2, 2200]`. Degree `0` now means a point-mass central
+  body, and `harmonics_file` becomes optional because nothing reads it.
+
+  Combined with `third_bodies`, this gives a pure ephemeris-driven
+  restricted N-body problem &mdash; the two-body baseline you want when
+  isolating what the gravity field actually contributes, or when
+  reproducing a restricted three-body setup against real planetary
+  ephemerides rather than the idealised `cr3bp` dynamics model.
+
+  Degree `1` remains rejected: it would only shift the origin to the
+  centre of mass, which the central-body convention already assumes.
+  The GUI validator and tooltip follow the same rule.
+
+- **Every third body now casts a shadow, not just the central one.**
+  The SRP eclipse used to be computed against a single occulting body,
+  which the application always set to the central body. An object in
+  lunar orbit therefore never saw the **Earth occult the Sun** &mdash;
+  a first-order term in cislunar space, not a refinement &mdash; and an
+  Earth orbiter never felt a solar eclipse. The occulter list is now
+  the central body plus every third body except the Sun, built once at
+  setup: whatever you chose to model also casts a shadow, so there is
+  no new TOML key and no hidden heuristic.
+
+  When two bodies cover the Sun at the same time their shadows on the
+  solar disc may overlap, so the hidden area is their **union**, not
+  the sum: the engine subtracts the overlap pair by pair
+  (inclusion&ndash;exclusion). Terms needing three bodies over the same
+  piece of the Sun are dropped and the result is clamped into the
+  bracket `1 - sum(g_i) <= lit <= min_i (1 - g_i)`, which holds
+  whatever those terms would have been.
+
+  Measured on a lunar orbit through the total lunar eclipse of
+  2025-03-14 (A/m = 0.02 m&sup2;/kg, 12 h arc): the Earth occults the
+  Sun from 04:37 to 09:34 UTC, 167 of 721 samples change &mdash; up to
+  **full** occultation where the old model reported full sunlight
+  &mdash; for an accumulated &Delta;v of 9.2e-4 m/s, about 17 m of
+  position over the arc. On the 133 samples where the Moon's limb and
+  the Earth cut the solar disc at once, adding the two shadows without
+  the overlap correction would have been wrong by up to 0.18 of the
+  disc.
+
+  Runs with a single occulter are **unchanged bit for bit** (verified
+  against the previous implementation over 2.65M configurations
+  covering all four Montenbruck &amp; Gill branches); the eclipse
+  *event* stays deliberately per-occulter, so "eclipsed by the Moon"
+  and "eclipsed by the Earth" remain separate events with their own
+  thresholds and disagree with the force during a double eclipse.
+
+- **Re-run "Survivors" preset now means "did not impact".** It
+  previously selected only cases with *zero* events, so a case that
+  logged altitude crossings or eclipses but never crashed was
+  excluded from both Survivors and Crashed. Survivors is now the
+  exact complement of Crashed (IMPACT).
+
+- **Engine module split: tabulated-data primitives consolidated in
+  `spody_interp`.** `spody_bracket_index` and `spody_interp_linear`
+  moved out of `spody_math` (verbatim, no behaviour change), so all
+  interpolation — bracketing lookup, linear nodes, cubic Hermite
+  dense output, and the future SPK Type 9/13 interpolants — lives
+  in one module; `spody_math` stays algebra/geometry. Only affects
+  code including the engine headers directly.
+
+- **From CR3BP... converter uses exact ephemeris rates.** The
+  pulsating-frame transform in the `[initial_state]` converter dialog
+  derived the primary-primary relative velocity from a &plusmn;60 s
+  central difference of ephemeris positions; it now queries
+  `spopy.Ephemeris.state()` directly (~5 &micro;m/s correction on the
+  Earth&ndash;Moon rate, which feeds l&#775;, the frame axes and the
+  angular-rate term of the converted velocity).
 
 ### Fixed
 
@@ -96,52 +270,6 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   source CSV aborts the launch with a message instead of running stale
   rows.
 
-### Changed
-
-- **The rotated-preview button now writes the file too**, and is
-  relabelled **Rotate + refresh** (was *Refresh preview*). It rotates
-  the source CSV to `<stem>_wrt_icrf.csv` and then redraws the preview,
-  so the file a run would consume can be opened and checked
-  beforehand. The *automatic* refresh &mdash; which fires on the source
-  path, the frame combo and the column table &mdash; stays read-only:
-  it redraws the table and never touches the filesystem.
-
-- **Earth-centred propagation is roughly 9&times; faster.** The IAU 2006
-  precession-nutation series &mdash; 3084 terms, each a 14-term linear
-  combination plus a sine and a cosine &mdash; was re-evaluated at every
-  force evaluation, because the gravity field has to be computed in the
-  Earth-fixed frame and the frame was rebuilt from scratch each time.
-
-  Measured on the bundled GPS G11 case at degree 70: **73 of the 85
-  microseconds** spent per evaluation went into the rotation, not the
-  gravity field. The consequence was visible in a way that looked odd
-  until explained &mdash; the cost barely depended on the harmonic
-  degree, since going from degree 2 to degree 70 (850&times; the
-  coefficients) added only 12 &micro;s on top of a fixed 73.
-
-  `X`, `Y` and `s` are now interpolated with a cubic through nodes one
-  hour apart. They move about 650 and 340 milliarcseconds over eight
-  days, so the interpolation reproduces the exact series to 3&times;10
-  <sup>-7</sup> mas &mdash; tens of nanometres at GNSS radius, two
-  orders of magnitude below the uncertainty of the EOP inputs
-  themselves. The Earth rotation angle and polar motion are **not**
-  interpolated: ERA advances 15 arcsec per second, so interpolating it
-  is the one thing here that would genuinely cost accuracy, and both
-  are cheap closed forms.
-
-  The nodes sit on a fixed grid anchored at J2000 rather than a window
-  following the current time, so the result cannot depend on the step
-  sequence the integrator happened to take.
-
-  Effect on the bundled 7-day GPS G11 case: **6.28 s &rarr; 0.68 s**,
-  with the residual against IGS final orbits unchanged at 581 m and a
-  trajectory difference against the exact evaluation of 0.023 mm.
-  `spody_iau2006_xys` is unchanged and remains the exact path for
-  validating the series itself. Moon-centred propagation is unaffected
-  &mdash; it uses the lunar libration angles.
-
-### Fixed
-
 - **Polar motion: the sign of `x_p` was inverted.** The Earth
   body-fixed rotation built its polar-motion matrix as
   `R3(-s') . R2(+x_p) . R1(-y_p)`, but both pole coordinates enter
@@ -173,154 +301,10 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   Published validation figures are unchanged at their quoted precision
   (GPS G11 against IGS final orbits: 46 m at one day, 581 m at seven).
 
-### Added
-
-- **`spody propagate` reports the integrator's workload.** After the
-  timing line it now prints how many steps were accepted, how many
-  trial steps were rejected, and how many times the dynamics were
-  evaluated:
-
-  ```
-    done in 6.394 s (final state at t=603900 s)
-    integrator: 11232 accepted steps, 0 rejected, 78624 RHS evaluations
-  ```
-
-  Wall-clock time alone cannot compare the cost of a propagation across
-  machines, compilers or system load; the evaluation count can, because
-  it measures the work rather than how fast this box happened to do it.
-  It also makes the tolerance/cost trade-off legible: on the bundled
-  GPS G11 example, tightening `rel_tol` from `1e-10` to `1e-14`
-  multiplies the RHS evaluations by ten and leaves the residual against
-  the IGS precise orbits unchanged at 581 m, because past that point
-  the error is the force model's, not the integrator's.
-
-  The counters live in the engine (`spody-core`), so they cover every
-  caller, and `n_rhs` includes the evaluations spent on rejected steps
-  &mdash; that work really was done.
-
-### Changed
-
-- **`force_model.harmonics_degree = 0` switches the gravity field
-  off.** The engine could always run without one, but the input schema
-  could not say so: `harmonics_file` was mandatory and the degree was
-  clamped to `[2, 2200]`. Degree `0` now means a point-mass central
-  body, and `harmonics_file` becomes optional because nothing reads it.
-
-  Combined with `third_bodies`, this gives a pure ephemeris-driven
-  restricted N-body problem &mdash; the two-body baseline you want when
-  isolating what the gravity field actually contributes, or when
-  reproducing a restricted three-body setup against real planetary
-  ephemerides rather than the idealised `cr3bp` dynamics model.
-
-  Degree `1` remains rejected: it would only shift the origin to the
-  centre of mass, which the central-body convention already assumes.
-  The GUI validator and tooltip follow the same rule.
-
-- **Every third body now casts a shadow, not just the central one.**
-  The SRP eclipse used to be computed against a single occulting body,
-  which the application always set to the central body. An object in
-  lunar orbit therefore never saw the **Earth occult the Sun** &mdash;
-  a first-order term in cislunar space, not a refinement &mdash; and an
-  Earth orbiter never felt a solar eclipse. The occulter list is now
-  the central body plus every third body except the Sun, built once at
-  setup: whatever you chose to model also casts a shadow, so there is
-  no new TOML key and no hidden heuristic.
-
-  When two bodies cover the Sun at the same time their shadows on the
-  solar disc may overlap, so the hidden area is their **union**, not
-  the sum: the engine subtracts the overlap pair by pair
-  (inclusion&ndash;exclusion). Terms needing three bodies over the same
-  piece of the Sun are dropped and the result is clamped into the
-  bracket `1 - sum(g_i) <= lit <= min_i (1 - g_i)`, which holds
-  whatever those terms would have been.
-
-  Measured on a lunar orbit through the total lunar eclipse of
-  2025-03-14 (A/m = 0.02 m&sup2;/kg, 12 h arc): the Earth occults the
-  Sun from 04:37 to 09:34 UTC, 167 of 721 samples change &mdash; up to
-  **full** occultation where the old model reported full sunlight
-  &mdash; for an accumulated &Delta;v of 9.2e-4 m/s, about 17 m of
-  position over the arc. On the 133 samples where the Moon's limb and
-  the Earth cut the solar disc at once, adding the two shadows without
-  the overlap correction would have been wrong by up to 0.18 of the
-  disc.
-
-  Runs with a single occulter are **unchanged bit for bit** (verified
-  against the previous implementation over 2.65M configurations
-  covering all four Montenbruck &amp; Gill branches); the eclipse
-  *event* stays deliberately per-occulter, so "eclipsed by the Moon"
-  and "eclipsed by the Earth" remain separate events with their own
-  thresholds and disagree with the force during a double eclipse.
-
-### Added
-
-- **Exact ephemeris velocities and full state vectors.** spody-core
-  gains two public queries next to `spody_get_ephposition`:
-  `spody_get_ephvelocity` (ICRF km/s) and `spody_get_ephstate`
-  (`[x, y, z, vx, vy, vz]`, km and km/s). Rates come from the
-  analytic derivative of the DE440 position Chebyshev series
-  (second-kind Clenshaw recurrence rescaled by the granule width) —
-  exact by construction, no finite differences, no new data files;
-  the position half is bit-identical to the existing query, and the
-  per-handle cache keeps a separately-validated velocity slot so
-  mixed position/state call patterns never see stale rates.
-  `spopy.Ephemeris` mirrors the API with `velocity()` / `state()`
-  in zero-ULP lockstep with the C side. Validated against SPICE
-  (`spkezr` on `de440s.bsp`): max 1.2e-7 km / 1.4e-14 km/s over
-  3200 states spanning 1900&ndash;2100. Scripts that estimated body
-  velocities with 60 s finite differences (~4 &micro;m/s error on
-  the Moon) can now query them exactly.
-
-- **Stop button on the Run form.** A red **Stop** next to the green
-  **RUN** kills the engine process in flight (same action as
-  **Run &gt; Stop** / <kbd>Ctrl</kbd>+<kbd>.</kbd>, which stays);
-  RUN is now disabled while a run is active instead of erroring in
-  the console. On Windows the stop is an immediate kill &mdash;
-  previously the GUI froze for a 2 s graceful-close attempt the
-  console engine could never honour.
-
-### Added
-
-- **Time window for the altitude-band CSV export.** The Plot options
-  dialog gains a `bands window: 0 to [N] days` field (active while the
-  Altitude bands export is selected): leave it blank for the whole run
-  or type an upper bound to restrict the per-element occupancy table to
-  the first *N* days of sim time. Segments straddling the bound are
-  clipped and only crossings up to it count as entries; the window is
-  recorded in the CSV `#`-header and the filename. The Info tab and the
-  band plots are unchanged &mdash; they still cover the whole run.
-
-### Fixed
-
 - **Re-run tab labelled altitude crossings as `kind=2`.** The
   "last event" column mapped only IMPACT and ECLIPSE, so an
   `ALT_CROSSING` (added later) fell through to the raw enum int. It
   now reads `ALT_CROSSING`, matching the Analysis events table.
-
-### Changed
-
-- **Re-run "Survivors" preset now means "did not impact".** It
-  previously selected only cases with *zero* events, so a case that
-  logged altitude crossings or eclipses but never crashed was
-  excluded from both Survivors and Crashed. Survivors is now the
-  exact complement of Crashed (IMPACT).
-
-- **Engine module split: tabulated-data primitives consolidated in
-  `spody_interp`.** `spody_bracket_index` and `spody_interp_linear`
-  moved out of `spody_math` (verbatim, no behaviour change), so all
-  interpolation — bracketing lookup, linear nodes, cubic Hermite
-  dense output, and the future SPK Type 9/13 interpolants — lives
-  in one module; `spody_math` stays algebra/geometry. Only affects
-  code including the engine headers directly.
-
-- **From CR3BP... converter uses exact ephemeris rates.** The
-  pulsating-frame transform in the `[initial_state]` converter dialog
-  derived the primary-primary relative velocity from a &plusmn;60 s
-  central difference of ephemeris positions; it now queries
-  `spopy.Ephemeris.state()` directly (~5 &micro;m/s correction on the
-  Earth&ndash;Moon rate, which feeds l&#775;, the frame axes and the
-  angular-rate term of the converted velocity).
-
-### Fixed
 
 - **&le;1 ULP Earth-position divergence in spopy.** The Earth branch
   of the EMB&harr;Earth/Moon split in `spopy.ephemeris` divided by
