@@ -682,12 +682,32 @@ class MainWindow(QMainWindow):
             return
         # spody.exe needs a file on disk plus a working directory; if
         # the form is dirty or has never been saved, generate first.
-        if self._form.current_path() is None or self._form.is_modified():
+        needs_save = (self._form.current_path() is None
+                      or self._form.is_modified())
+        if needs_save:
             if not self._maybe_save():
                 return
         current = self._form.current_path()
         if current is None:
             return  # user cancelled the save prompt
+        # The rotated cases CSV is a derived artifact, not an input, so
+        # rebuild it here -- AFTER the save above, so it is always
+        # derived from the numbers that are about to run. Without this a
+        # source CSV edited outside the GUI leaves the form clean, so
+        # nothing regenerates and the run silently uses stale rows.
+        #
+        # Unconditional on purpose: `write_to` also rotates at Generate,
+        # but making the run depend on that having happened puts the
+        # guarantee in two places. One redundant CSV write per launch is
+        # the price of not having to reason about it.
+        #
+        # The single exception: a form that is STILL modified here got
+        # past the prompt via Discard, so the run uses the TOML on disk
+        # and the form's unsaved reference orbit is not what will be
+        # propagated -- rotating with it would desync the two.
+        if not self._form.is_modified():
+            if not self._form.regenerate_rotating_cases(current):
+                return
         self._terminal.clear()
         self._terminal.append_line(
             f"$ {Path(spody_bin).name} {subcommand} {current.name}"

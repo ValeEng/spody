@@ -311,14 +311,14 @@ class SectionBuildersMixin:
         top = QFormLayout()
         top.setContentsMargins(0, 0, 0, 0)
         v_outer.addLayout(top)
-        # Frame combo: items are filtered by the active dynamics model.
-        # HF accepts `central_inertial` (engine-native) or
-        # `central_body_fixed` (GUI-only: the form rotates the typed
-        # values to ICRF at TOML emit so the engine sees
-        # `central_inertial`). CR3BP only allows `synodic_rotating`.
-        # Switching between `central_inertial` and `central_body_fixed`
-        # does a live rotation of the currently typed cart / kep
-        # values (same UX as the cartesian <-> keplerian swap).
+        # Frame combo: items are filtered by the active dynamics model
+        # and central body. HF accepts `central_inertial`,
+        # `central_body_fixed` and (Moon only) `orbit_plane`; all three
+        # are engine-native -- the emitted TOML keeps the frame name and
+        # sim_setup rotates at et_start_s. CR3BP only allows
+        # `synodic_rotating`. Switching between any two HF frames does a
+        # live rotation of the currently typed cart / kep values (same
+        # UX as the cartesian <-> keplerian swap).
         # The frame combo shares its row with the "From CR3BP..."
         # converter button (HF-only: under the cr3bp model the state
         # is already synodic, nothing to convert).
@@ -785,9 +785,16 @@ class SectionBuildersMixin:
     _IC_VARIANTS: tuple[tuple[str, str], ...] = (
         ("cartesian", "central_inertial"),
         ("cartesian", "central_body_fixed"),
+        ("cartesian", "orbit_plane"),
         ("keplerian", "central_inertial"),
         ("keplerian", "central_body_fixed"),
+        ("keplerian", "orbit_plane"),
     )
+    # HF frames the form can rotate between on a combo flip. Every
+    # entry other than `central_inertial` must be resolvable by
+    # `_resolve_ic_frame_rotation`.
+    _IC_HF_FRAMES = frozenset(
+        {"central_inertial", "central_body_fixed", "orbit_plane"})
 
     _IC_CART_KEYS = (
         "initial_state.position_km",
@@ -891,16 +898,15 @@ class SectionBuildersMixin:
                 v = np.asarray(v, dtype=float)
             except (ValueError, ZeroDivisionError):
                 return None
-        if frame == "central_body_fixed":
+        if frame != "central_inertial":
             et = self._form_et_start()
             if et is None:
                 return None
-            R_icrf_to_bf = self._resolve_bf_rotation(et)
-            if R_icrf_to_bf is None:
+            R = self._resolve_ic_frame_rotation(frame, et)
+            if R is None:
                 return None
-            R_bf_to_icrf = R_icrf_to_bf.T
-            r = R_bf_to_icrf @ r
-            v = R_bf_to_icrf @ v
+            r = R.T @ r
+            v = R.T @ v
         return r, v
 
     def _ic_block_from_cart_inertial(self, r: "np.ndarray", v: "np.ndarray",
@@ -912,15 +918,15 @@ class SectionBuildersMixin:
         fails."""
         import math
         import numpy as np
-        if frame == "central_body_fixed":
+        if frame != "central_inertial":
             et = self._form_et_start()
             if et is None:
                 return None
-            R_icrf_to_bf = self._resolve_bf_rotation(et)
-            if R_icrf_to_bf is None:
+            R = self._resolve_ic_frame_rotation(frame, et)
+            if R is None:
                 return None
-            r_dst = R_icrf_to_bf @ r
-            v_dst = R_icrf_to_bf @ v
+            r_dst = R @ r
+            v_dst = R @ v
         else:
             r_dst = np.asarray(r, dtype=float)
             v_dst = np.asarray(v, dtype=float)
@@ -1214,6 +1220,49 @@ class SectionBuildersMixin:
         except Exception:
             return None
 
+    def _resolve_op_rotation(self, et_s: float) -> "np.ndarray | None":
+        """Return R_icrf_to_op at ET `et_s` -- Ely's orbit-plane frame,
+        anchored at the epoch and then treated as inertial. None on any
+        failure (unreadable ephemeris, body without a pole provider,
+        central body the frame is not defined for).
+
+        Twin of the `SPODY_FRAME_ORBIT_PLANE` branch in
+        [src/sim_setup.c](../../../src/sim_setup.c); the Moon-only gate
+        below mirrors the engine validator, so the combo cannot offer a
+        frame the engine would reject at load."""
+        cb_combo = self._widgets.get("force_model.central_body")
+        cb_name = (cb_combo.currentText()
+                   if isinstance(cb_combo, QComboBox) else "")
+        if cb_name != "Moon":
+            return None
+        R_icrf_to_bf = self._resolve_bf_rotation(et_s)
+        if R_icrf_to_bf is None:
+            return None
+        eph = self._cached_ephemeris_for_form()
+        if eph is None:
+            return None
+        try:
+            import numpy as np
+            from spopy.rotations import icrf_to_orbit_plane
+            # NAIF 301 = Moon (central), 399 = Earth (perturber): the
+            # plane is the Earth's apparent orbit about the Moon.
+            s = np.asarray(eph.state(301, 399, float(et_s)), dtype=float)
+            return icrf_to_orbit_plane(R_icrf_to_bf[2], s[:3], s[3:])
+        except Exception:
+            return None
+
+    def _resolve_ic_frame_rotation(self, frame: str,
+                                   et_s: float) -> "np.ndarray | None":
+        """R_icrf_to_<frame> for the non-inertial [initial_state]
+        frames, or None when unavailable. `central_inertial` is the
+        identity and is filtered out by the callers rather than
+        materialised here."""
+        if frame == "central_body_fixed":
+            return self._resolve_bf_rotation(et_s)
+        if frame == "orbit_plane":
+            return self._resolve_op_rotation(et_s)
+        return None
+
     def _cached_ephemeris_for_form(self):
         """Lazy + per-session cached spopy.Ephemeris built from the
         form's `ephemeris.file` widget value. Returns None when the
@@ -1335,13 +1384,14 @@ class SectionBuildersMixin:
         self._touch()
 
     def _on_input_frame_changed(self, new_frame: str) -> None:
-        """User flipped the [initial_state].frame combo: when the
-        swap is between `central_inertial` and `central_body_fixed`,
-        rotate the currently typed cart / kep values in place so the
-        displayed numbers reflect the new basis. Other transitions
-        (e.g. dynamics-model reflow that inserts `synodic_rotating`)
-        do not rotate -- only the BF<->ICRF pair is a frame swap on
-        the same physical state.
+        """User flipped the [initial_state].frame combo: when the swap
+        is between two HF frames (`central_inertial`,
+        `central_body_fixed`, `orbit_plane`), rotate the currently
+        typed cart / kep values in place so the displayed numbers
+        reflect the new basis. Other transitions (e.g. dynamics-model
+        reflow that inserts `synodic_rotating`) do not rotate -- only
+        the HF frames describe the same physical state in different
+        bases.
 
         When rotation prerequisites are missing (empty et_start_s,
         unreadable ephemeris for Moon, etc.) we still honour the
@@ -1349,10 +1399,9 @@ class SectionBuildersMixin:
         was skipped -- the previous behaviour of silently reverting
         the combo to its old value made it look like the BF option
         was broken when actually et_start was just empty."""
-        bf_pair = {"central_inertial", "central_body_fixed"}
         if (new_frame == self._input_frame_prev
-                or new_frame not in bf_pair
-                or self._input_frame_prev not in bf_pair):
+                or new_frame not in self._IC_HF_FRAMES
+                or self._input_frame_prev not in self._IC_HF_FRAMES):
             self._input_frame_prev = new_frame
             return
         # Toggle handlers NEVER re-seed the cache: each re-seed
@@ -1372,30 +1421,37 @@ class SectionBuildersMixin:
         et = self._form_et_start()
         if et is None:
             QMessageBox.warning(
-                self, "Body-fixed rotation skipped",
+                self, "Frame rotation skipped",
                 "Set simulation.et_start_s first so the form knows at "
-                "which epoch to evaluate the body-fixed rotation. The "
+                "which epoch to evaluate the frame rotation. The "
                 "frame selector was kept on '" + new_frame + "' but the "
                 "values below have NOT been rotated.")
             self._input_frame_prev = new_frame
             return
-        R_icrf_to_bf = self._resolve_bf_rotation(et)
-        if R_icrf_to_bf is None:
-            QMessageBox.warning(
-                self, "Body-fixed rotation unavailable",
-                "Could not evaluate the body-fixed rotation at the "
-                "current et_start_s. For Moon: pick a valid DE-series "
-                "ephemeris in [ephemeris].file. For Earth: make sure "
-                "the EOP file exists under the wizard data dir. The "
-                "frame selector was kept on '" + new_frame + "' but "
-                "the values below have NOT been rotated.")
-            self._input_frame_prev = new_frame
-            return
-        # icrf->bf when going inertial -> body_fixed; transpose for
-        # the reverse. Pure rotation only (no omega x r correction);
-        # matches the Slice-B plot semantics so what you see in BF
-        # plots round-trips through this form unchanged.
-        R = R_icrf_to_bf if new_frame == "central_body_fixed" else R_icrf_to_bf.T
+        import numpy as np
+        # Compose old -> ICRF -> new; `central_inertial` contributes
+        # the identity on either side. Pure rotation only (no omega x r
+        # correction); matches the Slice-B plot semantics so what you
+        # see in BF plots round-trips through this form unchanged.
+        R = np.eye(3)
+        for name, invert in ((self._input_frame_prev, True),
+                             (new_frame, False)):
+            if name == "central_inertial":
+                continue
+            R_icrf_to_f = self._resolve_ic_frame_rotation(name, et)
+            if R_icrf_to_f is None:
+                QMessageBox.warning(
+                    self, "Frame rotation unavailable",
+                    "Could not evaluate the '" + name + "' rotation at "
+                    "the current et_start_s. For Moon: pick a valid "
+                    "DE-series ephemeris in [ephemeris].file. For Earth: "
+                    "make sure the EOP file exists under the wizard data "
+                    "dir. The frame selector was kept on '"
+                    + new_frame + "' but the values below have NOT been "
+                    "rotated.")
+                self._input_frame_prev = new_frame
+                return
+            R = (R_icrf_to_f.T if invert else R_icrf_to_f) @ R
         if kind == "cartesian":
             self._rotate_cart_inplace(R)
         else:
@@ -1476,11 +1532,17 @@ class SectionBuildersMixin:
           - HF + body has BF orientation   -> ("central_inertial",
                                               "central_body_fixed")
           - HF + body without BF provider  -> ("central_inertial",)
+          - HF + Moon                      -> ... plus ("orbit_plane",)
+
+        `orbit_plane` is Moon-only for now because the engine defines
+        the plane as the Earth's apparent orbit about the Moon; the
+        gate here mirrors the validator in src/toml_input.c so the
+        combo never offers a frame the engine would reject at load.
 
         The previous selection survives the rebuild when it's still
         a valid item; otherwise the combo snaps to the first entry
         and `_input_frame_prev` is reset to match so a subsequent
-        BF<->ICRF flip does not try to rotate from a stale state."""
+        frame flip does not try to rotate from a stale state."""
         frame_combo = self._widgets.get("initial_state.frame")
         if not isinstance(frame_combo, QComboBox):
             return
@@ -1499,6 +1561,8 @@ class SectionBuildersMixin:
                             and spec.bf_orientation is not None)
             items = (("central_inertial", "central_body_fixed")
                      if bf_available else ("central_inertial",))
+            if bf_available and cb_name == "Moon":
+                items += ("orbit_plane",)
         prev = frame_combo.currentText()
         frame_combo.blockSignals(True)
         frame_combo.clear()
@@ -1846,8 +1910,19 @@ class SectionBuildersMixin:
         self._batch_rotated_preview_header = QLabel(
             "Rotated preview (post RIC -> ICRF):")
         rp_header.addWidget(self._batch_rotated_preview_header, 1)
-        rp_refresh = QPushButton("Refresh preview")
-        rp_refresh.clicked.connect(self._update_ric_preview)
+        # Writes the rotated CSV as well as refreshing the table, so the
+        # file on disk can be inspected before committing to a run. The
+        # auto-refresh path stays read-only -- it fires on every edit to
+        # [initial_state] and must not touch the filesystem.
+        rp_refresh = QPushButton("Rotate + refresh")
+        rp_refresh.setToolTip(
+            "Rotate the source cases CSV into ICRF now, writing "
+            "<stem>_wrt_icrf.csv next to it, and refresh the preview "
+            "below from the same inputs.\n\n"
+            "Running does this again on its own, so pressing this is "
+            "never required -- it is here to let you inspect the "
+            "rotated file before launching.")
+        rp_refresh.clicked.connect(self._on_rotate_refresh_clicked)
         rp_header.addWidget(rp_refresh)
         rp_v.addLayout(rp_header)
 

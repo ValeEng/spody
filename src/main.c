@@ -453,6 +453,22 @@ static int cmd_batch(int argc, char **argv) {
         return 1;
     }
 
+    /* Collapse [initial_state] to central-inertial cartesian ONCE,
+     * before any case is applied. Per-case CSV columns land on
+     * position_km / velocity_kms, so the base they are added to has to
+     * be in a known frame first -- otherwise an ICRF offset would be
+     * summed onto body-fixed / orbit-plane components and the whole
+     * sum rotated afterwards, silently displacing every case. */
+    if (spody_resolve_initial_state_icrf(&cfg, &shared, &err) != SPODY_OK) {
+        if (err.file[0] == '\0') {
+            snprintf(err.file, sizeof err.file, "%s", toml_path);
+        }
+        spody_error_print(&err);
+        spody_free_shared(&shared);
+        spody_log_close_mirror(); spody_free_input(&cfg);
+        return 1;
+    }
+
     /* Aggregated events sink: when the user enabled events_log in the
      * TOML, open ONE file `<batch_subdir>/<batch_name>_events.bin` and
      * share it across all per-case workers. spody_run_simulation

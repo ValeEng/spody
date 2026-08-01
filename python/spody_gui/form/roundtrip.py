@@ -397,11 +397,12 @@ class RoundTripMixin:
                 if idx >= 0:
                     dm_combo.setCurrentIndex(idx)
             self._on_dynamics_model_changed(str(dm_value))
-            # TOML always stores inertial values so the loaded
-            # `frame` will be central_inertial / synodic_rotating;
-            # sync the rotation tracker accordingly so a subsequent
-            # user-driven BF flip rotates from ICRF, not from a stale
-            # in-memory state.
+            # The TOML stores the values in whatever frame the user
+            # picked (central_inertial / central_body_fixed /
+            # orbit_plane / synodic_rotating) -- the engine rotates at
+            # sim_setup. Sync the rotation tracker to the loaded frame
+            # so a subsequent user-driven flip rotates from what is
+            # actually in the fields, not from a stale in-memory state.
             self._input_frame_prev = (
                 flat.get("initial_state.frame") or "central_inertial")
 
@@ -611,6 +612,39 @@ class RoundTripMixin:
         self.clear_modified()
         return True
 
+    def regenerate_rotating_cases(self, toml_path: Path | None) -> bool:
+        """Rebuild `<stem>_wrt_icrf.csv` from the source CSV using the
+        form's current state. Returns True when there was nothing to do
+        or the rotation succeeded, False after a message box.
+
+        `toml_path` may be None (form never saved), in which case the
+        cases path has to be absolute already -- the resolver says so
+        rather than guessing a base directory.
+
+        Called by the Run action before every launch, and by the
+        **Rotate + refresh** button. `write_to` already
+        rotates at Generate, but the source CSV is an *external* file:
+        editing it leaves the form unmodified, so nothing would trigger
+        a rebuild and the run would use stale rows with no diagnostic.
+        Treating the rotated file as a derived artifact and rebuilding it
+        per launch removes that whole failure mode -- at the cost of
+        rewriting one small CSV.
+
+        No-op unless the batch section is enabled and `cases_frame` is a
+        rotating frame; an `icrf` source is used verbatim and has no
+        derived copy."""
+        if not (self._batch_check.isChecked()
+                and self._batch_cases_frame_combo.currentText()
+                    in self._ROTATING_FRAMES):
+            return True
+        try:
+            data = self.to_dict()
+        except ValueError as exc:
+            QMessageBox.critical(self, "Rotation failed",
+                                 f"{toml_path}\n{exc}")
+            return False
+        return self._rotate_ric_cases(toml_path, data)
+
     def _resolve_ric_inputs(self, toml_path: Path | None,
                             data: dict[str, Any]) -> tuple | None:
         """Shared resolver for the rotating-frame pipeline (used by
@@ -652,15 +686,25 @@ class RoundTripMixin:
             return ("error", f"cases_file not found:\n  {src}")
         out = src.with_name(f"{src.stem}_wrt_icrf.csv")
 
-        init = data.get("initial_state", {})
-        r_ref = init.get("position_km")
-        v_ref = init.get("velocity_kms")
-        if not (isinstance(r_ref, list) and len(r_ref) == 3 and
-                isinstance(v_ref, list) and len(v_ref) == 3):
+        # Reference orbit = the form's canonical cartesian-inertial
+        # state, NOT the raw [initial_state] keys: the rotating-frame
+        # axes are a property of the physical orbit, so they must be
+        # built in ICRF whatever (kind, frame) the user is typing in.
+        # Reading the raw keys would miss a Keplerian block entirely
+        # (it has no cartesian keys) and would silently build the basis
+        # out of body-fixed / orbit-plane components.
+        kind, frame = self._ic_current_view()
+        block = self._snapshot_ic_block(kind)
+        rv = (self._ic_block_to_cart_inertial(block, kind, frame)
+              if block is not None else None)
+        if rv is None:
             return ("error",
-                    "[initial_state].position_km and velocity_kms must "
-                    "be fully filled -- they define the reference orbit "
-                    "whose axes the cases CSV uses.")
+                    f"Could not resolve the reference orbit from the "
+                    f"{kind} / {frame} [initial_state] block -- it "
+                    f"defines the axes the cases CSV is written in. "
+                    f"Fill every field; for a non-inertial frame also "
+                    f"set simulation.et_start_s and the ephemeris file.")
+        r_ref, v_ref = rv
 
         cols_map: dict[str, Any] = data.get("batch", {}).get("columns", {})
         pos_by_idx: dict[int, str] = {}

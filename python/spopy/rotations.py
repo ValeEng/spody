@@ -82,6 +82,69 @@ def moon_pa_to_icrf(phi: float, theta: float, psi: float) -> np.ndarray:
     return icrf_to_moon_pa(phi, theta, psi).T
 
 
+def icrf_to_orbit_plane(pole_icrf, r_pert_km, v_pert_kms) -> np.ndarray:
+    """3x3 rotation matrix mapping ICRF components to Ely's orbit-plane
+    (OP) frame: r_OP = R @ r_ICRF. Use `R.T` for the inverse.
+
+    Twin of the `SPODY_FRAME_ORBIT_PLANE` branch in
+    [src/sim_setup.c](../../src/sim_setup.c) -- keep the two in
+    lockstep. Frozen lunar orbits (ELFO) are defined in this frame,
+    NOT against the lunar equator: for the Moon the two poles sit
+    ~6.8 deg apart, so the same inclination denotes two different
+    orbits.
+
+        z_op = (r_pert x v_pert) / |r_pert x v_pert|
+        x_op = (pole x z_op) / |pole x z_op|
+        y_op = z_op x x_op
+
+    Inputs are explicit vectors rather than an ephemeris handle so this
+    stays dependency-free and callable from both the GUI form and
+    offline analysis.
+
+    Parameters
+    ----------
+    pole_icrf : array_like, shape (3,)
+        Central body's north pole in ICRF components -- the +Z row of
+        the ICRF->body-fixed matrix (`icrf_to_moon_pa(...)[2]`).
+    r_pert_km, v_pert_kms : array_like, shape (3,)
+        State of the perturbing body relative to the central body, at
+        the epoch the frame is anchored to (instantaneous, not
+        averaged -- matches the paper's definition and the engine).
+
+    Returns
+    -------
+    R : ndarray, shape (3, 3)
+        Rows are (x_op, y_op, z_op) in ICRF components.
+
+    Raises
+    ------
+    ValueError
+        If the perturber state is degenerate (collinear r and v), or
+        if its orbit plane is parallel to the central body's equator,
+        which leaves the x-axis undefined.
+    """
+    pole = np.asarray(pole_icrf, dtype=float)
+    z = np.cross(np.asarray(r_pert_km, dtype=float),
+                 np.asarray(v_pert_kms, dtype=float))
+    zn = np.linalg.norm(z)
+    if not zn > 0.0:
+        raise ValueError("degenerate perturber orbit normal "
+                         "(collinear position and velocity)")
+    z /= zn
+
+    x = np.cross(pole, z)
+    xn = np.linalg.norm(x)
+    # |pole x z| is the sine of the pole separation: ~0.118 for the
+    # Moon/Earth pair. Near zero the perturber orbits in the central
+    # body's equatorial plane and x_op is undefined.
+    if not xn > np.sqrt(np.finfo(float).eps):
+        raise ValueError("perturber orbit plane is parallel to the "
+                         "central body equator; OP x-axis undefined")
+    x /= xn
+
+    return np.stack((x, np.cross(z, x), z))
+
+
 if __name__ == "__main__":
     # Self-test: round-trip + orthogonality + agreement with a
     # numpy-built reference for a few sample angles.

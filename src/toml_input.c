@@ -299,10 +299,13 @@ static int parse_frame(const char *name, SpodyFrame *out, SpodyError *err) {
     if (strcmp(name, "central_body_fixed") == 0) {
         *out = SPODY_FRAME_CENTRAL_BODY_FIXED; return SPODY_OK;
     }
+    if (strcmp(name, "orbit_plane") == 0) {
+        *out = SPODY_FRAME_ORBIT_PLANE; return SPODY_OK;
+    }
     spody_error_set(err, SPODY_ERR_BAD_VALUE,
             "initial_state.frame = '%s' is not supported "
             "(supported: 'central_inertial', 'synodic_rotating', "
-            "'central_body_fixed')", name);
+            "'central_body_fixed', 'orbit_plane')", name);
     return SPODY_ERR_BAD_VALUE;
 }
 
@@ -706,11 +709,12 @@ static int finalize_keplerian_initial_state(InputConfig *cfg, SpodyError *err) {
                  ? cfg->cr3bp_mu2 : cfg->cr3bp_mu1;
     } else {  /* high_fidelity */
         if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL
-                && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED) {
+                && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED
+                && cfg->initial_frame != SPODY_FRAME_ORBIT_PLANE) {
             spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                    "initial_state.frame must be 'central_inertial' or "
-                    "'central_body_fixed' for Keplerian input under "
-                    "dynamics_model = 'high_fidelity'");
+                    "initial_state.frame must be 'central_inertial', "
+                    "'central_body_fixed' or 'orbit_plane' for Keplerian "
+                    "input under dynamics_model = 'high_fidelity'");
             return SPODY_ERR_BAD_VALUE;
         }
         if (cfg->kep_ref_body != SPODY_REF_BODY_CENTRAL) {
@@ -1905,16 +1909,34 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
     /* From here down: high_fidelity validator. */
 
     /* Initial state frame: HF accepts central_inertial (no
-     * transformation) OR central_body_fixed (sim_setup rotates the
-     * parsed values via the central body's bf_rotation provider at
-     * et_start_s, so the downstream integrator still sees a plain
-     * central_inertial state). */
+     * transformation) OR central_body_fixed / orbit_plane (sim_setup
+     * rotates the parsed values at et_start_s -- via the central
+     * body's bf_rotation provider and, for orbit_plane, the
+     * perturber's ephemeris -- so the downstream integrator still
+     * sees a plain central_inertial state). */
     if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL
-            && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED) {
+            && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED
+            && cfg->initial_frame != SPODY_FRAME_ORBIT_PLANE) {
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "initial_state.frame must be 'central_inertial' or "
-                "'central_body_fixed' when dynamics_model = "
-                "'high_fidelity'");
+                "initial_state.frame must be 'central_inertial', "
+                "'central_body_fixed' or 'orbit_plane' when "
+                "dynamics_model = 'high_fidelity'");
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    /* orbit_plane needs a perturbing body whose apparent orbit about
+     * the central body defines the +z axis. The pairing is implicit
+     * for now (Moon -> Earth, i.e. Ely's ELFO frame); generalising
+     * means relaxing this gate and adding an explicit
+     * `initial_state.orbit_plane_body` key -- the rotation itself in
+     * sim_setup is already written against an arbitrary NAIF pair. */
+    if (cfg->initial_frame == SPODY_FRAME_ORBIT_PLANE
+            && cfg->central_body != SPODY_CENTRAL_MOON) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "initial_state.frame = 'orbit_plane' is currently defined "
+                "only for force_model.central_body = 'Moon' (the plane is "
+                "the Earth's apparent orbit about the Moon); got '%s'",
+                spody_central_body_name(cfg->central_body));
         return SPODY_ERR_BAD_VALUE;
     }
 

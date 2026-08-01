@@ -21,6 +21,8 @@
  */
 #include "sim_setup.h"
 
+#include <float.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -213,6 +215,151 @@ void spody_free_shared(SimulationShared *shared) {
 /* ==================================================================
  * Per-worker state
  * ================================================================== */
+
+/* Collapse cfg's (position_km, velocity_kms) into the central-inertial
+ * pair the integrator runs on, writing y0.
+ *
+ * `ctx` only has to carry what the selected frame reads -- for
+ * `central_body_fixed` that is `get_bf_rotation` (which itself reads
+ * `eph` for the Moon, `eop` + `iau2006` for the Earth), and
+ * `orbit_plane` additionally uses `eph` for the perturber state. Both
+ * a full worker context and the minimal one assembled by
+ * spody_resolve_initial_state_icrf satisfy that, which is why the
+ * resolver does NOT have to build a throwaway worker. Same pattern the
+ * GNSS converters already use when they call spody_bf_rotation_earth
+ * with a converter-local context. */
+static int initial_state_to_icrf(const InputConfig *cfg,
+                                 const ForceModelContext *ctx,
+                                 const SpodyCentralBodySpec *body,
+                                 double y0[6], SpodyError *err) {
+    /* The integrator runs in central_inertial; when
+     * `frame = "central_body_fixed"` was selected the cfg's
+     * position_km / velocity_kms are in the central body's body-
+     * fixed basis at et_start_s, so we rotate them up here via the
+     * same `get_bf_rotation` callback the force-model uses on every
+     * integrator step (Earth ITRS via IAU 2006 + EOP, Moon PA via
+     * the DE-series libration angles). Pure rotation only -- no
+     * omega x r correction; matches the GUI / spopy plotting
+     * convention so values round-trip through both. */
+    y0[0] = cfg->position_km[0];  y0[1] = cfg->position_km[1];
+    y0[2] = cfg->position_km[2];
+    y0[3] = cfg->velocity_kms[0]; y0[4] = cfg->velocity_kms[1];
+    y0[5] = cfg->velocity_kms[2];
+    if (cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED) {
+        if (!ctx->get_bf_rotation) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "central body '%s' has no body-fixed rotation "
+                    "provider; initial_state.frame = 'central_body_fixed' "
+                    "is not supported for this body",
+                    body->name);
+            return err ? err->code : SPODY_ERR_INTERNAL;
+        }
+        double R_icrf_to_bf[3][3], R_bf_to_icrf[3][3];
+        ctx->get_bf_rotation(ctx, cfg->et_start_s,
+                                R_icrf_to_bf, R_bf_to_icrf);
+        double r_bf[3] = { y0[0], y0[1], y0[2] };
+        double v_bf[3] = { y0[3], y0[4], y0[5] };
+        for (int i = 0; i < 3; ++i) {
+            y0[i]     = R_bf_to_icrf[i][0] * r_bf[0]
+                      + R_bf_to_icrf[i][1] * r_bf[1]
+                      + R_bf_to_icrf[i][2] * r_bf[2];
+            y0[i + 3] = R_bf_to_icrf[i][0] * v_bf[0]
+                      + R_bf_to_icrf[i][1] * v_bf[1]
+                      + R_bf_to_icrf[i][2] * v_bf[2];
+        }
+    } else if (cfg->initial_frame == SPODY_FRAME_ORBIT_PLANE) {
+        /* Ely's orbit-plane (OP) frame, evaluated once at et_start_s
+         * and then treated as inertial -- it only ever labels the
+         * initial state:
+         *
+         *   z_op = (r_p x v_p) / |r_p x v_p|   perturbing body's
+         *                                      apparent orbit normal
+         *                                      about the central body
+         *   x_op = (I_p x z_op) / |I_p x z_op| I_p = central body pole
+         *   y_op = z_op x x_op
+         *
+         * Frozen lunar orbits are stated in this frame, not against
+         * the lunar equator: the two poles sit ~6.8 deg apart, so the
+         * same inclination means two different orbits. The perturber
+         * is implicit (Moon -> Earth) and gated in the validator; the
+         * arithmetic below only needs the NAIF pair, so widening it
+         * later is a validator change plus a config key.
+         *
+         * Kept as a separate branch from the body-fixed case above
+         * rather than folded into a shared "rotate y0" helper: the
+         * two differ in how they obtain the matrix, not just in the
+         * matrix, and the multiply is three lines. */
+        if (!ctx->get_bf_rotation) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "central body '%s' has no body-fixed rotation "
+                    "provider; initial_state.frame = 'orbit_plane' needs "
+                    "it for the body's pole direction", body->name);
+            return err ? err->code : SPODY_ERR_INTERNAL;
+        }
+        double s[6];
+        const int pert_naif = spody_central_body_naif(SPODY_CENTRAL_EARTH);
+        if (spody_get_ephstate(ctx->eph, body->naif, pert_naif,
+                               cfg->et_start_s, s) != 0) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "could not evaluate the NAIF %d state about '%s' at "
+                    "et_start_s = %.9g; initial_state.frame = "
+                    "'orbit_plane' needs it to build the plane",
+                    pert_naif, body->name, cfg->et_start_s);
+            return err ? err->code : SPODY_ERR_INTERNAL;
+        }
+        double z[3] = { s[1] * s[5] - s[2] * s[4],
+                        s[2] * s[3] - s[0] * s[5],
+                        s[0] * s[4] - s[1] * s[3] };
+        double zn = sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+        if (!(zn > 0.0)) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "degenerate orbit normal for NAIF %d about '%s' "
+                    "(collinear position and velocity)",
+                    pert_naif, body->name);
+            return err ? err->code : SPODY_ERR_INTERNAL;
+        }
+        z[0] /= zn; z[1] /= zn; z[2] /= zn;
+
+        /* Central body pole in ICRF = +Z of the body-fixed basis =
+         * third row of the ICRF->BF matrix. */
+        double R_icrf_to_bf[3][3], R_bf_to_icrf[3][3];
+        ctx->get_bf_rotation(ctx, cfg->et_start_s,
+                                R_icrf_to_bf, R_bf_to_icrf);
+        const double *pole = R_icrf_to_bf[2];
+
+        double x[3] = { pole[1] * z[2] - pole[2] * z[1],
+                        pole[2] * z[0] - pole[0] * z[2],
+                        pole[0] * z[1] - pole[1] * z[0] };
+        double xn = sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+        /* |I_p x z| is the sine of the pole separation: ~0.118 for the
+         * Moon/Earth pair. Anything near zero means the perturber
+         * orbits in the central body's equatorial plane, leaving the
+         * OP x-axis undefined. */
+        if (!(xn > sqrt(DBL_EPSILON))) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "initial_state.frame = 'orbit_plane' is degenerate at "
+                    "et_start_s = %.9g: the NAIF %d orbit plane is parallel "
+                    "to the '%s' equator, so the frame's x-axis is undefined",
+                    cfg->et_start_s, pert_naif, body->name);
+            return err ? err->code : SPODY_ERR_INTERNAL;
+        }
+        x[0] /= xn; x[1] /= xn; x[2] /= xn;
+
+        double y[3] = { z[1] * x[2] - z[2] * x[1],
+                        z[2] * x[0] - z[0] * x[2],
+                        z[0] * x[1] - z[1] * x[0] };
+
+        /* (x, y, z) are the OP axes in ICRF components, i.e. the
+         * columns of the OP->ICRF map. */
+        double r_op[3] = { y0[0], y0[1], y0[2] };
+        double v_op[3] = { y0[3], y0[4], y0[5] };
+        for (int i = 0; i < 3; ++i) {
+            y0[i]     = x[i] * r_op[0] + y[i] * r_op[1] + z[i] * r_op[2];
+            y0[i + 3] = x[i] * v_op[0] + y[i] * v_op[1] + z[i] * v_op[2];
+        }
+    }
+    return SPODY_OK;
+}
 
 int spody_build_worker(const InputConfig *cfg,
                        const SimulationShared *shared,
@@ -436,41 +583,11 @@ int spody_build_worker(const InputConfig *cfg,
     }
     w->init_integ = 1;
 
-    /* Initial state. The integrator runs in central_inertial; when
-     * `frame = "central_body_fixed"` was selected the cfg's
-     * position_km / velocity_kms are in the central body's body-
-     * fixed basis at et_start_s, so we rotate them up here via the
-     * same `get_bf_rotation` callback the force-model uses on every
-     * integrator step (Earth ITRS via IAU 2006 + EOP, Moon PA via
-     * the DE-series libration angles). Pure rotation only -- no
-     * omega x r correction; matches the GUI / spopy plotting
-     * convention so values round-trip through both. */
-    double y0[6] = {
-        cfg->position_km[0],  cfg->position_km[1],  cfg->position_km[2],
-        cfg->velocity_kms[0], cfg->velocity_kms[1], cfg->velocity_kms[2]
-    };
-    if (cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED) {
-        if (!w->ctx.get_bf_rotation) {
-            spody_error_set(err, SPODY_ERR_INTERNAL,
-                    "central body '%s' has no body-fixed rotation "
-                    "provider; initial_state.frame = 'central_body_fixed' "
-                    "is not supported for this body",
-                    body->name);
-            goto fail;
-        }
-        double R_icrf_to_bf[3][3], R_bf_to_icrf[3][3];
-        w->ctx.get_bf_rotation(&w->ctx, cfg->et_start_s,
-                                R_icrf_to_bf, R_bf_to_icrf);
-        double r_bf[3] = { y0[0], y0[1], y0[2] };
-        double v_bf[3] = { y0[3], y0[4], y0[5] };
-        for (int i = 0; i < 3; ++i) {
-            y0[i]     = R_bf_to_icrf[i][0] * r_bf[0]
-                      + R_bf_to_icrf[i][1] * r_bf[1]
-                      + R_bf_to_icrf[i][2] * r_bf[2];
-            y0[i + 3] = R_bf_to_icrf[i][0] * v_bf[0]
-                      + R_bf_to_icrf[i][1] * v_bf[1]
-                      + R_bf_to_icrf[i][2] * v_bf[2];
-        }
+    /* Initial state: one representation reaches the integrator, a
+     * central-inertial cartesian pair. See initial_state_to_icrf. */
+    double y0[6];
+    if (initial_state_to_icrf(cfg, &w->ctx, body, y0, err) != SPODY_OK) {
+        goto fail;
     }
     if (spody_set_integrator_state(&w->integ, 0.0, y0) != SPODY_INTEG_OK) {
         spody_error_set(err, SPODY_ERR_INTERNAL,
@@ -483,6 +600,69 @@ int spody_build_worker(const InputConfig *cfg,
 fail:
     spody_free_worker(w);
     return err ? err->code : SPODY_ERR_INTERNAL;
+}
+
+int spody_resolve_initial_state_icrf(InputConfig *cfg,
+                                     const SimulationShared *shared,
+                                     SpodyError *err) {
+    /* Only the two rotated frames have anything to collapse.
+     * central_inertial is already the propagator's representation
+     * (Keplerian input was flattened into position_km / velocity_kms
+     * by the parser, in that same frame), and synodic_rotating is the
+     * CR3BP integrator's own basis -- there is no ICRF to resolve to,
+     * and `shared` carries no ephemeris under CR3BP to try it with. */
+    if (cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED
+            && cfg->initial_frame != SPODY_FRAME_ORBIT_PLANE) {
+        return SPODY_OK;
+    }
+
+    const SpodyCentralBodySpec *body =
+            spody_central_body_get(cfg->central_body);
+    if (!body) {
+        spody_error_set(err, SPODY_ERR_INTERNAL,
+                "could not resolve central body (enum=%d) while collapsing "
+                "the initial state", (int)cfg->central_body);
+        return SPODY_ERR_INTERNAL;
+    }
+
+    /* Minimal context: the rotation providers read `eph` (Moon) or
+     * `eop` + `iau2006` (Earth) and nothing else, so there is no need
+     * to stand up a worker's harmonics / spacecraft / integrator just
+     * to evaluate one matrix. Handles are thin views over the already
+     * mapped shared data. */
+    MappedEphemeris eph;
+    MappedEOP       eop;
+    MappedIAU2006   iau;
+    int have_eop = 0, have_iau = 0;
+
+    spody_setup_MappedEphemeris(&eph, &shared->med);
+    if (shared->init_eop) { spody_setup_MappedEOP(&eop, &shared->eop_data); have_eop = 1; }
+    if (shared->init_iau) { spody_setup_MappedIAU2006(&iau, &shared->iau2006_data); have_iau = 1; }
+
+    ForceModelContext ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.eph             = &eph;
+    ctx.eop             = have_eop ? &eop : NULL;
+    ctx.iau2006         = have_iau ? &iau : NULL;
+    ctx.naif_central    = body->naif;
+    ctx.get_bf_rotation = body->bf_rotation;
+
+    double y0[6];
+    int rc = initial_state_to_icrf(cfg, &ctx, body, y0, err);
+
+    if (have_iau) spody_free_MappedIAU2006(&iau);
+    if (have_eop) spody_free_MappedEOP(&eop);
+    spody_free_MappedEphemeris(&eph);
+
+    if (rc != SPODY_OK) return rc;
+
+    for (int i = 0; i < 3; ++i) {
+        cfg->position_km[i]  = y0[i];
+        cfg->velocity_kms[i] = y0[i + 3];
+    }
+    cfg->initial_frame = SPODY_FRAME_CENTRAL_INERTIAL;
+    cfg->init_kind     = SPODY_INIT_CARTESIAN;
+    return SPODY_OK;
 }
 
 void spody_free_worker(SimulationWorker *w) {

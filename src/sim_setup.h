@@ -173,6 +173,30 @@ int  spody_build_worker(const InputConfig *cfg,
  * worker references. Safe on a zero-initialised struct. */
 void spody_free_worker (SimulationWorker *w);
 
+/* Collapse cfg's initial state to the one representation the
+ * propagator consumes: a central-inertial cartesian (position,
+ * velocity) pair. Rewrites cfg->position_km / velocity_kms in place,
+ * sets cfg->initial_frame = SPODY_FRAME_CENTRAL_INERTIAL and
+ * cfg->init_kind = SPODY_INIT_CARTESIAN, and is a cheap no-op when
+ * the state is already in that form.
+ *
+ * Batch mode MUST call this on the base config before applying any
+ * case: per-case CSV columns land on position_km / velocity_kms, and
+ * an offset is only meaningful once the base it is added to is in a
+ * known frame. Applying offsets first and rotating the sum afterwards
+ * would interpret ICRF offsets as frame-relative components -- for a
+ * lunar orbit_plane state that displaces a case by more than the
+ * offset it asked for.
+ *
+ * Requires an already-built `shared` (the rotation is evaluated at
+ * cfg->et_start_s from the ephemeris / orientation providers). Builds
+ * only the handles those providers read -- no worker, no harmonics, no
+ * integrator workspace. A no-op for central_inertial (already resolved)
+ * and for synodic_rotating (CR3BP's own basis). */
+int  spody_resolve_initial_state_icrf(InputConfig *cfg,
+                                      const SimulationShared *shared,
+                                      SpodyError *err);
+
 #ifdef __cplusplus
 }
 #endif

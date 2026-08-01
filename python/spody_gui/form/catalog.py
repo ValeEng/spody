@@ -43,14 +43,23 @@ from ..central_bodies import known_central_body_names
 CENTRAL_BODIES   = known_central_body_names()
 DYNAMICS_MODELS  = ("high_fidelity", "cr3bp")
 # Per-model valid frames -- the [initial_state] frame combo is filtered
-# to the entries valid under the currently-selected dynamics_model.
-# `central_body_fixed` is GUI-only: the user types the [initial_state]
-# vectors (cart or kep angles) in the central body's body-fixed basis
-# (Earth ITRS, Moon PA), and the form rotates them to ICRF at TOML
-# emit so the engine sees plain `central_inertial`. The combo entry
-# is auto-hidden for bodies without a registered orientation provider.
+# to the entries valid under the currently-selected dynamics_model
+# (and central body) by `_refresh_input_frame_availability`.
+#
+# `central_body_fixed` and `orbit_plane` are engine-native since spody
+# 0.2.x: the user types the [initial_state] vectors (cart or kep
+# angles) in that basis and the GUI emits the frame name unchanged --
+# sim_setup rotates to the integrator's central_inertial at
+# et_start_s. The form only rotates in-place to keep the *displayed*
+# numbers consistent when the combo is flipped.
+#   central_body_fixed -- the body's body-fixed basis (Earth ITRS,
+#     Moon PA); auto-hidden for bodies without an orientation provider.
+#   orbit_plane -- Ely's OP frame, +z along the Earth's apparent orbit
+#     normal about the Moon; the frame lunar frozen orbits (ELFO) are
+#     defined in. Moon-only for now, mirroring the engine validator.
 FRAMES_BY_MODEL: dict[str, tuple[str, ...]] = {
-    "high_fidelity": ("central_inertial", "central_body_fixed"),
+    "high_fidelity": ("central_inertial", "central_body_fixed",
+                      "orbit_plane"),
     "cr3bp":         ("synodic_rotating",),
 }
 # Curated CR3BP primary pairs. Mirror of CR3BP_PAIRS in
@@ -133,7 +142,7 @@ TOOLTIPS: dict[str, str] = {
     "debris.Cr":                     "Reflectivity coefficient (used only when SRP is enabled).",
     "debris.am_drag":                "Drag area-to-mass ratio in m²/kg; > 0 (may differ from am_srp).",
     "debris.Cd":                     "Drag coefficient (used only when drag is enabled).",
-    "initial_state.frame":           "Inertial reference frame. v0 supports only 'central_inertial'.",
+    "initial_state.frame":           "Basis the initial state is written in. HF: 'central_inertial' (ICRF-aligned, central body at origin), 'central_body_fixed' (Earth ITRS / Moon PA at et_start_s), or 'orbit_plane' (Moon-only: Ely's OP frame, +z along the Earth's apparent orbit normal about the Moon, +x = lunar pole × z — the frame lunar frozen orbits are defined in). CR3BP: 'synodic_rotating'. Non-inertial choices are rotated to ICRF at et_start_s by the engine; flipping the combo re-expresses the values you already typed.",
     "initial_state.kind":            "Cartesian (default) gives [x, y, z] and [vx, vy, vz] directly. Keplerian gives six classical orbital elements + a reference body; the engine (and the form's swap helper) converts to Cartesian on the fly.",
     "initial_state.reference_body":  "Which body the Keplerian elements reference. HF: 'central' (implicit). CR3BP: 'primary_1' (bigger) or 'primary_2' (smaller); required, no default.",
     "initial_state.semi_major_axis_km": "Semi-major axis a, in km; > 0 for elliptical orbits.",

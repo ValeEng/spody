@@ -673,6 +673,25 @@ class VisibilityMixin:
         self._batch_rotated_preview_table.setRowCount(0)
         self._batch_rotated_preview_table.setColumnCount(0)
 
+    def _on_rotate_refresh_clicked(self) -> None:
+        """Rotate + refresh button: write `<stem>_wrt_icrf.csv` and then
+        refresh the preview from the same inputs, so the file that a run
+        would use can be inspected first.
+
+        Deliberately NOT wired into `_update_ric_preview`: that one is
+        the auto-refresh, connected to the source path, the frame combo
+        and the column table, and it must stay read-only. Writing a file
+        on every such signal would be a filesystem write per keystroke.
+
+        Runs do their own rotation regardless, so this button is a
+        convenience, never a prerequisite. Failures surface through
+        `_rotate_ric_cases`' own message box."""
+        if (self._batch_check.isChecked()
+                and self._batch_cases_frame_combo.currentText()
+                    in self._ROTATING_FRAMES):
+            self.regenerate_rotating_cases(self._current_path)
+        self._update_ric_preview()
+
     def _update_ric_preview(self) -> None:
         """Recompute the first 10 rotated rows of the source CSV and
         push them into the rotated-preview table. No-op (and hidden)

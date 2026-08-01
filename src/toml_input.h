@@ -65,7 +65,19 @@ typedef enum {
                                          * frame via the body's
                                          * bf_rotation provider; no
                                          * other downstream stage sees
-                                         * the body-fixed values. */
+                                         * the body-fixed values. */,
+    SPODY_FRAME_ORBIT_PLANE       = 3   /* HF: Ely's "orbit plane" (OP)
+                                         * frame, frozen at et_start_s.
+                                         * +z along the orbit normal of
+                                         * a perturbing body's apparent
+                                         * orbit about the central body,
+                                         * +x = central pole x z. Frozen
+                                         * lunar orbits (ELFO) are
+                                         * defined here, not against the
+                                         * lunar equator. Rotated to
+                                         * central_inertial in sim_setup
+                                         * exactly like the body-fixed
+                                         * case above. */
 } SpodyFrame;
 
 /* How [initial_state] expresses the IC. Default is cartesian so every
