@@ -6,7 +6,105 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
+### Added
+
+- **`orbit_plane` initial-state frame (Ely's OP frame).** New
+  `[initial_state].frame = "orbit_plane"`, valid under
+  `high_fidelity` with `central_body = "Moon"`, for both Cartesian
+  and Keplerian input. Axes, built once from the state at
+  `et_start_s` and then held inertial: `z` along the normal to the
+  Earth's apparent orbit about the Moon (`r_E × v_E`), `x` along
+  `I_p × z` with `I_p` the lunar pole, `y` completing the triad.
+  The engine rotates to the integrator's `central_inertial` basis at
+  setup, exactly like `central_body_fixed`, and the emitted TOML
+  keeps the frame name.
+
+  This is the frame the lunar frozen-orbit literature states its
+  elements in, and the distinction is not cosmetic: the lunar
+  equator and the Earth's apparent orbit plane are ~6.8&deg; apart,
+  so the same inclination number denotes a different orbit in each.
+  Entering a published frozen ELFO against the lunar equator can put
+  it up to 13&deg; off the frozen family &mdash; the eccentricity
+  then grows secularly and the orbit impacts within months, which
+  reads as a propagator bug but is a frame mismatch.
+
+  The perturbing body is implicit (Moon &rarr; Earth) and gated in
+  the validator; the rotation itself is written against an arbitrary
+  NAIF pair, so widening it later is a validator change plus a
+  config key. A degenerate configuration (perturber orbiting in the
+  central body's equatorial plane, which leaves `x` undefined) is
+  rejected rather than silently given an arbitrary node.
+
+  GUI: the frame appears in the `[initial_state]` combo when the
+  central body is the Moon, and participates in the lossless swap
+  cache like the other frames &mdash; flipping between any two of
+  the three high-fidelity frames re-expresses the typed values in
+  place. `spopy.rotations.icrf_to_orbit_plane` is the twin of the
+  engine branch.
+
+### Fixed
+
+- **Batch offsets are now applied in ICRF, whatever frame the initial
+  state was written in.** A batch case used to be applied to
+  `position_km` / `velocity_kms` and only *then* rotated into the
+  integrator's frame (`spody_apply_batch_case`, then
+  `spody_build_worker`), so each per-row offset was consumed in
+  whatever basis `[initial_state].frame` named &mdash; while the GUI's
+  RIC / LVLH pipeline produces offsets in ICRF. The two only agreed
+  when the frame was `central_inertial`. With a `central_body_fixed`
+  or `orbit_plane` initial state every case in the sweep was silently
+  displaced: for a lunar `orbit_plane` state, by *more than the offset
+  itself* (1.47 km of error on a 1 km offset), with no diagnostic.
+
+  `spody batch` now calls the new `spody_resolve_initial_state_icrf`
+  once, before the case loop: it collapses `[initial_state]` to the
+  single representation the propagator consumes &mdash; a
+  central-inertial cartesian pair &mdash; so every case adds its
+  offsets to a base that is already in a known frame. Keplerian input
+  in any frame works too; previously the GUI refused it outright,
+  since a Keplerian block has no cartesian keys for the offsets to
+  land on.
+
+  The fix is engine-side on purpose: the TOML keeps the frame the user
+  wrote, and any front end (or a hand-written TOML run from the
+  terminal) gets the corrected behaviour without having to know the
+  ordering rule. `spody propagate` is bit-identical &mdash; it always
+  rotated after the state was final &mdash; and so is a batch whose
+  initial state was already `central_inertial`.
+
+  GUI: the reference orbit that defines the RIC / LVLH axes is now
+  taken from the form's canonical cartesian-inertial state instead of
+  the raw `[initial_state]` keys, so the rotation basis is built in
+  ICRF no matter which `(kind, frame)` the elements were typed in.
+
+- **The rotated cases CSV can no longer go stale.** `<stem>_wrt_icrf
+  .csv` was written at Generate only. The source CSV is an external
+  file, so editing it left the form unmodified &mdash; Run then skipped
+  the save-and-rotate step and launched against the previous rotation,
+  with no diagnostic and silently wrong rows. (Pressing *Re-read
+  columns* did not help: it runs with the form's loading guard up, so
+  it does not mark the form dirty either.)
+
+  Run now rebuilds the rotated CSV before every launch, after the save
+  prompt, so it is always derived from the numbers about to be
+  propagated. It is unconditional rather than "only when Generate did
+  not just run": keeping the guarantee in one place is worth one small
+  CSV write per launch. The one case that is skipped is answering
+  *Discard* at the unsaved-changes prompt &mdash; the run then uses the
+  TOML on disk, so rotating with the form's unsaved reference orbit
+  would desync the CSV from what is actually propagating. A missing
+  source CSV aborts the launch with a message instead of running stale
+  rows.
+
 ### Changed
+
+- **The rotated-preview button now writes the file too**, and is
+  relabelled **Rotate + refresh** (was *Refresh preview*). It rotates
+  the source CSV to `<stem>_wrt_icrf.csv` and then redraws the preview,
+  so the file a run would consume can be opened and checked
+  beforehand. The *automatic* refresh &mdash; which fires on the source
+  path, the frame combo and the column table &mdash; stays read-only:
+  it redraws the table and never touches the filesystem.
 
 - **Earth-centred propagation is roughly 9&times; faster.** The IAU 2006
   precession-nutation series &mdash; 3084 terms, each a 14-term linear

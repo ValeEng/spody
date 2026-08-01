@@ -199,6 +199,18 @@ The contract between the three keys is:
      rotating-frame state on the next Load without the user
      re-picking the source.
 
+The rotated copy is a **derived artifact**: it is rebuilt at every
+Generate *and* again before every Run, so editing the source CSV
+outside SpOdy and pressing Run cannot launch against the previous
+rotation. If the source has gone missing the launch is refused rather
+than run with stale rows. The only time the rebuild is skipped is when
+you answer *Discard* at the unsaved-changes prompt &mdash; the run then
+uses the TOML already on disk, and the rotated copy that goes with it.
+
+Treat `<stem>_wrt_icrf.csv` as regenerable output: keep the **source**
+CSV under version control, not the rotated one, and copying a scenario
+elsewhere only needs the source.
+
 `spody.exe` ignores `cases_frame` and `cases_source_file` today &mdash;
 its TOML parser only reads the keys it knows about. The two extras
 are also a placeholder for a future engine-side rotating-frame
@@ -213,9 +225,15 @@ rows *after* rotation. Its header reads
 **(post LVLH -> ICRF)** depending on the active frame, so the
 displayed convention is never ambiguous. It refreshes
 automatically when you change the source path, the frame combo,
-or re-read the columns. A **Refresh preview** button on top of it
-forces a recompute after edits to `[initial_state]` or to the
-column-mapping table.
+or re-read the columns &mdash; that automatic refresh only redraws
+the table, it never touches the filesystem.
+
+A **Rotate + refresh** button on top of it does both halves: it
+writes `<stem>_wrt_icrf.csv` to disk *and* recomputes the table, so
+you can open the rotated file and check it before committing to a
+run. Use it after editing `[initial_state]` or the column-mapping
+table. It is never a prerequisite &mdash; running rotates again on
+its own &mdash; it just lets you look first.
 
 ### Pairing with delta mode
 
@@ -234,6 +252,28 @@ also accepted (in which case the rotated cell *replaces* the base
 value &mdash; useful only if the CSV's row magnitudes are already
 on the order of the reference state, which is unusual for sensor-
 frame measurements).
+
+### Offsets are always in ICRF
+
+`[initial_state]` may be written in any frame the schema allows
+(`central_inertial`, `central_body_fixed`, `orbit_plane`) and as
+either Cartesian or Keplerian. Before the first case is applied,
+`spody batch` collapses it to the one representation the propagator
+consumes: a central-inertial Cartesian `(position, velocity)` pair.
+**Every batch offset is therefore interpreted in ICRF**, regardless
+of how the base state was expressed.
+
+That is what makes the RIC / LVLH pipeline above correct: the GUI
+rotates the cases CSV into ICRF, the base is resolved to ICRF, and
+the addition happens between two quantities in the same frame.
+
+Nothing is required of you, and the TOML keeps the frame you wrote
+&mdash; it is worth knowing only if you hand-write a batch file, or
+if you are comparing against results produced before this rule
+existed. Older SpOdy applied each case *before* rotating the state
+into the working frame, so a batch whose initial state was
+`central_body_fixed` interpreted ICRF offsets as body-fixed
+components and quietly displaced every case.
 
 ### Sensor-frame snapshot convention
 

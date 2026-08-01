@@ -1134,6 +1134,80 @@ implementation demanding *exact* equality. Then §6.1 bit-identity on
 the multi-occulter path itself. **Document:** manual ch. 6 (*Which
 bodies cast a shadow*), CHANGELOG with the measured effect.
 
+### 5.14 New `[initial_state]` frame
+
+**Files:** `src/toml_input.h` (enum), `src/toml_input.c`
+(`parse_frame` + two validators), `src/sim_setup.c` (the rotation),
+`python/spopy/rotations.py` (the twin), `python/spody_gui/form/
+catalog.py` + `sections.py` (combo + swap cache).
+
+The shape every non-inertial frame follows — `central_body_fixed`
+and `orbit_plane` are both instances of it:
+
+1. **Enum value** in `SpodyFrame` (`toml_input.h`). Mind the comma:
+   the previous entry's trailing comment sits between the value and
+   the `,`, so `... */,` is the correct placement and forgetting it
+   produces a wall of cascading "syntax error" noise pointing at
+   unrelated lines.
+2. **Name** in `parse_frame` (`toml_input.c`), and add it to the
+   `(supported: ...)` suffix in the same function so a typo'd frame
+   lists it.
+3. **Two validators**, both in `toml_input.c`: the Keplerian
+   finalizer (`finalize_keplerian_initial_state`) and the
+   high-fidelity validator. They are separate gates — a frame added
+   to only one of them works for Cartesian input and is rejected for
+   Keplerian, or vice versa. Any body/model restriction goes in the
+   HF validator, with a message naming what the user actually
+   selected.
+4. **Rotation** in `sim_setup.c`, in the `if / else if` chain right
+   before `spody_set_integrator_state`. Everything it needs is
+   already on the worker: `w->ctx.get_bf_rotation` for the central
+   body's pole/basis, `&w->eph` for ephemeris queries, `body->naif`
+   for the central body id. **Pure rotation, no `omega x r`** — the
+   GUI and the spopy plotting path use the same convention, and
+   adding the frame-rate term here would make typed values fail to
+   round-trip through the form.
+5. **spopy twin** in `rotations.py`, taking *explicit vectors* rather
+   than an ephemeris handle so it stays dependency-free and usable
+   from both the GUI and offline analysis. §5.10 applies: the twin
+   and the C branch must agree, and the cheapest proof is to
+   propagate one step and read the engine's `t = 0` record back
+   through the twin.
+6. **GUI**: add the name to `FRAMES_BY_MODEL` (`catalog.py`), a
+   resolver returning `R_icrf_to_<frame>` wired into
+   `_resolve_ic_frame_rotation` (`sections.py`), two rows in
+   `_IC_VARIANTS` (cartesian + keplerian), the name in
+   `_IC_HF_FRAMES`, and any availability gate in
+   `_refresh_input_frame_availability`. The conversion hub
+   (`_ic_block_to_cart_inertial` / `_ic_block_from_cart_inertial`) is
+   already frame-generic — it dispatches on "not `central_inertial`"
+   — so a correct resolver is all the swap cache needs.
+
+**Break risk:** a GUI gate that is looser than the engine validator
+(the combo offers a frame the engine rejects at load); the swap cache
+silently keeping a stale representation because a new variant was
+added to `_IC_VARIANTS` but the frame was left out of
+`_IC_HF_FRAMES`, which makes the combo flip skip the rotation and
+*relabel* the numbers instead of converting them — the worst failure
+mode here, because nothing errors, the state just silently becomes a
+different orbit.
+
+**Verify:** (a) engine `t = 0` record read back through the spopy
+twin reproduces the typed elements — for `orbit_plane` this lands at
+4.5e-13 km on the state, with the true anomaly only good to ~1e-8 rad
+because `acos(r̂ · ê)` is ill-conditioned at periapsis in *any* frame;
+(b) `spody validate` on the rejected combinations (wrong central
+body, wrong dynamics model, typo'd name); (c) offscreen, every
+*ordered* pair of HF frames flipped through the combo with the cache
+cleared, each landing within ~1e-13 of the reference rotation —
+ordered, because composing old→ICRF→new is not symmetric and a
+transpose slip only shows in one direction; (d) form → TOML →
+`spody validate` → reload, checking the frame name survives; (e)
+§6.1 bit-identity on `gps_g11_validation`. **Document:** manual
+ch. 6 (schema table + a subsection on what the frame *is* and why it
+differs from the neighbouring one), ch. 5 (swap-cache count),
+README feature list, CHANGELOG.
+
 ## 6. Verifying changes
 
 ### 6.1 Engine changes
@@ -1250,6 +1324,22 @@ Each entry: the rule, and the symptom you'll see if you break it.
   stored ET by up to 1.657 ms vs SPICE. *Symptom of breakage:
   sub-second epoch offsets between GUI-displayed UTC and converter
   output, or meter-level Earth-fixed rotation biases at GNSS radius.*
+- **Resolve the initial state to ICRF before applying a batch case.**
+  `[initial_state]` can be Keplerian or Cartesian in any of three
+  frames, but the propagator consumes exactly one thing: a
+  central-inertial Cartesian pair. `spody batch` therefore calls
+  `spody_resolve_initial_state_icrf` once, before the case loop, and
+  only then lets `spody_apply_batch_case` add per-row offsets. Do not
+  move the frame rotation back after the case application "because
+  `spody_build_worker` does it anyway" — the offsets would be read as
+  components in the declared frame, and the sum rotated afterwards.
+  Equally, do not call the resolver twice: it is guarded by the
+  `central_inertial` early return, but a second rotation applied to an
+  already-resolved state would be silent. *Symptom of breakage: every
+  case in a sweep displaced by an amount comparable to (for a lunar
+  `orbit_plane` state, larger than) the offset it asked for, with no
+  error — while `propagate` on the same TOML stays correct, which is
+  what makes it hard to spot.*
 - **Recurring events need dense output.** Eclipse / altitude
   crossings fire from the RK45 dense-output path; other integrators
   don't provide it and `spody_event_check` has no fallback.

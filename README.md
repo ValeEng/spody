@@ -28,8 +28,10 @@ TOML (`high_fidelity`, the full force-model integrator, and
 **two flavours of initial state** (Cartesian or Keplerian
 elements referenced to the central body / one of the CR3BP
 primaries; the central-body input can also be expressed in the
-body-fixed basis at the run epoch, ITRS or PA, and the engine
-rotates to ICRF at sim setup), **multi-occulter SRP eclipse** (every
+body-fixed basis at the run epoch, ITRS or PA, or &mdash; around the
+Moon &mdash; in Ely's orbit-plane frame that lunar frozen orbits are
+defined in, and the engine rotates to ICRF at sim setup),
+**multi-occulter SRP eclipse** (every
 third body can shade the satellite, overlapping shadows combined by
 inclusion&ndash;exclusion, so the Earth darkens a lunar orbiter),
 event detection (always-on multi-body IMPACT with

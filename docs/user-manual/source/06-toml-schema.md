@@ -54,7 +54,7 @@ The schema branches on `simulation.dynamics_model`:
 
 | `dynamics_model` | Required sections | Forbidden sections |
 |------------------|-------------------|--------------------|
-| `high_fidelity` (default) | `[simulation]`, exactly one of `[spacecraft]` / `[debris]`, `[initial_state]` with `frame = "central_inertial"` or `"central_body_fixed"`, `[force_model]`, `[ephemeris]`, `[integrator]`, `[output]` | `[cr3bp]` |
+| `high_fidelity` (default) | `[simulation]`, exactly one of `[spacecraft]` / `[debris]`, `[initial_state]` with `frame = "central_inertial"`, `"central_body_fixed"` or `"orbit_plane"` (Moon only), `[force_model]`, `[ephemeris]`, `[integrator]`, `[output]` | `[cr3bp]` |
 | `cr3bp` | `[simulation]`, `[cr3bp]`, `[initial_state]` with `frame = "synodic_rotating"`, `[integrator]`, `[output]` | `[spacecraft]`, `[debris]`, `[force_model]`, `[ephemeris]`, `[events]` with `eclipse_threshold`, `[output].accelerations_file` |
 
 The validator rejects mismatches up front (HF without `et_start_s`,
@@ -174,7 +174,7 @@ snapshot TOML on disk) is identical for both.
 
 | Key            | Type            | Default       | Range | Description |
 |----------------|-----------------|---------------|-------|-------------|
-| `frame`        | string          | &mdash;       | `central_inertial` or `central_body_fixed` (HF), `synodic_rotating` (CR3BP) | Reference frame. Model-exclusive: only the listed values are valid under each `dynamics_model`. `central_inertial` (HF) leaves the parsed `(position, velocity)` in the integrator's working basis; `central_body_fixed` (HF) interprets the values in the central body's body-fixed basis at `et_start_s` (Earth ITRS, Moon PA) and the engine rotates them to ICRF via the same `bf_rotation` callback the force-model uses on every step, before the run begins &mdash; the downstream integrator still sees a `central_inertial` state. `synodic_rotating` (CR3BP) places the elements in the reference primary's local inertial frame; the engine then rotates / translates them into the synodic frame at `t = 0`. The value of `frame` still has to match the model. |
+| `frame`        | string          | &mdash;       | `central_inertial`, `central_body_fixed` or `orbit_plane` (HF), `synodic_rotating` (CR3BP) | Reference frame. Model-exclusive: only the listed values are valid under each `dynamics_model`. `central_inertial` (HF) leaves the parsed `(position, velocity)` in the integrator's working basis; `central_body_fixed` (HF) interprets the values in the central body's body-fixed basis at `et_start_s` (Earth ITRS, Moon PA) and the engine rotates them to ICRF via the same `bf_rotation` callback the force-model uses on every step, before the run begins &mdash; the downstream integrator still sees a `central_inertial` state. `orbit_plane` (HF, Moon only) is Ely's OP frame, described below. `synodic_rotating` (CR3BP) places the elements in the reference primary's local inertial frame; the engine then rotates / translates them into the synodic frame at `t = 0`. The value of `frame` still has to match the model. |
 | `kind`         | string          | `"cartesian"` | `"cartesian"`, `"keplerian"` | Which set of keys below is consumed. Omit for the legacy Cartesian path. |
 
 ### `kind = "cartesian"` (default)
@@ -221,6 +221,46 @@ the point of running a CR3BP scenario. The Keplerian input form is
 just a convenient way to specify the *initial* state; once the
 integration starts it is identical to a Cartesian IC carrying the
 same `(r, v)`.
+
+### `frame = "orbit_plane"` &mdash; Ely's OP frame
+
+Available under `high_fidelity` with `central_body = "Moon"`, for
+both `kind` values. It is the frame the lunar frozen-orbit
+literature states its elements in, and getting it wrong is the
+single most common way to "reproduce" a published frozen orbit and
+watch it impact instead.
+
+Let `I_p` be the Moon's north pole (the `+Z` of the lunar PA basis)
+and `(r_E, v_E)` the Earth's state relative to the Moon at
+`et_start_s`. The axes are
+
+- `z_op = (r_E × v_E) / |r_E × v_E|` &mdash; the normal to the
+  Earth's *apparent* orbit about the Moon;
+- `x_op = (I_p × z_op) / |I_p × z_op|`;
+- `y_op = z_op × x_op`.
+
+The frame is built **once**, from the instantaneous state at
+`et_start_s`, and is then treated as inertial &mdash; it only ever
+labels the initial condition. As with `central_body_fixed`, the
+engine rotates the parsed values into the integrator's
+`central_inertial` basis before the run starts; the emitted TOML
+keeps the frame name, so the user's intent survives save / load.
+
+**Why this matters.** The lunar equator and the Earth's apparent
+orbit plane are about 6.8&deg; apart. An inclination measured
+against one is therefore *not* the same orbit as the same number
+measured against the other: with `a`, `e`, `arg_periapsis` fixed, a
+given lunar-equator inclination maps to an OP inclination anywhere
+in a &plusmn;6.8&deg; band depending on where the node sits. Frozen
+elliptical lunar orbits are stated in the OP frame; entering them
+as `central_body_fixed` with the same numbers puts the orbit up to
+13&deg; away from the frozen family, which shows up as a secular
+growth of `e` that ends in an impact within months.
+
+Because the frame's `x` axis is undefined when the perturber orbits
+in the central body's equatorial plane, the engine rejects a
+degenerate configuration rather than producing a silently arbitrary
+node. The Moon/Earth pair is nowhere near that limit.
 
 ## `[force_model]`
 

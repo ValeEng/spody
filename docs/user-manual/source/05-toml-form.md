@@ -401,13 +401,14 @@ the new block in one shot.
 
 ### Lossless swap cache
 
-The four representations &mdash; `(cartesian, central_inertial)`,
-`(cartesian, central_body_fixed)`, `(keplerian, central_inertial)`,
-`(keplerian, central_body_fixed)` &mdash; are kept in a per-form
-cache that snapshots each finalised edit. Whenever you leave a
-cart / kep field (focus loss or Enter), the form treats the
-visible block as the ground truth and derives the other three
-representations from it via spopy. Subsequent toggles of the
+The six representations &mdash; `cartesian` / `keplerian` crossed
+with `central_inertial`, `central_body_fixed` and `orbit_plane`
+&mdash; are kept in a per-form cache that snapshots each finalised
+edit. (`orbit_plane` is offered only when the central body is the
+Moon, mirroring the engine validator; see chapter 6 for what the
+frame is.) Whenever you leave a cart / kep field (focus loss or
+Enter), the form treats the visible block as the ground truth and
+derives the other representations from it via spopy. Subsequent toggles of the
 `kind` or `frame` combos then write the cached values verbatim
 &mdash; no further conversion runs at toggle time, so back-and-
 forth flips of either combo round-trip the displayed numbers
