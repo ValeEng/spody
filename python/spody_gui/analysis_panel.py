@@ -253,6 +253,12 @@ class AnalysisPanel(QWidget):
         # (|Δr|, RIC, growth) without re-reading the files. Cleared
         # whenever the active plot leaves a diff spec.
         self._last_diff: "tuple[list[Path], np.ndarray, np.ndarray, bool] | None" = None
+        # File-level Info rows, memoized per loaded file. They are a
+        # pure function of (path, kind, data) + the run snapshot, so a
+        # plot-tree click never invalidates them -- and on a large
+        # events file rebuilding them is a full pass over millions of
+        # records. Cleared by `load_file`.
+        self._info_rows_cache: "tuple[tuple, list] | None" = None
 
         # Working-dir display: the dedicated row used to live here, but
         # the working-dir field + Browse button now sit in the top bar
@@ -526,6 +532,9 @@ class AnalysisPanel(QWidget):
         self._right_tabs.addTab(plot_tab,  "Plot")
         self._right_tabs.addTab(table_tab, "Table")
         self._right_tabs.addTab(info_tab,  "Info")
+        # Index of the Info tab, used by `_refresh_info_tab` to skip the
+        # rebuild while the tab is off-screen.
+        self._INFO_TAB = 2
         self._right_tabs.currentChanged.connect(self._on_right_tab_changed)
 
         right = QWidget()
@@ -695,11 +704,22 @@ class AnalysisPanel(QWidget):
 
     def _refresh_info_tab(self) -> None:
         """Rebuild the Info-tab table from `self._data` + the loaded
-        run's snapshot + the currently active plot spec. Cheap (a
-        handful of rows, no plotting); called on every load_file,
-        every right-tab change to Info, and every plot-tree click
-        whose spec is a diff -- the cost is bounded by the per-kind
-        builders, which all run in O(N) numpy."""
+        run's snapshot + the currently active plot spec. Called on
+        every load_file, every right-tab change to Info, and every
+        plot-tree click (the diff overlay rows follow the active spec).
+
+        Two guards keep this off the critical path of everything else.
+        First, an off-screen Info tab is not rebuilt at all -- switching
+        to it always rebuilds, so nothing can go stale, and a plot-tree
+        click on a large events file no longer pays for a table nobody
+        is looking at. Second, the file-level rows are memoized per
+        loaded file: they depend only on `self._data` and the run
+        snapshot, neither of which a plot-tree click can change, and on
+        a multi-million-record events file rebuilding them is a full
+        pass over the array. Only the diff overlay -- which does follow
+        the active spec -- is recomputed on every call."""
+        if self._right_tabs.currentIndex() != self._INFO_TAB:
+            return
         self._info_table.setRowCount(0)
         if self._kind is None or self._data is None or self._path is None:
             self._info_table.setRowCount(1)
@@ -708,19 +728,29 @@ class AnalysisPanel(QWidget):
             placeholder.setForeground(Qt.GlobalColor.gray)
             self._info_table.setItem(0, 0, placeholder)
             return
-        snapshot = resolve_run_context(self._path)
-        rows = info_rows_run_summary(
-            self._path, self._kind, len(self._data), snapshot,
-            self._central_body, self._dynamics_model,
-            self._cr3bp_primaries)
-        if self._kind == "traj":
-            rows += info_rows_traj(
-                self._data, self._central_body, self._dynamics_model)
-        elif self._kind == "accel":
-            rows += info_rows_accel(self._data)
-        elif self._kind in ("events", "events_batch"):
-            rows += info_rows_events(self._data, snapshot,
-                                     self._central_body)
+        cache_tag = (self._path, self._kind, id(self._data))
+        if self._info_rows_cache is not None and self._info_rows_cache[0] == cache_tag:
+            rows = list(self._info_rows_cache[1])
+        else:
+            # First touch of this file: the per-kind builders run a full
+            # pass over the array, which on a multi-million-record
+            # events log is seconds. Wear the wait cursor rather than
+            # let Windows paint the window as 'Not Responding'.
+            with self._busy(f"computing info for {self._path.name}"):
+                snapshot = resolve_run_context(self._path)
+                rows = info_rows_run_summary(
+                    self._path, self._kind, len(self._data), snapshot,
+                    self._central_body, self._dynamics_model,
+                    self._cr3bp_primaries)
+                if self._kind == "traj":
+                    rows += info_rows_traj(
+                        self._data, self._central_body, self._dynamics_model)
+                elif self._kind == "accel":
+                    rows += info_rows_accel(self._data)
+                elif self._kind in ("events", "events_batch"):
+                    rows += info_rows_events(self._data, snapshot,
+                                             self._central_body)
+            self._info_rows_cache = (cache_tag, list(rows))
         # Diff overlay: only meaningful when the active plot is a diff
         # spec AND we have a cached aligned pair from `_plot_diff`.
         if (self._active_spec is not None
@@ -983,6 +1013,7 @@ class AnalysisPanel(QWidget):
         # `_last_diff` arrays were aligned against a different pair
         # and would surface stale rows in the Info tab.
         self._last_diff = None
+        self._info_rows_cache = None
 
         # Rebuild the plot tree for the new kind. Auto-render the first
         # plot only when the Plot tab is currently active; if the user
@@ -996,8 +1027,10 @@ class AnalysisPanel(QWidget):
                 self._plot_tree.setCurrentItem(first)
                 self._on_plot_tree_clicked(first, 0)
         # Refresh the Info tab from the new file's data + snapshot.
-        # Cheap (no plotting), so we do it unconditionally even when
-        # the Info tab is currently in the background.
+        # No-ops while the Info tab is in the background (see
+        # `_refresh_info_tab`): on a large events file the summary is a
+        # full pass over the array, so it is paid when the user
+        # actually asks to see it, not on every load.
         self._refresh_info_tab()
 
     # ------------------------------------------------------------------

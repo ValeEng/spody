@@ -28,13 +28,8 @@ from pathlib import Path
 
 import numpy as np
 
-from spody_io import (
-    EVENT_KIND_ALT_CROSSING,
-    EVENT_KIND_ECLIPSE,
-    EVENT_KIND_IMPACT,
-)
-
 from .altitude_bands import analyze_altitude_bands, band_inputs_from_snapshot
+from .derived import events_digest
 from .registry import KIND_LABEL
 
 
@@ -247,23 +242,25 @@ def info_rows_accel(data: np.ndarray
 def info_rows_events(data: np.ndarray, snapshot: dict | None,
                       central_body: "CentralBodySpec | None" = None
                       ) -> list[tuple[str, str | None]]:
-    is_batch = "case_idx" in data.dtype.names
-    impacts  = data[data["kind"] == EVENT_KIND_IMPACT]
-    eclipses = data[data["kind"] == EVENT_KIND_ECLIPSE]
-    altcross = data[data["kind"] == EVENT_KIND_ALT_CROSSING]
+    """Event-file summary rows. Every per-record derivation (the
+    per-kind split, the eclipse pairing, the crossed-altitude clusters)
+    comes out of the shared `events_digest`, so re-entering the Info
+    tab on a multi-million-record file is a cache hit rather than a
+    fresh O(N) pass -- see `analysis/derived.py`."""
+    dig = events_digest(data)
+    is_batch = dig.is_batch
+    n_impacts = dig.n_impact
     rows: list[tuple[str, str | None]] = [
         ("Events", SECTION),
-        ("Total records", f"{len(data)}"),
-        ("IMPACT count",  f"{len(impacts)}"),
-        ("ECLIPSE count", f"{len(eclipses)}"),
-        ("ALT_CROSSING count", f"{len(altcross)}"),
+        ("Total records", f"{dig.n_records}"),
+        ("IMPACT count",  f"{n_impacts}"),
+        ("ECLIPSE count", f"{dig.n_eclipse}"),
+        ("ALT_CROSSING count", f"{dig.n_altcross}"),
     ]
     if is_batch:
-        cases_with_events = np.unique(data["case_idx"]) if len(data) else np.array([])
-        cases_impacted    = (np.unique(impacts["case_idx"])
-                             if len(impacts) else np.array([]))
-        rows.append(("Cases with events", f"{len(cases_with_events)}"))
-        rows.append(("Cases with impact", f"{len(cases_impacted)}"))
+        cases_impacted = dig.n_cases_impacted
+        rows.append(("Cases with events", f"{dig.n_cases_with_events}"))
+        rows.append(("Cases with impact", f"{cases_impacted}"))
         if snapshot is not None and snapshot.get("cases_file") is not None:
             try:
                 # Count CSV data rows: skip '#' comments and blank
@@ -275,52 +272,42 @@ def info_rows_events(data: np.ndarray, snapshot: dict | None,
                     ) - 1)
                 rows.append(("Cases total (CSV)", f"{n_total}"))
                 rows.append(("Survivors (no impact)",
-                             f"{max(0, n_total - len(cases_impacted))}"))
+                             f"{max(0, n_total - cases_impacted)}"))
                 if n_total > 0:
-                    rate = 100.0 * len(cases_impacted) / n_total
+                    rate = 100.0 * cases_impacted / n_total
                     rows.append(("Impact rate",
                                  f"{fmt_num(rate, decimals=4)} %"))
             except OSError:
                 pass
-    if len(impacts) > 0:
-        ti = impacts["t"].astype(float)
+    if n_impacts > 0:
+        ti = dig.t_impact
         rows.append(("Impact timing", SECTION))
         rows.append(("First impact",  fmt_duration(float(ti.min()))))
         rows.append(("Last impact",   fmt_duration(float(ti.max()))))
         rows.append(("Median impact", fmt_duration(float(np.median(ti)))))
         rows.append(("Mean impact",   fmt_duration(float(ti.mean()))))
-    if len(eclipses) > 0:
-        # Pair consecutive triggers per occulter (per case in batch
-        # mode): the engine emits one ECLIPSE record on every sign
-        # crossing of (fraction - threshold), so successive triggers
-        # for the same {case, occulter} alternate entry / exit; a pair
-        # = one full eclipse with duration = t_exit - t_entry. Odd
-        # tail (started or ended inside shadow) is silently dropped.
-        groups: dict[tuple, list[float]] = {}
-        for rec in eclipses:
-            key = ((int(rec["case_idx"]), int(rec["naif_id"]))
-                   if is_batch else int(rec["naif_id"]))
-            groups.setdefault(key, []).append(float(rec["t"]))
-        durations_s: list[float] = []
-        for ts in groups.values():
-            ts_sorted = sorted(ts)
-            for i in range(len(ts_sorted) // 2):
-                durations_s.append(ts_sorted[2 * i + 1] - ts_sorted[2 * i])
+    if dig.n_eclipse > 0:
+        # The engine emits one ECLIPSE record on every sign crossing of
+        # (fraction - threshold), so successive triggers for the same
+        # {case, occulter} alternate entry / exit; a pair = one full
+        # eclipse with duration = t_exit - t_entry. Odd tail (started or
+        # ended inside shadow) is silently dropped. The pairing itself
+        # is vectorised inside the digest.
+        durations_s = dig.eclipse_durations_s
         rows.append(("Eclipses", SECTION))
-        rows.append(("Trigger records",   f"{len(eclipses)}"))
-        rows.append(("Complete eclipses", f"{len(durations_s)}"))
-        if durations_s:
-            d_arr = np.asarray(durations_s)
-            rows.append(("Duration min", fmt_duration(float(d_arr.min()))))
-            rows.append(("Duration avg", fmt_duration(float(d_arr.mean()))))
-            rows.append(("Duration max", fmt_duration(float(d_arr.max()))))
-    if len(altcross) > 0 and central_body is not None:
-        rows += _altitude_band_rows(data, altcross, snapshot,
+        rows.append(("Trigger records",   f"{dig.n_eclipse}"))
+        rows.append(("Complete eclipses", f"{durations_s.size}"))
+        if durations_s.size:
+            rows.append(("Duration min", fmt_duration(float(durations_s.min()))))
+            rows.append(("Duration avg", fmt_duration(float(durations_s.mean()))))
+            rows.append(("Duration max", fmt_duration(float(durations_s.max()))))
+    if dig.n_altcross > 0 and central_body is not None:
+        rows += _altitude_band_rows(data, dig, snapshot,
                                      central_body, is_batch)
     return rows
 
 
-def _altitude_band_rows(data: np.ndarray, altcross: np.ndarray,
+def _altitude_band_rows(data: np.ndarray, dig: "EventsDigest",
                          snapshot: dict | None,
                          central_body: "CentralBodySpec",
                          is_batch: bool
@@ -388,15 +375,14 @@ def _altitude_band_rows(data: np.ndarray, altcross: np.ndarray,
     # Crossings measured from other bodies (third bodies, CR3BP
     # primaries): the trigger state is not body-centric there, so no
     # occupancy reconstruction -- counts and observed altitudes only.
-    others = altcross[altcross["naif_id"] != central_body.naif_id]
-    if len(others) > 0:
+    others = [span for span in dig.alt_body_span
+              if span[0] != central_body.naif_id]
+    if others:
         rows.append(("Altitude crossings — other bodies", SECTION))
-        for naif in np.unique(others["naif_id"]):
-            sub = others[others["naif_id"] == naif]
-            h = sub["distance_km"].astype(float) - sub["radius_km"].astype(float)
-            rows.append((f"NAIF {int(naif)}",
-                         f"{len(sub)} crossings, h {fmt_num(h.min())} – "
-                         f"{fmt_num(h.max())} km"))
+        for naif, h_min, h_max, count in others:
+            rows.append((f"NAIF {naif}",
+                         f"{count} crossings, h {fmt_num(h_min)} – "
+                         f"{fmt_num(h_max)} km"))
     return rows
 
 

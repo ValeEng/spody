@@ -56,6 +56,25 @@ import numpy as np
 
 from spody_io import EVENT_KIND_ALT_CROSSING, EVENT_KIND_IMPACT
 
+from .derived import (
+    cache_key,
+    cached,
+    cluster_altitudes,
+    nearest_index,
+    stable_group_order,
+)
+
+# `cluster_altitudes` moved to `derived.py` (it is the shared crossed-
+# altitude helper: the event timeline views cluster the same way). Kept
+# importable from here for the callers that already reach for it.
+__all__ = [
+    "BandStats", "BandAnalysis", "BandSegments", "cluster_altitudes",
+    "analyze_altitude_bands", "altitude_bands_per_object",
+    "altitude_bands_per_object_grids",
+    "altitude_band_segments", "band_edge_labels", "band_population",
+    "band_inputs_from_snapshot", "per_object_bands_to_csv",
+]
+
 
 @dataclass(frozen=True)
 class BandStats:
@@ -88,64 +107,18 @@ class BandAnalysis:
     ended_by_stop: int                 #   (impact trigger / stop-class alt)
 
 
-def cluster_altitudes(h_obs: np.ndarray) -> np.ndarray:
-    """Group observed crossing altitudes into clusters separated by
-    gaps > max(2 km, 0.5 %) and return the sorted cluster means. Used
-    as the threshold fallback when no snapshot lists the configured
-    altitudes, and by the event-timeline plot to give each crossed
-    altitude its own labelled row. Exact for refined triggers
-    (sub-microsecond localisation); best-effort for `refined = false`
-    ones."""
-    h_sorted = np.sort(h_obs.astype(float))
-    centers: list[float] = []
-    start = 0
-    for i in range(1, len(h_sorted) + 1):
-        if i == len(h_sorted) or (
-                h_sorted[i] - h_sorted[i - 1]
-                > max(2.0, 0.005 * h_sorted[i - 1])):
-            centers.append(float(h_sorted[start:i].mean()))
-            start = i
-    return np.asarray(centers)
-
-
-# --- reconstruction cache --------------------------------------------
 # The band reconstruction is the one O(N) step, and the Info tab re-runs
 # it on every switch to the Info tab while the four plots each call it
-# too. A small content-keyed cache makes all of them share one
-# reconstruction (and one pooled analysis) per loaded file, so only the
-# first touch pays and later tab switches / plot clicks are instant.
-# Keyed by the array's buffer address + byte size + first/last
-# timestamps + the analysis params: distinct files land on distinct
-# keys; the same file re-analysed with the same params reuses the
-# result. `None` results (no crossings) are cached too.
-_MISS = object()
-_BAND_CACHE: "dict[tuple, object]" = {}
-_BAND_CACHE_ORDER: "list[tuple]" = []
-_BAND_CACHE_MAX = 6
-
+# too. The shared content-keyed cache in `derived.py` makes all of them
+# share one reconstruction (and one pooled analysis) per loaded file, so
+# only the first touch pays and later tab switches / plot clicks are
+# instant. `None` results (no crossings) are cached too.
 
 def _cache_key(tag: str, events: np.ndarray, central_naif: int,
                thresholds_km, stop_thresholds_km, duration_s):
-    if len(events) == 0:
-        return None
-    return (tag, events.ctypes.data, int(events.nbytes),
-            float(events["t"][0]), float(events["t"][-1]),
-            int(central_naif), tuple(thresholds_km or ()),
-            tuple(stop_thresholds_km or ()), duration_s)
-
-
-def _cached(key, compute):
-    if key is None:
-        return compute()
-    hit = _BAND_CACHE.get(key, _MISS)
-    if hit is not _MISS:
-        return hit
-    val = compute()
-    _BAND_CACHE[key] = val
-    _BAND_CACHE_ORDER.append(key)
-    if len(_BAND_CACHE_ORDER) > _BAND_CACHE_MAX:
-        _BAND_CACHE.pop(_BAND_CACHE_ORDER.pop(0), None)
-    return val
+    return cache_key(tag, events, int(central_naif),
+                     tuple(thresholds_km or ()),
+                     tuple(stop_thresholds_km or ()), duration_s)
 
 
 @dataclass(frozen=True)
@@ -188,13 +161,21 @@ def _reconstruct(events: np.ndarray, central_naif: int,
     segment belongs to is `band_after` of the previous event within the
     object, and the per-object window truncation (impact / stop /
     duration, clamped to the last crossing) is a per-group reduce.
-    Returns None when there is no usable central-body crossing."""
-    alt = events[(events["kind"] == EVENT_KIND_ALT_CROSSING)
-                 & (events["naif_id"] == central_naif)]
-    if len(alt) == 0:
+    Returns None when there is no usable central-body crossing.
+
+    Memory discipline matters here: at ten million records the obvious
+    `events[mask]` sub-array is a ~900 MB struct copy and the pairwise
+    nearest-threshold form allocates another (N x K) float matrix. Both
+    are avoided -- fields are masked one column at a time, and `r.v` is
+    contracted on the strided (N, 6) view before masking, so the peak
+    extra allocation is a handful of N-element float columns."""
+    m_alt = ((events["kind"] == EVENT_KIND_ALT_CROSSING)
+             & (events["naif_id"] == central_naif))
+    if not m_alt.any():
         return None
 
-    h_obs = alt["distance_km"].astype(float) - alt["radius_km"].astype(float)
+    h_obs = (np.asarray(events["distance_km"][m_alt], dtype=float)
+             - np.asarray(events["radius_km"][m_alt], dtype=float))
     if thresholds_km:
         thr = np.unique(np.asarray(sorted(thresholds_km), dtype=float))
         from_snapshot = True
@@ -204,35 +185,49 @@ def _reconstruct(events: np.ndarray, central_naif: int,
     n_bands = len(thr) + 1
 
     # Nearest-threshold index + direction (r.v sign), all vectorised.
-    k_idx = np.abs(h_obs[:, None] - thr[None, :]).argmin(axis=1)
-    r = alt["y"][:, 0:3].astype(float)
-    v = alt["y"][:, 3:6].astype(float)
-    rdot = np.einsum("ij,ij->i", r, v)
+    k_idx = nearest_index(h_obs, thr)
+    y = events["y"]
+    rdot = np.einsum("ij,ij->i", y[:, 0:3], y[:, 3:6])[m_alt]
     valid = rdot != 0.0          # drop tangent grazings (direction undefined)
     if not valid.any():
         return None
-    t = alt["t"].astype(float)[valid]
+    t = np.asarray(events["t"][m_alt], dtype=float)[valid]
     k_idx = k_idx[valid]
     up = (rdot[valid] > 0.0).astype(np.int64)
     is_batch = "case_idx" in (events.dtype.names or ())
-    obj = (alt["case_idx"].astype(np.int64)[valid] if is_batch
-           else np.zeros(int(valid.sum()), dtype=np.int64))
+    obj = (np.asarray(events["case_idx"][m_alt], dtype=np.int64)[valid]
+           if is_batch else np.zeros(int(valid.sum()), dtype=np.int64))
 
     # Stop-class thresholds -> band-boundary indices.
     stop_bands: set[int] = set()
     for h_stop in (stop_thresholds_km or []):
         stop_bands.add(int(np.abs(thr - float(h_stop)).argmin()))
 
-    # Per-object earliest impact time (few impacts -> cheap dict).
+    # Per-object earliest impact time (few impacts -> cheap dict, but
+    # read out of the masked columns rather than by iterating a struct
+    # sub-array, which would box every field of every impact record).
+    m_imp = events["kind"] == EVENT_KIND_IMPACT
+    imp_t = np.asarray(events["t"][m_imp], dtype=float)
+    imp_case = (np.asarray(events["case_idx"][m_imp], dtype=np.int64)
+                if is_batch else np.zeros(imp_t.size, dtype=np.int64))
     impact_dict: dict[int, float] = {}
-    for rec in events[events["kind"] == EVENT_KIND_IMPACT]:
-        key = int(rec["case_idx"]) if is_batch else 0
-        ti = float(rec["t"])
+    for key, ti in zip(imp_case.tolist(), imp_t.tolist()):
         if key not in impact_dict or ti < impact_dict[key]:
             impact_dict[key] = ti
 
     # --- sort by (object, time); one C-level sort over all records ----
-    order = np.lexsort((t, obj))
+    # An events log written in time order (the common case: the engine
+    # appends triggers as they fire) only needs a STABLE sort on the
+    # object id to end up ordered by (object, time). That halves the
+    # work of the general lexsort AND unlocks the radix path in
+    # `stable_group_order`, which together turn seconds into
+    # milliseconds on a ten-million-crossing batch. The guard is one
+    # vectorised comparison, so the fallback costs nothing measurable
+    # when the file is not in time order.
+    if t.size and bool(np.all(t[1:] >= t[:-1])):
+        order = stable_group_order(obj)
+    else:
+        order = np.lexsort((t, obj))
     so, st, sk, sup = obj[order], t[order], k_idx[order], up[order]
     N = len(so)
     is_first = np.empty(N, bool)
@@ -316,7 +311,7 @@ def _recon_cached(events, central_naif, thresholds_km,
     plots and the CSV exports share one reconstruction per file."""
     key = _cache_key("recon", events, central_naif,
                      thresholds_km, stop_thresholds_km, duration_s)
-    return _cached(key, lambda: _reconstruct(
+    return cached(key, lambda: _reconstruct(
         events, central_naif, thresholds_km, stop_thresholds_km, duration_s))
 
 
@@ -330,11 +325,25 @@ def _band_pop(starts: np.ndarray, ends: np.ndarray,
     n = starts.size
     if n == 0:
         return 0, 0, 0.0
-    times = np.concatenate([starts, ends])
-    deltas = np.concatenate([np.ones(n, np.int64), -np.ones(n, np.int64)])
-    order = np.lexsort((deltas, times))          # time primary, -1 before +1
-    st_s = times[order]
-    p_after = np.cumsum(deltas[order])           # population after each event
+    # The level at a node is `#starts <= t` minus `#ends <= t`, read off
+    # the two independently sorted boundary lists. That is the same
+    # step function the old cumsum-over-a-sorted-delta-stream produced,
+    # but built from plain `np.sort` (introsort) instead of an
+    # `argsort(kind="stable")` over the merged stream -- an order of
+    # magnitude cheaper per band, because sorting values is far cheaper
+    # than sorting values AND materialising their permutation.
+    #
+    # Ties need no special casing any more: at a time where exits and
+    # entries coincide, this formula already yields the post-transition
+    # level, and every intermediate node of a tie group spans dt = 0 and
+    # is dropped by `held` below. That is what keeps an instantaneous
+    # hand-over between objects from spiking the max.
+    s_sorted = np.sort(starts)
+    e_sorted = np.sort(ends)
+    st_s = np.concatenate([s_sorted, e_sorted])
+    st_s.sort()
+    p_after = (np.searchsorted(s_sorted, st_s, side="right")
+               - np.searchsorted(e_sorted, st_s, side="right"))
     bounds = np.concatenate([[0.0], st_s, [float(window_s)]])
     dts = np.diff(bounds)
     levels = np.concatenate([[0], p_after])      # level held on each gap
@@ -360,7 +369,7 @@ def analyze_altitude_bands(events: np.ndarray,
     is cached per file (the Info tab re-calls this on every tab switch)."""
     key = _cache_key("analyze", events, central_naif,
                      thresholds_km, stop_thresholds_km, duration_s)
-    return _cached(key, lambda: _analyze_impl(
+    return cached(key, lambda: _analyze_impl(
         events, central_naif, thresholds_km, stop_thresholds_km, duration_s))
 
 
@@ -371,16 +380,33 @@ def _analyze_impl(events, central_naif, thresholds_km,
     if rec is None:
         return None
     thr, n_bands, m = rec.thr, rec.n_bands, len(rec.thr)
-    seg_dur = rec.seg_end - rec.seg_start
     entries_pb = np.bincount(rec.ent_band, minlength=n_bands)
     starts_pb = np.bincount(rec.init_band, minlength=n_bands)
 
+    # Group the segments by band ONCE and take contiguous slices, rather
+    # than re-masking the (potentially ten-million-entry) segment arrays
+    # per band. The sort is stable, so the segments inside a slice keep
+    # their original relative order -- every per-band reduction below
+    # therefore sees exactly the array the old `seg_dur[seg_band == b]`
+    # produced, element for element, and the statistics are unchanged
+    # down to the last bit rather than merely to within rounding.
+    order = stable_group_order(rec.seg_band)
+    sb = rec.seg_band[order]
+    s_start = rec.seg_start[order]
+    s_end = rec.seg_end[order]
+    s_group = rec.seg_group[order]
+    edges = np.searchsorted(sb, np.arange(n_bands + 1))
+
     bands: list[BandStats] = []
     for b in range(n_bands):
-        sm = rec.seg_band == b
-        dur_b = seg_dur[sm]
-        pmin, pmax, pmean = _band_pop(rec.seg_start[sm], rec.seg_end[sm],
-                                      rec.window_s)
+        lo, hi = int(edges[b]), int(edges[b + 1])
+        starts_b, ends_b = s_start[lo:hi], s_end[lo:hi]
+        dur_b = ends_b - starts_b
+        pmin, pmax, pmean = _band_pop(starts_b, ends_b, rec.window_s)
+        # Distinct objects via bincount rather than `np.unique`: the
+        # group ids are dense and small, so counting beats sorting.
+        objects_visiting = int(np.count_nonzero(
+            np.bincount(s_group[lo:hi], minlength=rec.n_objects)))
         bands.append(BandStats(
             lo_km=0.0 if b == 0 else float(thr[b - 1]),
             hi_km=float(thr[b]) if b < m else float("inf"),
@@ -390,8 +416,8 @@ def _analyze_impl(events, central_naif, thresholds_km,
             dwell_min_s=float(dur_b.min()) if dur_b.size else float("nan"),
             dwell_mean_s=float(dur_b.mean()) if dur_b.size else float("nan"),
             dwell_max_s=float(dur_b.max()) if dur_b.size else float("nan"),
-            visits=int(sm.sum()),
-            objects_visiting=int(np.unique(rec.seg_group[sm]).size),
+            visits=hi - lo,
+            objects_visiting=objects_visiting,
             pop_min=pmin,
             pop_max=pmax,
             pop_mean=pmean,
@@ -446,21 +472,24 @@ def _csv_num(x: float, decimals: int = 6) -> str:
     return f"{x:.{decimals}g}"
 
 
-def altitude_bands_per_object(events: np.ndarray, central_naif: int,
-                              thresholds_km: "list[float] | None" = None,
-                              stop_thresholds_km: "list[float] | None" = None,
-                              duration_s: "float | None" = None,
-                              t_max_s: "float | None" = None,
-                              ) -> "tuple[np.ndarray, bool, list] | None":
-    """Per-object band occupancy for the CSV export.
+def altitude_bands_per_object_grids(events: np.ndarray, central_naif: int,
+                                    thresholds_km: "list[float] | None" = None,
+                                    stop_thresholds_km: "list[float] | None" = None,
+                                    duration_s: "float | None" = None,
+                                    t_max_s: "float | None" = None,
+                                    ) -> "tuple[np.ndarray, bool, np.ndarray, np.ndarray, np.ndarray] | None":
+    """Per-object band occupancy as raw grids:
+    `(thresholds_km, from_snapshot, obj_ids, time2d, ent2d)` with both
+    grids shaped `(n_objects, n_bands)` and `obj_ids` ascending.
+    `time2d[g, b]` is the time object g spent in band b; `ent2d[g, b]`
+    how many times it crossed INTO band b (entries only -- exits are
+    never counted). None when the file carries no usable central-body
+    crossing.
 
-    Returns `(thresholds_km, from_snapshot, rows)` where `rows` is one
-    entry per analysed object, SORTED by object id (case index in
-    batch; a lone 0 for a per-run file). Each row is
-    `(obj_id, per_band)` with `per_band[b] = (total_time_s, entries)`:
-    the time the object spent in band b and how many times it crossed
-    INTO band b (entries only -- exits are never counted). Returns None
-    when the file carries no usable central-body crossing.
+    This is the form the per-case heatmap wants; `altitude_bands_per_object`
+    reshapes it into the per-row tuples the CSV writer wants. Keeping
+    the grids separate means the plot never pays for building
+    `n_objects x n_bands` Python tuples it would immediately unpack.
 
     `t_max_s` (when set) restricts the statistics to the window
     `[0, t_max_s]` of sim time: segments are clipped to that upper bound
@@ -489,16 +518,42 @@ def altitude_bands_per_object(events: np.ndarray, central_naif: int,
         ent_keep = rec.ent_time <= t_max_s
         ent_group, ent_band = ent_group[ent_keep], ent_band[ent_keep]
 
-    # Scatter-add into (object x band) grids: O(segments) in C, no
-    # per-record Python loop.
-    time2d = np.zeros((G, n_bands), dtype=float)
-    np.add.at(time2d, (seg_group, seg_band), seg_dur)
-    ent2d = np.zeros((G, n_bands), dtype=np.int64)
-    np.add.at(ent2d, (ent_group, ent_band), 1)
-    rows = [(int(rec.group_obj[g]),
+    # Scatter-add into (object x band) grids via a flattened bincount:
+    # `np.add.at` does the same job but is unbuffered, which at a
+    # million-plus segments costs seconds rather than milliseconds.
+    flat = seg_group * n_bands + seg_band
+    time2d = np.bincount(flat, weights=seg_dur,
+                         minlength=G * n_bands).reshape(G, n_bands)
+    ent2d = np.bincount(ent_group * n_bands + ent_band,
+                        minlength=G * n_bands).reshape(G, n_bands)
+    return rec.thr, rec.from_snapshot, rec.group_obj, time2d, ent2d
+
+
+def altitude_bands_per_object(events: np.ndarray, central_naif: int,
+                              thresholds_km: "list[float] | None" = None,
+                              stop_thresholds_km: "list[float] | None" = None,
+                              duration_s: "float | None" = None,
+                              t_max_s: "float | None" = None,
+                              ) -> "tuple[np.ndarray, bool, list] | None":
+    """Per-object band occupancy for the CSV export.
+
+    Returns `(thresholds_km, from_snapshot, rows)` where `rows` is one
+    entry per analysed object, SORTED by object id (case index in
+    batch; a lone 0 for a per-run file). Each row is
+    `(obj_id, per_band)` with `per_band[b] = (total_time_s, entries)`.
+    Returns None when the file carries no usable central-body crossing.
+    See `altitude_bands_per_object_grids` for the argument semantics."""
+    grids = altitude_bands_per_object_grids(
+        events, central_naif, thresholds_km, stop_thresholds_km,
+        duration_s, t_max_s)
+    if grids is None:
+        return None
+    thr, from_snapshot, group_obj, time2d, ent2d = grids
+    n_bands = time2d.shape[1]
+    rows = [(int(group_obj[g]),
              [(float(time2d[g, b]), int(ent2d[g, b])) for b in range(n_bands)])
-            for g in range(G)]
-    return rec.thr, rec.from_snapshot, rows
+            for g in range(len(group_obj))]
+    return thr, from_snapshot, rows
 
 
 @dataclass(frozen=True)
@@ -532,6 +587,54 @@ def altitude_band_segments(events: np.ndarray, central_naif: int,
         thr=rec.thr, from_snapshot=rec.from_snapshot, window_s=rec.window_s,
         band=rec.seg_band, start=rec.seg_start, end=rec.seg_end,
         obj=rec.group_obj[rec.seg_group])
+
+
+# Node budget for the population step function. A canvas is ~1200 px
+# wide, so a couple of thousand nodes already carries more detail than
+# the screen can show; the alternative (one node per segment boundary)
+# is twenty million nodes on a large debris batch, which is minutes of
+# `fill_between` for a picture no different from this one.
+POPULATION_MAX_NODES = 2000
+
+
+def band_population(seg: BandSegments,
+                    max_nodes: int = POPULATION_MAX_NODES
+                    ) -> "tuple[np.ndarray, np.ndarray, bool]":
+    """Instantaneous per-band population over time.
+
+    Returns `(t_nodes, pop, exact)` where `pop` has shape
+    `(n_bands, len(t_nodes))` and `pop[b, i]` is the number of objects
+    in band b on the interval starting at `t_nodes[i]` -- i.e. the
+    level a `step="post"` fill should hold from that node to the next.
+
+    When the run is small enough that every segment boundary fits the
+    node budget, the boundaries themselves are the nodes and the result
+    is the exact step function (`exact = True`) -- unchanged from a
+    per-boundary reconstruction. Past the budget the step function is
+    SAMPLED on a uniform grid (`exact = False`): each level is still
+    counted exactly at its node, but transitions closer together than
+    one grid step are not resolved. Callers must surface that in the
+    plot title.
+
+    The count at a node is `#starts <= t` minus `#ends <= t`, which is
+    two `searchsorted` calls against the band's sorted boundaries --
+    the per-band sorts are the only O(S log S) work, and they replace
+    the unbuffered `np.add.at` scatter over a twenty-million-node grid
+    that made this the slowest view in the Analysis tab."""
+    n_bands = len(seg.thr) + 1
+    n_seg = int(seg.band.size)
+    exact = 2 * n_seg + 2 <= max_nodes
+    if exact:
+        nodes = np.unique(np.concatenate(
+            ([0.0], seg.start, seg.end, [seg.window_s])))
+    else:
+        nodes = np.linspace(0.0, float(seg.window_s), max_nodes)
+    pop = np.empty((n_bands, nodes.size))
+    for b in range(n_bands):
+        m = seg.band == b
+        pop[b] = (np.searchsorted(np.sort(seg.start[m]), nodes, side="right")
+                  - np.searchsorted(np.sort(seg.end[m]), nodes, side="right"))
+    return nodes, pop, exact
 
 
 def band_edge_labels(thr: np.ndarray) -> list[str]:

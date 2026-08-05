@@ -29,22 +29,19 @@ from matplotlib import colormaps as mpl_colormaps
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 
-from spody_io import (
-    EVENT_KIND_ALT_CROSSING,
-    EVENT_KIND_ECLIPSE,
-    EVENT_KIND_IMPACT,
-)
+from spody_io import EVENT_KIND_ECLIPSE, EVENT_KIND_IMPACT
 
 from ..vtk_canvas import VtkCanvas
 from .altitude_bands import (
     altitude_band_segments,
-    altitude_bands_per_object,
+    altitude_bands_per_object_grids,
     analyze_altitude_bands,
     band_edge_labels,
     band_inputs_from_snapshot,
-    cluster_altitudes,
+    band_population,
 )
 from .context import PlotContext, ctx_missing_message, resolve_run_context
+from .derived import decimate_for_display, events_digest, impact_latlon
 from .scene3d import add_reference_triads
 from .spec import PlotSpec
 
@@ -194,43 +191,16 @@ def _compute_impact_latlon(d: np.ndarray, mask: np.ndarray, info: dict,
                             ctx: "PlotContext"
                             ) -> tuple[np.ndarray, np.ndarray,
                                         np.ndarray, np.ndarray] | None:
-    """Project ICRF IMPACT rows of `d[mask]` onto the central body's
-    body-fixed frame, returning `(lat_deg, lon_deg, t_days, case_idx)`.
+    """Body-fixed `(lat_deg, lon_deg, t_days, case_idx)` for the IMPACT
+    rows; None on ephemeris failure (the caller falls back to the
+    empty-state message).
 
-    For every row:
-        et    = sim.et_start_s + row.t
-        R     = ctx.central_body.bf_orientation(et, eph)     (ICRF -> BF)
-        r_bf  = R @ row.y[0:3]
-        lat   = asin(z/|r|), lon = atan2(y, x)
-    `t_days` is `row.t / 86400`. None on ephemeris failure (the
-    caller falls back to the empty-state message). Body-agnostic
-    via the CentralBodySpec orientation callback -- Moon today
-    (DE440 lunar librations), Earth in Phase 2 (GMST / IAU 2006)."""
-    from spopy import Ephemeris
-    try:
-        eph = Ephemeris(str(info["ephemeris_path"]))
-    except (OSError, ValueError):
-        return None
-    bf_orientation = ctx.central_body.bf_orientation
-    n        = int(mask.sum())
-    et_start = info["et_start_s"]
-    t_sim    = d["t"][mask]
-    y_state  = d["y"][mask]
-    case_id  = (d["case_idx"][mask].astype(int, copy=True)
-                if "case_idx" in (d.dtype.names or ())
-                else np.zeros(n, dtype=int))   # per-run file: single object
-    r_icrf   = y_state[:, 0:3]
-    lat_deg  = np.empty(n)
-    lon_deg  = np.empty(n)
-    for i in range(n):
-        et = et_start + float(t_sim[i])
-        R = bf_orientation(et, eph)
-        r_bf = R @ r_icrf[i]
-        norm = np.linalg.norm(r_bf)
-        lat_deg[i] = np.degrees(np.arcsin(r_bf[2] / norm))
-        lon_deg[i] = np.degrees(np.arctan2(r_bf[1], r_bf[0]))
-    t_days = t_sim.astype(float) / _SEC_PER_DAY
-    return lat_deg, lon_deg, t_days, case_id
+    The projection itself lives in `derived.impact_latlon`, which
+    caches it per file: the four impact views and the CSV export all
+    land on the same computation instead of re-rotating every impact
+    five times. `mask` is accepted for call-site symmetry with the
+    other helpers -- the projection always covers the IMPACT rows."""
+    return impact_latlon(d, info, ctx.central_body)
 
 
 def impacts_latlon_csv(d: np.ndarray, ctx: "PlotContext") -> str | None:
@@ -273,6 +243,41 @@ def impacts_latlon_csv(d: np.ndarray, ctx: "PlotContext") -> str | None:
     return "\n".join(lines) + "\n"
 
 
+def _timeline_rows(d: np.ndarray) -> "list[tuple[str, list]]":
+    """The y-rows shared by both timeline views, in a stable order
+    (impacts on top, then eclipses, then altitudes ascending) so the
+    y-axis reads consistently across files. Each row is
+    `(label, [(times, is_ascending), ...])`; a non-altitude row carries
+    a single series with `is_ascending = None`.
+
+    The per-record work (kind split, altitude clustering, r.v
+    direction) all comes from the cached `events_digest`, so the two
+    views and the Info tab share one pass over the file."""
+    dig = events_digest(d)
+    rows: list[tuple[str, list]] = []
+    if dig.n_impact:
+        rows.append(("IMPACT", [(dig.t_impact, None)]))
+    if dig.n_eclipse:
+        rows.append(("ECLIPSE", [(np.asarray(d["t"][d["kind"]
+                                                    == EVENT_KIND_ECLIPSE],
+                                             dtype=float), None)]))
+    multi_body = len({row.naif_id for row in dig.alt_rows}) > 1
+    alt_rows: list[tuple[float, str, list]] = []
+    for row in dig.alt_rows:
+        label = f"alt {row.center_km:.4g} km"
+        if multi_body:
+            label = f"NAIF {row.naif_id}  " + label
+        series = []
+        if row.t_up.size:
+            series.append((row.t_up, True))
+        if row.t_down.size:
+            series.append((row.t_down, False))
+        alt_rows.append((row.center_km, label, series))
+    alt_rows.sort(key=lambda e: e[0])
+    rows += [(label, series) for _h, label, series in alt_rows]
+    return rows
+
+
 def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
     """One y-row per event *series*: IMPACT, ECLIPSE, and one row per
     crossed altitude (labelled with the altitude, not the raw enum
@@ -280,83 +285,56 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
     marker (▲ up / ▼ down); the altitude values are clustered from the
     records so the plot stays context-free (works with no input.toml).
     Third-body altitude crossings get their NAIF id in the row label
-    when more than one body is involved."""
+    when more than one body is involved.
+
+    Series longer than the display budget are thinned to one marker per
+    canvas column (see `decimate_for_display`) -- a row of a million
+    triggers is a solid band either way, but drawing every one of them
+    costs tens of seconds per redraw. The title says so when it
+    happens."""
     if len(d) == 0:
         ax.set_title("No events recorded"); ax.set_xlabel("t [s]"); return
 
-    # Each series is drawn on its own row. Build them in a stable order
-    # (impacts on top, then eclipses, then altitudes ascending) so the
-    # y-axis reads consistently across files.
-    rows: list[tuple[str, list]] = []   # (label, [scatter kwargs dicts])
-
-    m_imp = d["kind"] == EVENT_KIND_IMPACT
-    if m_imp.any():
-        rows.append(("IMPACT", [dict(t=d["t"][m_imp], color="tab:red",
-                                     marker="|", s=200)]))
-    m_ecl = d["kind"] == EVENT_KIND_ECLIPSE
-    if m_ecl.any():
-        rows.append(("ECLIPSE", [dict(t=d["t"][m_ecl], color="tab:blue",
-                                      marker="|", s=200)]))
-
-    m_alt = d["kind"] == EVENT_KIND_ALT_CROSSING
-    if m_alt.any():
-        alt = d[m_alt]
-        naifs = np.unique(alt["naif_id"])
-        multi_body = len(naifs) > 1
-        alt_rows: list[tuple[float, str, list]] = []
-        for naif in naifs:
-            sub = alt[alt["naif_id"] == naif]
-            h = sub["distance_km"].astype(float) - sub["radius_km"].astype(float)
-            centers = cluster_altitudes(h)
-            k_idx = np.abs(h[:, None] - centers[None, :]).argmin(axis=1)
-            # Ascending vs descending from the radial velocity r·v at
-            # the trigger state (body-centric for the central body;
-            # for third bodies y is still central-frame so the sign is
-            # only exact when the body sits at the origin -- acceptable
-            # for a visual timeline).
-            r = sub["y"][:, 0:3].astype(float)
-            v = sub["y"][:, 3:6].astype(float)
-            up = np.einsum("ij,ij->i", r, v) > 0.0
-            for c, h_c in enumerate(centers):
-                cm = k_idx == c
-                label = f"alt {h_c:.4g} km"
-                if multi_body:
-                    label = f"NAIF {int(naif)}  " + label
-                draws = []
-                if (cm & up).any():
-                    draws.append(dict(t=sub["t"][cm & up], color="tab:green",
-                                      marker="^", s=44))
-                if (cm & ~up).any():
-                    draws.append(dict(t=sub["t"][cm & ~up], color="tab:green",
-                                      marker="v", s=44))
-                alt_rows.append((float(h_c), label, draws))
-        alt_rows.sort(key=lambda e: e[0])
-        rows += [(label, draws) for _h, label, draws in alt_rows]
-
+    rows = _timeline_rows(d)
     # Time unit from the full span of plotted events (days on a
     # days-long batch, seconds on a single short orbit).
-    all_t = d["t"].astype(float)
-    div, unit = _time_axis(float(all_t.max() - all_t.min()) if len(all_t) else 0.0)
-    for y, (_label, draws) in enumerate(rows):
-        for kw in draws:
-            t = kw.pop("t")
-            ax.scatter(np.asarray(t, dtype=float) / div,
-                       np.full(len(t), y), **kw)
+    all_t = d["t"]
+    t_lo, t_hi = float(all_t.min()), float(all_t.max())
+    div, unit = _time_axis(t_hi - t_lo)
+    style = {None:  dict(marker="|", s=200),
+             True:  dict(marker="^", s=44, color="tab:green"),
+             False: dict(marker="v", s=44, color="tab:green")}
+    row_color = {"IMPACT": "tab:red", "ECLIPSE": "tab:blue"}
+    decimated = False
+    for y, (label, series) in enumerate(rows):
+        for times, ascending in series:
+            t_draw, was_cut = decimate_for_display(times, t_lo, t_hi)
+            decimated |= was_cut
+            kw = dict(style[ascending])
+            if ascending is None:
+                kw["color"] = row_color[label]
+            ax.scatter(t_draw / div, np.full(t_draw.size, y), **kw)
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels([label for label, _ in rows])
     ax.set_ylim(-0.5, len(rows) - 0.5)
     ax.set_xlabel(f"t [{unit}]")
-    ax.set_title(f"Event timeline ({len(d)} triggers)")
-    if m_alt.any():
+    title = f"Event timeline ({len(d)} triggers)"
+    if decimated:
+        title += "  --  thinned to canvas resolution"
+    ax.set_title(title)
+    if any(s[1] is not None for _l, ser in rows for s in ser):
         # One-off legend explaining the crossing-direction markers;
         # the per-altitude identity is on the y axis, not the legend.
+        # The location is pinned: `loc="best"` re-scans every plotted
+        # point to find a free corner, which on a million-marker
+        # timeline costs more than the markers themselves.
         from matplotlib.lines import Line2D
         ax.legend(handles=[
             Line2D([0], [0], marker="^", color="tab:green", linestyle="",
                    label="ascending"),
             Line2D([0], [0], marker="v", color="tab:green", linestyle="",
                    label="descending"),
-        ], loc="best", fontsize="small", framealpha=0.6)
+        ], loc="upper right", fontsize="small", framealpha=0.6)
     ax.grid(True, axis="x", alpha=0.3)
 
 
@@ -370,32 +348,12 @@ def _plot_events_timeline_density(ax: Axes, d: np.ndarray) -> None:
     if len(d) == 0:
         ax.set_title("No events recorded"); ax.set_xlabel("t [s]"); return
 
-    rows: list[tuple[str, np.ndarray]] = []
-    m_imp = d["kind"] == EVENT_KIND_IMPACT
-    if m_imp.any():
-        rows.append(("IMPACT", d["t"][m_imp].astype(float)))
-    m_ecl = d["kind"] == EVENT_KIND_ECLIPSE
-    if m_ecl.any():
-        rows.append(("ECLIPSE", d["t"][m_ecl].astype(float)))
-    m_alt = d["kind"] == EVENT_KIND_ALT_CROSSING
-    if m_alt.any():
-        alt = d[m_alt]
-        naifs = np.unique(alt["naif_id"])
-        multi_body = len(naifs) > 1
-        alt_rows: list[tuple[float, str, np.ndarray]] = []
-        for naif in naifs:
-            sub = alt[alt["naif_id"] == naif]
-            h = sub["distance_km"].astype(float) - sub["radius_km"].astype(float)
-            centers = cluster_altitudes(h)
-            k_idx = np.abs(h[:, None] - centers[None, :]).argmin(axis=1)
-            for c, h_c in enumerate(centers):
-                label = f"alt {h_c:.4g} km"
-                if multi_body:
-                    label = f"NAIF {int(naif)}  " + label
-                alt_rows.append((float(h_c), label,
-                                 sub["t"][k_idx == c].astype(float)))
-        alt_rows.sort(key=lambda e: e[0])
-        rows += [(label, ts) for _h, label, ts in alt_rows]
+    # Same y-rows as the marker timeline (shared, cached derivation);
+    # here the ascending / descending split is merged back together
+    # because this view counts crossings rather than showing direction.
+    rows = [(label, np.concatenate([s[0] for s in series]) if len(series) > 1
+             else series[0][0])
+            for label, series in _timeline_rows(d)]
 
     t_min = min(float(ts.min()) for _, ts in rows)
     t_max = max(float(ts.max()) for _, ts in rows)
@@ -488,18 +446,19 @@ def _plot_events_survival_timeline(ax: Axes, d: np.ndarray,
             ax, "Survival timeline",
             "This view needs a batch-aggregated events file (SPDYEVTB).")
         return
-    impacts = d[d["kind"] == EVENT_KIND_IMPACT]
-    impact_t = {int(ci): float(t) for ci, t in zip(impacts["case_idx"],
-                                                    impacts["t"])}
+    dig = events_digest(d)
+    impact_t: dict[int, float] = {}
     # If a case has several IMPACTs (rare; predicate normally fires
     # once and the integrator stops) we want the earliest.
-    for ci, t in zip(impacts["case_idx"], impacts["t"]):
-        ci_i = int(ci)
-        if t < impact_t.get(ci_i, np.inf):
-            impact_t[ci_i] = float(t)
+    for ci, t in zip(dig.case_impact.tolist(), dig.t_impact.tolist()):
+        if t < impact_t.get(ci, np.inf):
+            impact_t[ci] = t
 
-    seen_cases = set(int(c) for c in d["case_idx"]) | set(impact_t.keys())
-    fallback_max = (max(seen_cases) + 1) if seen_cases else 0
+    # Highest case id that appears anywhere in the file. `max` over a
+    # Python set built from the case column would iterate every one of
+    # the (possibly millions of) records; the column max is the same
+    # number for the cost of one vectorised reduction.
+    fallback_max = (int(d["case_idx"].max()) + 1) if len(d) else 0
     if info is not None:
         duration = info["duration_s"]
         total_n  = _count_total_cases(info, fallback_max)
@@ -639,8 +598,11 @@ def _plot_events_impact_map(ax: Axes, d: np.ndarray,
     if not bg_ok:
         title += "  (no texture)"
     ax.set_title(title)
+    # `color=None` is not a colour as far as matplotlib is concerned
+    # (it raises), so the no-texture branch has to name one explicitly
+    # rather than ask for the default.
     ax.grid(True, alpha=0.35 if bg_ok else 0.3,
-            color="white" if bg_ok else None,
+            color="white" if bg_ok else "gray",
             linewidth=0.5 if bg_ok else 0.8)
     cb = ax.figure.colorbar(sc, ax=ax, label="time of flight [days]",
                             fraction=0.04, pad=0.02)
@@ -781,6 +743,17 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
         canvas.add_central_body(**body_args)
         return
 
+    # Same projection the 2D maps use, off the shared per-file cache:
+    # the markers are placed by rebuilding the body-fixed direction
+    # from (lat, lon) and scaling it by |r|, which a rotation leaves
+    # unchanged. That is the same r_bf to round-off, and it means
+    # opening this view after a 2D map costs no extra rotations.
+    geom = _compute_impact_latlon(d, mask, info, ctx)
+    if geom is None:
+        canvas.add_central_body(**body_args)
+        return
+    lat_deg, lon_deg, t_days, _case = geom
+
     from spopy import Ephemeris
     try:
         eph = Ephemeris(str(info["ephemeris_path"]))
@@ -791,9 +764,6 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
     canvas.add_central_body(**body_args)
 
     et_start = info["et_start_s"]
-    t_sim    = d["t"][mask]
-    y_state  = d["y"][mask]
-    r_icrf   = y_state[:, 0:3]
 
     # Frame triads -- drawn before the impact markers so the small
     # markers paint on top (z-fighting bias). Same convention as
@@ -807,25 +777,27 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
                            radius_km=body.radius_km,
                            bf_frame_label=body.bf_frame_name)
 
-    # Build the time-of-flight colour lookup once and vectorise the
-    # per-impact rotation. Each impact uses its own
-    # R_icrf_to_bf(et_start + t_sim[i]) -- body orientation evolves
-    # (e.g. ~1-day scale for lunar libration, ~1-rev/day for Earth
-    # GMST), so we can NOT precompute a single R, but the per-impact
-    # rotation itself is a cheap 3x3 matmul and stays well below the
-    # cost of the old 9000-actor draw call. The markers themselves
+    # Body-fixed marker positions from the shared projection. Each
+    # impact carries its own R_icrf_to_bf(et_start + t) -- the body's
+    # orientation evolves (~1-day scale for lunar libration, ~1 rev/day
+    # for Earth GMST) so there is no single R to precompute -- but that
+    # whole loop already ran (and was cached) for the 2D maps, so here
+    # we only rebuild the unit direction from (lat, lon) and restore
+    # the radius, which a rotation preserves. The markers themselves
     # ship through `add_points` as a single GPU-instanced actor
     # instead of a vtkSphereSource + actor per point, which on the
     # 9577-case LRO debris run drops the render-time freeze (~10s)
     # to a single-frame redraw.
-    t_days = t_sim.astype(float) / _SEC_PER_DAY
+    r_norm = np.linalg.norm(np.asarray(d["y"][mask][:, 0:3], dtype=float),
+                            axis=1)
+    lat = np.radians(lat_deg)
+    lon = np.radians(lon_deg)
+    r_bf_arr = np.column_stack((r_norm * np.cos(lat) * np.cos(lon),
+                                r_norm * np.cos(lat) * np.sin(lon),
+                                r_norm * np.sin(lat)))
     t_lo, t_hi = float(t_days.min()), float(t_days.max())
     span = max(t_hi - t_lo, 1e-9)
     cmap = mpl_colormaps["turbo"]
-    r_bf_arr = np.empty_like(r_icrf)
-    for i in range(n_imp):
-        r_bf_arr[i] = body.bf_orientation(
-            et_start + float(t_sim[i]), eph) @ r_icrf[i]
     # cmap accepts an array of fracs and returns an (N, 4) RGBA
     # in [0..1]. Slice off the alpha; the mapper's per-point uchar
     # array is RGB-only. Marker radius scales with the body radius
@@ -921,9 +893,21 @@ def _plot_bands_gantt(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     objs = np.unique(seg.obj)
     obj0 = int(objs[0])                # per-run file -> the only object
     m = seg.obj == obj0
-    for b, s, e in zip(seg.band[m], seg.start[m], seg.end[m]):
-        ax.barh(int(b), (e - s) / div, left=s / div, height=0.6,
-                color=colors[int(b)], edgecolor="black", linewidth=0.3)
+    # One `broken_barh` collection per band instead of one `barh` per
+    # segment: a long run crosses its thresholds thousands of times,
+    # and a Rectangle artist apiece is the same per-record-artist trap
+    # the survival timeline already had to escape. Geometry is
+    # unchanged -- `barh(b, w, left=s, height=0.6)` spans exactly the
+    # `(b - 0.3, 0.6)` y-range this passes.
+    for b in range(len(labels)):
+        bm = m & (seg.band == b)
+        if not bm.any():
+            continue
+        starts = seg.start[bm] / div
+        widths = (seg.end[bm] - seg.start[bm]) / div
+        ax.broken_barh(np.column_stack((starts, widths)), (b - 0.3, 0.6),
+                       facecolors=colors[b], edgecolor="black",
+                       linewidth=0.3)
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels)
     ax.set_ylabel("altitude band")
@@ -949,27 +933,21 @@ def _plot_bands_population(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
         ctx_missing_message(
             ax, title, "No central-body altitude-crossing events here.")
         return
-    n_bands = len(seg.thr) + 1
     labels = band_edge_labels(seg.thr)
-    colors = _band_colors(n_bands)
+    colors = _band_colors(len(labels))
 
-    # Common time grid = every segment boundary. Per band, +1 at each
-    # segment start node and -1 at each end node, then cumsum gives the
-    # population step function -- vectorised (the only loop is over the
-    # few bands, never over the potentially millions of segments).
-    grid = np.unique(np.concatenate(
-        [[0.0], seg.start, seg.end, [seg.window_s]]))
+    # The step function comes from `band_population`, which keeps the
+    # node count inside a display budget: a segment-boundary grid is
+    # exact but reaches tens of millions of nodes on a large batch,
+    # and `fill_between` then builds a polygon per band with that many
+    # vertices -- minutes of draw time for a picture the canvas cannot
+    # resolve anyway.
+    grid, pop, exact = band_population(seg)
     div, unit = _time_axis(seg.window_s)
     x = grid / div
-    base = np.zeros(len(grid))
-    for b in range(n_bands):
-        m = seg.band == b
-        delta = np.zeros(len(grid))
-        if m.any():
-            np.add.at(delta, np.searchsorted(grid, seg.start[m]), 1.0)
-            np.add.at(delta, np.searchsorted(grid, seg.end[m]), -1.0)
-        pop = np.cumsum(delta)          # population on the cell at each node
-        top = base + pop
+    base = np.zeros(grid.size)
+    for b in range(len(labels)):
+        top = base + pop[b]
         ax.fill_between(x, base, top, step="post", color=colors[b],
                         alpha=0.85, linewidth=0.0, label=labels[b])
         base = top
@@ -978,7 +956,8 @@ def _plot_bands_population(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     ax.set_xlabel(f"t [{unit}]")
     ax.set_ylabel("objects in band")
     n_obj = int(np.unique(seg.obj).size)
-    ax.set_title(f"{title}  --  {n_obj} objects")
+    subtitle = "" if exact else f"  (sampled on {grid.size} nodes)"
+    ax.set_title(f"{title}  --  {n_obj} objects{subtitle}")
     ax.legend(loc="upper right", fontsize="small", framealpha=0.6,
               title="altitude band")
     ax.grid(True, alpha=0.3)
@@ -990,20 +969,22 @@ def _plot_bands_heatmap(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     export -- spot at a glance which cases live low vs high."""
     title = f"Per-case time in band ({ctx.central_body.name})"
     thresholds, stop, duration = _band_inputs_for(ctx)
-    res = altitude_bands_per_object(d, ctx.central_body.naif_id,
-                                    thresholds_km=thresholds,
-                                    stop_thresholds_km=stop,
-                                    duration_s=duration)
+    # The grid form, not the per-row tuples: this view wants the
+    # (cases x bands) matrix straight, and building one Python tuple
+    # per (case, band) only to unpack it again is pure overhead on a
+    # batch with thousands of cases.
+    res = altitude_bands_per_object_grids(d, ctx.central_body.naif_id,
+                                          thresholds_km=thresholds,
+                                          stop_thresholds_km=stop,
+                                          duration_s=duration)
     if res is None:
         ctx_missing_message(
             ax, title, "No central-body altitude-crossing events here.")
         return
-    thr, _from_snap, rows = res
+    thr, _from_snap, ids, times, _ent = res
     labels = band_edge_labels(thr)
     n_bands = len(labels)
-    ids = [obj for (obj, _pb) in rows]
-    times = np.array([[pb[b][0] for b in range(n_bands)]
-                      for (_obj, pb) in rows], dtype=float)
+    rows = ids
     div, unit = _time_axis(float(times.max()) if times.size else 1.0)
     im = ax.imshow(times / div, aspect="auto", cmap="viridis",
                    origin="upper", interpolation="nearest")
@@ -1011,7 +992,7 @@ def _plot_bands_heatmap(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize="small")
     if len(rows) <= 40:
         ax.set_yticks(range(len(rows)))
-        ax.set_yticklabels([f"case {i}" for i in ids], fontsize="x-small")
+        ax.set_yticklabels([f"case {int(i)}" for i in ids], fontsize="x-small")
     else:
         ax.set_yticks([])
         ax.set_ylabel(f"{len(rows)} cases  (case id ascending)")
