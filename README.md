@@ -179,6 +179,15 @@ Ordered roughly by what unlocks the most for users.
 - [x] **Two central bodies**: Moon (GRGM1200B, lunar PA libration
       from DE440) and Earth (EIGEN-6C4, IAU 2006/2000A_R06 + IERS
       EOP); chosen via `force_model.central_body = "Moon" | "Earth"`
+- [x] **Adaptive harmonics degree** (`force_model.harmonics_adaptive`,
+      opt-in): the expansion degree follows the orbit radius instead
+      of being fixed for the whole run, since the degree-*n* term
+      decays as `(R_ref/r)^n`. `harmonics_degree` becomes a ceiling.
+      The threshold sits below double-precision resolution, so the
+      output is bit-identical to the fixed-degree run — 2.3&times; on
+      a 365-day lunar ELFO at degree 80, 3.7&times; on a 7-day GPS arc
+      at degree 70. One rule for every central body: only the ratio
+      `r / R_ref` enters, nothing to calibrate per model
 - [x] **Two dynamics models**: `high_fidelity` (full force-model
       integrator) and `cr3bp` (Circular Restricted 3-Body Problem
       in synodic rotating frame, today's curated pair is Earth-Moon

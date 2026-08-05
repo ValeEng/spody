@@ -271,6 +271,7 @@ Forces the propagator integrates against. Required.
 | `central_body`       | string          | &mdash; | `Moon`, `Earth` | Central body of the propagation. Two bodies are supported in this release. The choice drives the gravity-model coefficient set, the body-fixed rotation provider (lunar PA libration angles from DE440 for Moon, IAU 2006/2010 + IERS EOP for Earth), and the list of valid `third_bodies`. |
 | `harmonics_file`     | string (path)   | &mdash; (required unless `harmonics_degree = 0`) | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for GRGM1200B / Moon; `eigen-6c4.tab` for EIGEN-6C4 / Earth, produced by the wizard from the upstream `.gfc`). In the form this row is a **dropdown of harmonics files the wizard has downloaded**, filtered by `central_body`. A **Browse...** button next to the combo adds an out-of-data-dir file as a one-off `(custom)` entry, so legacy TOMLs pointing at e.g. `external/spody-core/raw_data/...` keep round-tripping. Relative paths resolve against the TOML's directory. Optional when `harmonics_degree = 0`, since nothing reads it. |
 | `harmonics_degree`   | int             | &mdash; | `0` or `[2, 2200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. The effective upper bound is whatever the chosen `harmonics_file` declares (1200 for GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); the `2200` cap is the absolute schema ceiling. **`0` switches the gravity field off entirely**: the central body stays a point mass, so together with `third_bodies` the run becomes an ephemeris-driven restricted N-body problem (see *Turning the gravity field off* below). Degree `1` is rejected &mdash; it would only move the origin to the centre of mass, which the central-body convention already assumes. See *Choosing a harmonics degree* below for guidance. |
+| `harmonics_adaptive` | bool            | `false` | &ndash; | Let the engine lower the degree per integrator step based on the satellite's distance, using `harmonics_degree` as the ceiling. Off by default; see *Letting the degree follow the orbit* below. Requires `harmonics_degree >= 2` &mdash; at degree `0` there is no expansion to truncate. |
 | `eop_file`           | string (path)   | &mdash; (Earth only) | &ndash; | Path to the IERS Earth-orientation file (`finals2000A.all` from the IERS Rapid Service). Required when `central_body = "Earth"`, omitted otherwise. The form exposes this row as a wizard-populated dropdown that only appears when Earth is selected. |
 | `iau2006_dir`        | string (path)   | &mdash; (Earth only) | &ndash; | Path to the directory containing the IAU 2006 X / Y / s+XY/2 conventions tables (`tab5.2a.txt`, `tab5.2b.txt`, `tab5.2d.txt`). Required when `central_body = "Earth"`. Wizard-managed; same conditional form row as `eop_file`. |
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
@@ -346,6 +347,61 @@ At GNSS altitudes the harmonics contribution is already tiny
 compared to the central two-body term, so degree 70 is comfortably
 above the noise floor of the rest of the force model (luni-solar
 third-body gravity, SRP) for most use cases.
+
+### Letting the degree follow the orbit
+
+The tables above ask you to pick one degree for a whole run. That is
+the right question for a near-circular orbit, where the satellite
+always sits at roughly the same distance. On an eccentric one it is
+the wrong question, because the degree you need at closest approach
+and the degree you need far out are not the same number, and a single
+setting has to be the larger of the two.
+
+How much larger is easy to see. The degree-*n* term of the potential
+carries a factor `(R_ref / r)^n`, so it dies off geometrically with
+distance. For a lunar orbit with `a = 6541 km` and `e = 0.6`,
+`spody maxhgdegree` puts the useful degree at 82 near periapsis and
+at 19 near apoapsis. Since the cost of one evaluation goes as
+`(N+1)²`, running the whole orbit at 82 does about eight times the
+work it needs to in the outer part of the revolution.
+
+`harmonics_adaptive = true` removes that waste. Before every
+integrator step the engine picks the degree from
+
+```
+N(r) = ln(1/eps) / ln(r / R_ref)
+```
+
+capped at your `harmonics_degree`, where `r` is a conservative bound
+on the closest the step can get to the body. Only the ratio
+`r / R_ref` appears, so there is nothing to calibrate per body or per
+gravity model &mdash; the same rule serves the Moon, the Earth and any
+body added later.
+
+**It does not trade accuracy for speed.** The threshold is set below
+the resolution of double precision, so the terms it drops cannot
+change the accumulated acceleration at all. Measured end to end:
+
+| run | fixed degree | adaptive | speed-up | difference |
+|-----|-------------:|---------:|---------:|------------|
+| Lunar ELFO, 365 days, N = 80 | 32.1 s | 14.0 s | 2.3&times; | none, bit for bit |
+| GPS, 7 days, N = 70          | 0.686 s | 0.184 s | 3.7&times; | none, bit for bit |
+
+"None" is literal: 453,447 and 672 output records, identical to the
+last bit, with the same number of accepted and rejected integrator
+steps. The step controller takes the very same sequence of steps,
+which is what tells you the per-step degree change is not perturbing
+it &mdash; the degree is held fixed across all stages of a step
+precisely so that it cannot.
+
+The gain is largest on eccentric orbits and on runs whose degree is
+high relative to their altitude. A near-circular orbit whose degree
+is already close to what the altitude needs will see little or
+nothing, which is the correct outcome: there was no waste to remove.
+
+Leaving the key out (or setting it to `false`) reproduces earlier
+runs bit for bit, so it is safe to add to an existing TOML without
+invalidating anything you have already computed.
 
 ### Turning the gravity field off
 

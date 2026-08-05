@@ -6,6 +6,56 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
+### Added
+
+- **Adaptive harmonics degree — `[force_model].harmonics_adaptive`.**
+  The expansion degree was fixed for a whole propagation, so an
+  eccentric orbit paid its closest-approach degree for the entire
+  revolution. With the new flag on, the engine re-picks the degree
+  before every integrator step from the distance to the central body,
+  using `harmonics_degree` as the ceiling.
+
+  The degree-*n* term of the potential carries `(R_ref / r)^n`, so
+  requiring it below a relative threshold gives the degree directly as
+  `N(r) = ln(1/eps) / ln(r / R_ref)`. Only the ratio appears: there is
+  no per-body or per-model constant to calibrate, and the same rule
+  serves the Moon, the Earth and anything added later. It deliberately
+  ignores the decay of the coefficients themselves, which makes it an
+  upper bound rather than a fit — the safe direction for a truncation
+  rule, and the difference from the Kaula-type estimate that was tried
+  and withdrawn for under-predicting on rough fields.
+
+  **This is not an accuracy trade.** The threshold sits below the
+  resolution of double precision, so the dropped terms cannot alter
+  the accumulated acceleration:
+
+  | run | fixed | adaptive | speed-up | difference |
+  |-----|------:|---------:|---------:|------------|
+  | Lunar ELFO, 365 d, N = 80 | 32.1 s | 14.0 s | 2.3&times; | none, bit for bit |
+  | GPS, 7 d, N = 70 | 0.686 s | 0.184 s | 3.7&times; | none, bit for bit |
+
+  Bit for bit over 453,447 and 672 records respectively, with the same
+  accepted and rejected step counts — the step controller takes the
+  identical sequence, which is the evidence that the per-step degree
+  is not perturbing it. The degree is held constant across all stages
+  of a step for exactly that reason: a degree that changed between
+  stages would make them sample different vector fields, and the
+  embedded error estimate would read the model jump as truncation
+  error.
+
+  Batch runs were verified separately, since the truncation degree
+  lives in the per-thread `HarmonicGravity` handle rather than in the
+  shared coefficient table: a 6-case lunar batch is bit-identical
+  between 1 and 4 threads, across repeated threaded runs, against the
+  fixed-degree batch, and against the same case run as a single
+  `propagate`. Speed-up holds under threading (2.46&times; at one
+  thread, 2.41&times; at four).
+
+  Omitting the key reproduces earlier runs bit for bit, so it is safe
+  to add to an existing TOML. `harmonics_adaptive = true` with
+  `harmonics_degree = 0` is rejected: a point-mass body has no
+  expansion to truncate.
+
 ### Changed
 
 - **Analysis-tab event views now scale to ten-million-record logs.**

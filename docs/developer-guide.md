@@ -1273,6 +1273,66 @@ ch. 6 (schema table + a subsection on what the frame *is* and why it
 differs from the neighbouring one), ch. 5 (swap-cache count),
 README feature list, CHANGELOG.
 
+### 5.15 Retuning a force model per integrator step
+
+Some force models can trade evaluation cost against an accuracy they
+can only judge from the current state. The adaptive harmonics degree
+is the worked example; read it before adding a second one, because
+the two rules below are the whole difficulty and neither is obvious.
+
+**Rule 1 — decide once per step, never inside the RHS.** The
+temptation is to put the decision in the force function, where the
+state is right there. That is wrong. RKDP45 calls the RHS seven times
+per step; if the model changes between those calls, the stages no
+longer sample one vector field, the embedded 5(4) error estimate
+reads the model jump as truncation error, and the controller shrinks
+`h` fighting a discontinuity that is not in the dynamics. You lose
+more than you gain, and it looks like an accuracy problem rather than
+a design one.
+
+The correct place is the stepping loop, immediately before
+`spody_propagate_onestep` and after `h` has been clipped — both loops
+in `sim_run.c` do exactly that for `spody_adapt_hgdegree`. Retries
+inside `step_rkdp45` reuse the decision, which is what you want: a
+retry only ever shrinks `h`, so a choice made for the larger `h`
+stays valid.
+
+*This does not need a callback in the integrator.* An earlier cut of
+this added a `pre_step` function pointer to `IntegratorAllData`; it
+was removed. Every stepping loop already sits one line above
+`spody_propagate_onestep`, so it can just call the function, and the
+integrator stays ignorant of force models. Add machinery only if a
+loop appears that genuinely cannot.
+
+**Rule 2 — tunable state goes in the per-thread handle.** The
+harmonics split is the template: `HarmonicGravityData` (coefficients)
+is shared read-only across workers and lives in `SimulationShared`,
+while `HarmonicGravity` (scratch rows) is per-thread and lives in the
+worker struct. The truncation degree is therefore a field on
+`HarmonicGravity`, not on the Data struct. Writing it into the shared
+struct would compile, run, and silently give one worker's degree to
+all the others — and it would *pass* a single-threaded test.
+`cmd_maxhgdegree` does mutate the shared `hgd.N`; that is safe only
+because it is standalone and single-threaded. Do not copy it into the
+propagation path.
+
+Make the sentinel "0 = behave as before" so an untouched handle is
+bit-identical to not having the feature, and keep the knob's own
+constants in `spody_const.h`.
+
+**Verify:** (a) §6.1 bit-identity with the flag absent, on
+`gps_g11_validation` *and* `batch_demo`; (b) the feature on vs off on
+a run that actually exercises it — for a cost-only optimisation the
+two outputs should match bit for bit, and if they don't, the
+threshold is not where you think it is; (c) accepted/rejected step
+counts unchanged, which is what proves the step controller is not
+being perturbed; (d) **batch at 1 thread vs N threads, plus repeated
+threaded runs**, because a race here is intermittent and invisible in
+a single run; (e) one batch case against the same case run as a
+single `propagate`. **Document:** manual ch. 6 (schema row + a
+subsection on what the knob buys and what it costs), README feature
+list, CHANGELOG.
+
 ## 6. Verifying changes
 
 ### 6.1 Engine changes
@@ -1389,6 +1449,16 @@ Each entry: the rule, and the symptom you'll see if you break it.
   stored ET by up to 1.657 ms vs SPICE. *Symptom of breakage:
   sub-second epoch offsets between GUI-displayed UTC and converter
   output, or meter-level Earth-fixed rotation biases at GNSS radius.*
+- **Per-thread tunable state never goes in a shared struct.** The
+  adaptive harmonics degree lives in `HarmonicGravity` (per worker),
+  not in `HarmonicGravityData` (shared read-only in
+  `SimulationShared`). The same split applies to anything a worker
+  writes while running. *Symptom of breakage: single-threaded runs
+  and `thread_number = 1` batches are perfectly correct, and a
+  multi-thread batch differs run to run — or worse, differs only
+  under load, when the workers actually interleave.* The check that
+  catches it is a repeated N-thread batch compared against the
+  1-thread one, bit for bit; see §5.15.
 - **Resolve the initial state to ICRF before applying a batch case.**
   `[initial_state]` can be Keplerian or Cartesian in any of three
   frames, but the propagator consumes exactly one thing: a
