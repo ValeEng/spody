@@ -138,6 +138,16 @@ backward-compatible.
     + one spec entry here.**
   - `registry.py` — assembles `PLOTS` per file kind, owns
     `KIND_LABEL`, `READERS`, `detect_kind`.
+  - `derived.py` — per-file derived data, computed once and shared by
+    the Info rows and every event plot: the content-keyed cache
+    (`cache_key`/`cached`, also used by `altitude_bands.py`), the
+    `EventsDigest` (`events_digest`), the cached body-fixed impact
+    projection (`impact_latlon`), and the rendering-budget helper
+    `decimate_for_display`. **Anything an events view derives from
+    the raw array belongs here, not in the plot function** — see the
+    scale rules in §5.3.
+  - `altitude_bands.py` — the band-occupancy reconstruction behind
+    the Info rows, the four band plots and the per-element CSV.
   - `scene3d.py` — GUI glue over `spoviz.decoration`: keeps the
     historical `(canvas, ctx, times_s)` signatures, resolves the
     run-folder snapshot / texture assets / `spody_const.h` radii,
@@ -637,30 +647,85 @@ analysis is a figure. Two adjacent extension points:
   `ALT_CROSSING` present), independent of which plot is showing. The
   altitude-band feature is the worked template for both points.
 
-**Scale (millions of rows).** An events log can carry millions of
-records, and the Info tab re-runs its analysis on *every* switch to
-the tab. Two rules keep that from freezing the GUI:
+**Scale (millions of rows).** An events log routinely carries millions
+of records &mdash; a debris batch of a few thousand cases crossing five
+altitude bands reaches ten million triggers &mdash; and the Info tab
+re-runs its analysis on *every* switch to the tab. Four rules keep that
+from freezing the GUI. They are not optional polish: ignoring them once
+turned a full pass over the event views into 335 s.
 
 - *Vectorise the per-record work.* Do the O(N) step in numpy (one
-  `lexsort` to group, `np.diff` / `np.bincount` / `cumsum` to
-  aggregate), never a Python `for` over the records; leave Python
-  loops only over the handful of bands / series. `altitude_bands.py`
-  is the worked example (`_reconstruct` + the flat-segment plots). The
-  rewrite must stay **bit-identical** to the readable version &mdash;
-  guard it with the hand-computed + e2e cross-checks in
-  `tests/analysis/` (local-only) before trusting a run.
-- *Cache once per file.* Wrap the heavy function in a content-keyed
-  memo (see `_cache_key` / `_cached` in `altitude_bands.py`: keyed by
-  the array buffer address + size + first/last timestamps + params) so
-  the Info tab, the plots and the exports share one computation per
-  loaded file and repeat touches are free. Also: pick a readable time
-  unit from the plotted span (`_time_axis`) — don't hardcode seconds.
+  sort to group, `np.diff` / `np.bincount` / `cumsum` to aggregate),
+  never a Python `for` over the records; leave Python loops only over
+  the handful of bands / series. `altitude_bands.py` is the worked
+  example (`_reconstruct` + the flat-segment plots). The rewrite must
+  stay **bit-identical** to the readable version &mdash; guard it with
+  the hand-computed + e2e cross-checks in `tests/analysis/`
+  (local-only) before trusting a run.
+- *Cache once per file.* Everything derived from a loaded array goes
+  behind the content-keyed memo in `analysis/derived.py` (`cache_key`
+  / `cached`: keyed by the array buffer address + size + first/last
+  timestamps + params), so the Info tab, the plots and the exports
+  share one computation per loaded file and repeat touches are free.
+  For event files the shared product already exists: `events_digest`
+  returns an `EventsDigest` with the per-kind split, the crossed-
+  altitude clusters (direction split included), the eclipse pairing
+  and the impact counts, and `impact_latlon` caches the body-fixed
+  impact projection. **A new event view derives from the digest**;
+  it does not re-scan the raw array. Adding a field to `EventsDigest`
+  is the right move when two consumers would otherwise both compute
+  it. Also: pick a readable time unit from the plotted span
+  (`_time_axis`) — don't hardcode seconds.
+- *Never one matplotlib artist (or polygon vertex) per record.* A
+  canvas is ~1200 px wide; past that, extra markers buy nothing
+  visible and cost seconds on **every** redraw, including each zoom
+  and pan, which no amount of caching fixes. Run x data through
+  `decimate_for_display` (marker series) or build the curve on a
+  bounded node grid (`band_population`) instead. Two rules on top:
+  stay **exact below the budget**, so small runs render byte-for-byte
+  as before and the regression PNGs keep their meaning; and **say so
+  in the plot title** when the budget engages, so nobody reads a
+  sampled curve as an exact one. `_plot_events_survival_timeline`
+  (bars &rarr; one `LineCollection` past 200 cases) and
+  `_plot_bands_gantt` (one `broken_barh` collection per band) are the
+  worked examples.
+- *Watch for the numpy traps that only bite at scale.* Three cost real
+  seconds here and none of them is visible in the source:
+  - `kind="stable"` only selects **radix sort for 16-bit-and-narrower
+    integers**; on anything wider it falls back to timsort. Grouping
+    ten million crossings by `case_idx` took 5.2 s as `int64` and
+    0.17 s once narrowed. Use `derived.stable_group_order`, which
+    narrows and, past 65536 ids, does the two-pass LSD radix.
+  - `legend(loc="best")` re-scans every plotted point hunting for a
+    free corner. On a million-marker axes it costs more than the
+    markers. Pin the location.
+  - `np.add.at` is unbuffered and an order of magnitude slower than
+    the equivalent `np.bincount` (flatten a 2D scatter-add into
+    `group * n_cols + col` and reshape). Likewise, `events[mask]` on
+    a structured array copies **every field** of the selected records
+    (~900 MB at 10M rows) &mdash; mask one column at a time instead,
+    and contract `y` on the strided `(N, 6)` view before masking. And
+    `np.abs(x[:, None] - centers[None, :]).argmin(1)` allocates an
+    (N x K) matrix; `derived.nearest_index` does it with
+    `searchsorted` on the midpoints, ties broken identically.
 
 **Verify:** launch the GUI, load the right file kind, read the Info
 rows and (for an export) round-trip the CSV back through numpy;
-confirm the button greys out on a file that shouldn't offer it; for a
-vectorised rewrite, re-run the `tests/analysis/` checks (bit-identity)
-and eyeball the timing on a synthetic million-row array.
+confirm the button greys out on a file that shouldn't offer it. For a
+vectorised or caching rewrite, three things, in this order:
+
+1. re-run the `tests/analysis/` checks (local-only) — they are the
+   bit-identity guard;
+2. **profile before you optimise, on a synthetic file at the real
+   scale** (a ten-million-record events log is a few lines of numpy to
+   generate). Every large win in the 2026-08 rewrite came from a
+   measurement that contradicted the obvious guess, and two of the
+   biggest were in numpy itself rather than in this code;
+3. prove you changed nothing visible: dump the Info rows to a file
+   before and after and `diff` them, and render every 2D view of the
+   kind to PNGs on both sides (`git stash` gives you the "before")
+   and compare the hashes. Any hash that moves must be a change you
+   can name.
 **Document:** manual ch. 8 (Info tab / exports) + ch. 9 (plots);
 CHANGELOG.
 

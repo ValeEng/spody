@@ -461,8 +461,17 @@ The tab refreshes on three triggers:
   with the plot selection);
 - when you switch into the tab on an already-loaded file.
 
-All blocks are cheap to compute (one numpy pass over the loaded
-array), so the refresh is unnoticeable.
+**What it costs.** The summary is computed **once per loaded file**,
+the first time you actually look at it: the tab is not rebuilt while
+it sits behind the Plot or Table tab, and every later visit or plot
+click reuses the stored result. On ordinary runs that first pass is
+imperceptible. On a very large events log &mdash; a debris batch of a
+few thousand cases can reach ten million triggers &mdash; it is a few
+seconds, spent under a wait cursor with a `Working: computing info…`
+note; after that the tab is instant for as long as the file stays
+loaded, and the event plots reuse the same work rather than repeating
+it. If you want that pass out of the way before you start clicking
+around, just switch to Info once after loading the file.
 
 ### Run summary (always shown)
 

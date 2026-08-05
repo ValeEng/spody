@@ -280,8 +280,13 @@ Ordered roughly by what unlocks the most for users.
         &mdash; time-per-band bars, single-object occupancy Gantt,
         batch population-over-time, per-case heatmap &mdash; and
         per-altitude event-timeline rows; vectorised + cached so
-        million-event logs don't stall the tab, with a density
-        event-timeline variant for that scale), batch-event impact
+        ten-million-event logs don't stall the tab &mdash; one shared
+        per-file derivation behind the Info rows and every event plot,
+        plus display budgets that keep the marker timeline and the
+        population step function at canvas resolution instead of one
+        artist per record, stated in the plot title when they engage;
+        with a density event-timeline variant for that scale),
+        batch-event impact
         views (time-to-impact
         histogram, survival timeline, equirect + Mollweide
         lat/lon maps, density heatmap, 3D body-textured scene

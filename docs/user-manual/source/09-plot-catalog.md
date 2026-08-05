@@ -407,6 +407,16 @@ first IMPACT marker gives the predicted collision time at a
 glance; for altitude monitoring, each band's row shows the entry /
 exit cadence at a glance.
 
+**On very large logs.** Past 4000 triggers in a single row the
+markers are **thinned to canvas resolution** &mdash; at most one per
+pixel column, which is all a screen can show anyway &mdash; and the
+title says `thinned to canvas resolution`. The picture is the same
+solid band it would otherwise be, but it draws in a fraction of a
+second instead of tens of them. Below that count nothing is dropped:
+every trigger keeps its exact time. If you need the counts rather
+than the pattern, use the density variant below; if you need
+individual event times, read them in the **Table** tab.
+
 **Overlay-safe.** No (multi-series plot).
 
 #### Events timeline (density)
@@ -614,6 +624,17 @@ stack height at any instant is the number of objects still alive (not
 yet impacted or stopped); each coloured layer is that band's
 instantaneous population, whose time-integral is the Info tab's
 *population mean*.
+
+**On very large logs.** The step function is exact as long as its
+transitions fit a 2000-node budget. Past that &mdash; a batch of a few
+thousand cases crossing five bands produces tens of millions of
+transitions &mdash; the curve is **sampled** on a uniform 2000-node
+grid and the title says `sampled on N nodes`. Each sampled level is
+still counted exactly; what a sampled curve cannot show is a
+transition shorter than one grid step, which at a 400-day window is a
+few hours. The per-band totals in the Info tab and in the CSV export
+are unaffected: those are computed from the exact segments, never
+from this grid.
 
 **Overlay-safe.** No (single-file aggregate).
 

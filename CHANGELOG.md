@@ -4,6 +4,61 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
+## Unreleased
+
+### Changed
+
+- **Analysis-tab event views now scale to ten-million-record logs.**
+  A full pass over the event views of a 10.25M-record, 5-band,
+  2500-case debris batch went from 335 s to 12 s, and every repeat
+  touch of an already-loaded file is now effectively free. The Info
+  tab used to be rebuilt on every plot-tree click and cost 1.3 s a
+  time even warm; it is now memoized per loaded file and is not
+  rebuilt at all while its tab is off-screen. Worst individual view
+  (band population over time) went 132.7 s &rarr; 0.65 s, the event
+  timeline 31.4 s &rarr; 0.42 s.
+
+  Two mechanisms. First, a shared per-file derivation in
+  `spody_gui/analysis/derived.py`: the per-kind split, the
+  crossed-altitude clusters with their ascending/descending split,
+  the eclipse pairing and the body-fixed impact projection are
+  computed once and read by the Info rows and by every event plot,
+  so the four impact maps and the 3D impact scene share ONE
+  projection instead of re-rotating every impact five times. Second,
+  display budgets: no event view hands matplotlib more markers or
+  polygon vertices than the canvas can resolve. The marker timeline
+  is thinned to one marker per canvas column past 4000 points per
+  series, and the band-population step function is sampled on a
+  2000-node grid instead of one node per segment boundary (twenty
+  million of them on a batch this size).
+
+  Both budgets are announced in the plot title when they engage
+  (`thinned to canvas resolution`, `sampled on N nodes`), and below
+  the budgets the output is bit-for-bit what it was &mdash; small and
+  mid-sized runs keep every exact timestamp and every exact
+  transition. The Info rows are unchanged at any size: the 54 rows of
+  the 10M benchmark match the previous implementation character for
+  character, and every 2D event plot on the regression files renders
+  pixel-identically.
+
+  Under those two, the individual costs that the profiling turned up:
+  `numpy` only uses radix sort for 16-bit-and-narrower integers, so
+  the stable sort grouping crossings by case took 5.2 s on 10M
+  `int64` where the identical permutation costs 0.17 s once the ids
+  are narrowed; `legend(loc="best")` re-scans every plotted point
+  looking for a free corner, which on a ten-million-marker timeline
+  cost more than drawing the markers; and the band reconstruction was
+  taking a ~900 MB struct copy of the events array plus a 400 MB
+  pairwise matrix for the nearest-threshold snap, both now avoided.
+
+### Fixed
+
+- **Impact lat/lon (equirectangular) raised on a run with no central-
+  body texture.** The no-texture branch asked matplotlib for
+  `ax.grid(color=None)`, which is not a colour and raises
+  `ValueError`, so the view died half-drawn. The Mollweide variant
+  was unaffected.
+
 ## v0.4.0-beta &mdash; 2026-08-01
 
 ### Added
