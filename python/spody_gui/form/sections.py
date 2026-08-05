@@ -515,6 +515,14 @@ class SectionBuildersMixin:
         hd_row.addWidget(hd_suggest)
         f.addRow("harmonics_degree", hwrap(hd_row))
 
+        # Sits under the degree it caps: with it ticked the engine
+        # re-picks a lower degree before each integrator step wherever
+        # the high-degree terms have decayed below double-precision
+        # resolution, so the row above becomes a ceiling rather than a
+        # fixed cost.
+        self._add_bool(f, "force_model.harmonics_adaptive",
+                       "harmonics_adaptive")
+
         # Earth-only fields. Visible (and written to TOML) only when
         # central_body == "Earth"; for the Moon (and any other body
         # without an EOP / IAU 2006 dependency) the engine schema

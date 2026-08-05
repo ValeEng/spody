@@ -157,6 +157,7 @@ TOOLTIPS: dict[str, str] = {
     "force_model.central_body":      "Central body of the propagation. Supported: " + ", ".join(f"'{n}'" for n in CENTRAL_BODIES) + ".",
     "force_model.harmonics_file":    "Spherical-harmonics coefficient file (e.g. GRGM1200B).",
     "force_model.harmonics_degree":  "Truncation degree; ≥ 2 and ≤ the N declared in the chosen harmonics file (1200 for GRGM1200B Moon, 2190 for EIGEN-6C4 Earth; schema cap is 2200). Use 0 to switch harmonics off entirely: the central body stays a point mass, so with third bodies enabled the run becomes an ephemeris-driven restricted N-body problem.",
+    "force_model.harmonics_adaptive": "Let the engine lower the harmonics degree before each integrator step, based on how far out the satellite is: the degree-n term decays as (R_ref/r)^n, so a fixed degree makes an eccentric orbit pay its close-approach cost for the whole revolution. harmonics_degree above stays the ceiling — the rule only ever asks for less. The threshold sits below double-precision resolution, so the dropped terms cannot change the accumulated acceleration; leaving it off reproduces earlier runs bit for bit.",
     "force_model.eop_file":          "IERS Earth Orientation Parameters file (finals2000A.all). Required when central_body = 'Earth'.",
     "force_model.iau2006_dir":       "Directory containing the IAU 2006/2000A series tables (tab5.2a.txt, tab5.2b.txt, tab5.2d.txt). Required when central_body = 'Earth'.",
     "force_model.third_bodies":      "Perturbing bodies; pick from the standard NAIF set.",
