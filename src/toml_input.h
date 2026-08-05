@@ -264,6 +264,12 @@ typedef struct {
     SpodyCentralBody central_body;
     char             harmonics_file[SPODY_MAX_PATH];   /* resolved path */
     int              harmonics_degree;
+    /* Let the engine lower the harmonics degree per integrator step
+     * when the satellite is far enough out that the high-degree terms
+     * no longer contribute. `harmonics_degree` stays the ceiling: the
+     * adaptive rule can only ask for less, never for more. Optional in
+     * the schema, default 0. */
+    int              harmonics_adaptive;
     int              n_third_bodies;
     char             third_body_names[SPODY_MAX_THIRD_BODIES][SPODY_MAX_BODY_NAME];
     int              enable_srp;

@@ -812,6 +812,14 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
         if (d.ok) cfg->enable_drag = d.u.b ? 1 : 0;
     }
 
+    /* harmonics_adaptive: optional, default false, so every existing
+     * TOML keeps the fixed degree and reproduces bit for bit. */
+    cfg->harmonics_adaptive = 0;
+    {
+        toml_datum_t d = toml_bool_in(t, "harmonics_adaptive");
+        if (d.ok) cfg->harmonics_adaptive = d.u.b ? 1 : 0;
+    }
+
     /* Earth-only assets. Both are OPTIONAL at the schema level so
      * Moon-centred TOMLs (the majority today) parse unchanged; the
      * required-when-Earth check lives in spody_validate_input. The
@@ -2068,6 +2076,17 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                 "EIGEN-6C4 / EGM2008); the 2200 cap is only the schema "
                 "ceiling.",
                 cfg->harmonics_degree);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    /* Nothing to adapt when the field is off: at degree 0 the central
+     * body is a point mass and there is no expansion to truncate. */
+    if (cfg->harmonics_adaptive && cfg->harmonics_degree == 0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "force_model.harmonics_adaptive = true needs "
+                "force_model.harmonics_degree >= 2: at degree 0 the "
+                "central body is a point mass, so there is no "
+                "expansion to truncate.");
         return SPODY_ERR_BAD_VALUE;
     }
 

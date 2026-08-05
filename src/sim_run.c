@@ -516,6 +516,13 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
     const double t_end = cfg->duration_s;
     const double eps   = 1.0e-9;
 
+    /* Adaptive harmonics degree. Both stepping loops below re-pick it
+     * right after clipping h and right before the step, which is the
+     * only correct place: once per step, so every stage of that step
+     * sees the same field. Off, the run keeps the fixed
+     * `harmonics_degree` and reproduces earlier outputs bit for bit. */
+    const int adapt_hg = cfg->harmonics_adaptive;
+
     if (cfg->output_mode == SPODY_OUT_FIXED) {
         const double dt = cfg->output_interval_s;
         double t_next   = dt;
@@ -525,6 +532,10 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             double h_remain = t_end - w->integ.t;
             if (w->integ.h > h_remain) w->integ.h = h_remain;
 
+            if (adapt_hg) {
+                spody_adapt_hgdegree(w->integ.t, w->integ.y,
+                                     w->integ.h, &w->ctx);
+            }
             int s = spody_propagate_onestep(&w->integ);
             if (s != SPODY_INTEG_OK) {
                 spody_error_set(err, SPODY_ERR_INTERNAL,
@@ -612,6 +623,10 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             double h_remain = t_end - w->integ.t;
             if (w->integ.h > h_remain) w->integ.h = h_remain;
 
+            if (adapt_hg) {
+                spody_adapt_hgdegree(w->integ.t, w->integ.y,
+                                     w->integ.h, &w->ctx);
+            }
             int s = spody_propagate_onestep(&w->integ);
             if (s != SPODY_INTEG_OK) {
                 spody_error_set(err, SPODY_ERR_INTERNAL,
