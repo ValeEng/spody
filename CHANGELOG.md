@@ -6,7 +6,40 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ## Unreleased
 
+### Added
+
+- **Perturbation budget plot (Analysis tab, accelerations files).**
+  Each perturbing force as a share of the sum of the magnitudes, the
+  central two-body term excluded, with its time-averaged share in the
+  legend. Answers *which* perturbation owns a drift: because the
+  shares are normalised, the overall growth of `|a|` divides out and
+  what is left is composition alone.
+
+  The shares divide magnitudes, so they sum to the sum of the norms
+  and not to `|Σa|` &mdash; a "who is pushing, and how hard" chart,
+  not a vector decomposition of the net perturbation. They are drawn
+  as filled curves on a logarithmic axis rather than a 100%-stack: a
+  stack only reads when the contributors sit within a decade of each
+  other, true at GNSS/GEO altitudes and false in LEO, where the
+  harmonics take 99.99% and every other band falls below one pixel.
+
 ### Changed
+
+- **Acceleration views name each third body.** The per-force
+  breakdown collapsed the per-body data the binary already carries
+  into a single `3rd-body` line, so it could not answer "is this the
+  Moon or the Sun?". Both per-force views now resolve each slot back
+  to its name through the run folder's `input.toml` snapshot (the
+  binary records only how many bodies were active), falling back to
+  positional labels when the snapshot is missing or disagrees on the
+  count. Forces switched off for the run are omitted from the legend
+  instead of being drawn flat at the axis.
+
+- **Acceleration views pick a readable time unit** (seconds, minutes,
+  hours or days) from the span they draw, matching the events views;
+  a 6-day run no longer labels its x axis `500000`. In an overlay the
+  first file fixes the unit for the whole axis, so files of different
+  durations cannot end up on silently different scales.
 
 - **Rotating-frame batch cases now target the propagator's own frame.**
   RIC / LVLH case CSVs were always rotated into ICRF, which is correct

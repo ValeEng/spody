@@ -131,7 +131,14 @@ backward-compatible.
   - `spec.py` — the `PlotSpec` contract (name, kind, callable,
     requirements).
   - `context.py` — `PlotContext`/`resolve_run_context`: everything a
-    plot needs, resolved from the run folder snapshot.
+    plot needs, resolved from the run folder snapshot (epoch,
+    duration, ephemeris path, central body, dynamics model, cases
+    file, altitude crossings, `third_bodies`). **A new snapshot need
+    goes into `resolve_run_context`, never into a private re-read of
+    `input.toml` in the consumer** — `scene3d.add_third_bodies` did
+    exactly that for the third-body list, and the two copies then
+    parsed the same file with different fallbacks until the field
+    landed here.
   - `plots_traj.py`, `plots_cr3bp.py`, `plots_diff.py`,
     `plots_accel.py`, `plots_events.py` — one module per view
     family; each exports a `SPECS` list. **A new view = one function
@@ -142,10 +149,11 @@ backward-compatible.
     the Info rows and every event plot: the content-keyed cache
     (`cache_key`/`cached`, also used by `altitude_bands.py`), the
     `EventsDigest` (`events_digest`), the cached body-fixed impact
-    projection (`impact_latlon`), and the rendering-budget helper
-    `decimate_for_display`. **Anything an events view derives from
-    the raw array belongs here, not in the plot function** — see the
-    scale rules in §5.3.
+    projection (`impact_latlon`), the rendering-budget helper
+    `decimate_for_display` and the axis-unit helper `time_axis`
+    (used by the event *and* acceleration views). **Anything an
+    events view derives from the raw array belongs here, not in the
+    plot function** — see the scale rules in §5.3.
   - `altitude_bands.py` — the band-occupancy reconstruction behind
     the Info rows, the four band plots and the per-element CSV.
   - `scene3d.py` — GUI glue over `spoviz.decoration`: keeps the
@@ -675,7 +683,13 @@ turned a full pass over the event views into 335 s.
   it does not re-scan the raw array. Adding a field to `EventsDigest`
   is the right move when two consumers would otherwise both compute
   it. Also: pick a readable time unit from the plotted span
-  (`_time_axis`) — don't hardcode seconds.
+  (`derived.time_axis`, shared by the event *and* acceleration views)
+  — don't hardcode seconds. If the view is overlay-safe, memoise the
+  chosen unit on the `Axes` (`_spody_time_unit`, see
+  `plots_accel._time_axis_data`): `make_2d_overlay` calls the plot fn
+  once per file against the **same** axes, so a per-call choice lets a
+  12 h file pick hours while a 6-day file picks days and the two land
+  on silently different scales.
 - *Never one matplotlib artist (or polygon vertex) per record.* A
   canvas is ~1200 px wide; past that, extra markers buy nothing
   visible and cost seconds on **every** redraw, including each zoom

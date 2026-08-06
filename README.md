@@ -325,7 +325,12 @@ Ordered roughly by what unlocks the most for users.
         views (time-to-impact
         histogram, survival timeline, equirect + Mollweide
         lat/lon maps, density heatmap, 3D body-textured scene
-        with body-fixed + ICRF frame triads), diff-RIC trajectory
+        with body-fixed + ICRF frame triads), **per-force
+        acceleration views** naming each third body individually
+        (resolved from the run snapshot) plus a **perturbation
+        budget** &mdash; every force's share of the summed
+        magnitudes, central two-body excluded, on a log axis so
+        LEO's four-decade spread stays readable, diff-RIC trajectory
         plots, CR3BP Jacobi-constant conservation, per-primary
         osculating orbital elements for CR3BP runs (primary
         selector lives in the Scene options dialog), optional

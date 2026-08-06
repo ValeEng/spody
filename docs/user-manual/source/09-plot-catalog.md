@@ -347,6 +347,20 @@ The accelerations binary records the per-force accelerations at
 every record, alongside the total. These plots break the
 contributions down.
 
+Third bodies are named individually rather than summed into one
+`3rd-body` series. The binary stores only how many third bodies
+were active, so the names come from the `force_model.third_bodies`
+list in the run folder's `input.toml` snapshot, which the engine
+fills the per-body slots from in the same order. If that snapshot
+is missing or lists a different number of bodies, the plots fall
+back to positional labels (`3rd-body #0`) rather than risk
+attaching the wrong name to a curve.
+
+Every acceleration plot picks its time unit from the span it
+draws (seconds, minutes, hours or days), so a multi-day run does
+not print a six-digit second count. In an overlay the first file
+fixes the unit for the whole axis.
+
 #### Total |a_total|
 
 **Formula.** `|a_total| = sqrt(a_x^2 + a_y^2 + a_z^2)` on a
@@ -362,9 +376,11 @@ the harmonics contribution (smaller by an order of magnitude).
 
 #### Per-force breakdown (log y)
 
-Each of the active force contributions (two-body, harmonics,
-each third body, SRP) is plotted as its own line on a logarithmic
-y axis with a legend.
+Each of the active force contributions (two-body, harmonics, each
+third body by name, SRP, drag) is plotted as its own line on a
+logarithmic y axis with a legend. A force that is switched off for
+the run is omitted rather than drawn flat at the axis, so an empty
+legend slot never gets mistaken for a negligible contribution.
 
 **When to use.** The "who is doing what" plot &mdash; tells you
 which force dominates at every part of the orbit. Typical
@@ -374,6 +390,42 @@ orbital phase; third-body Earth dominates over third-body Sun for
 near-Moon orbits.
 
 **Overlay-safe.** No (draws multiple lines per file).
+
+#### Perturbation budget (share, log y)
+
+The same channels as the breakdown, minus the central two-body
+term, each divided by the sum of all of them and drawn as a filled
+curve on a logarithmic percentage axis. The legend carries each
+force's time-averaged share, which ranks them without reading the
+axis.
+
+**Formula.** `share_k(t) = 100 * |a_k(t)| / Σ_j |a_j(t)|`, where
+*j* runs over harmonics, each third body, SRP and drag.
+
+**When to use.** Attribution &mdash; *which* perturbation owns a
+drift, and whether that changes during the run. Because the shares
+are normalised, the overall growth of `|a|` divides out: what is
+left is composition alone, so a decaying orbit shows drag taking
+over rather than everything simply rising together.
+
+Two properties worth knowing before reading numbers off it. First,
+the shares divide **magnitudes**, so they sum to the sum of the
+norms and not to `|Σa|`, which is smaller wherever two forces
+partly cancel; this is a "who is pushing, and how hard" chart, not
+a vector decomposition of the net perturbation. Second, the axis is
+logarithmic rather than a 100%-stack on purpose: a stack is only
+readable when the contributors sit within about a decade of each
+other, which holds at GNSS and GEO altitudes but fails in LEO,
+where the harmonics take 99.99% and every other band would fall
+below a single pixel.
+
+The bottom of the axis is set from a low percentile of the shares,
+not their minimum, so an SRP collapse inside an eclipse clips at
+the frame instead of stretching the plot over empty decades. A
+force that reaches exactly zero (full umbra) leaves a gap, which is
+the logarithmic axis being honest about it.
+
+**Overlay-safe.** No (draws multiple curves per file).
 
 #### Eclipse fraction
 
