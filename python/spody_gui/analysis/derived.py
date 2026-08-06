@@ -35,8 +35,10 @@ Three things live in this module:
 - `impact_latlon` -- the ICRF -> body-fixed projection of the IMPACT
   rows, shared by the four impact views and the impact CSV export.
 
-Plus `decimate_for_display`, the rendering-budget helper: no event
-plot may hand matplotlib more artists than the canvas has pixels.
+Plus two axis/rendering helpers shared by the plot modules:
+`decimate_for_display` (no event plot may hand matplotlib more artists
+than the canvas has pixels) and `time_axis` (no view prints a raw
+six-digit second count).
 
 INVARIANT: everything here is a pure function of its inputs. Nothing
 reads QSettings, the widget tree, or the filesystem beyond the
@@ -361,6 +363,29 @@ def _impact_latlon_impl(events, info, central_body):
         lat_deg[i] = np.degrees(np.arcsin(r_bf[2] / norm))
         lon_deg[i] = np.degrees(np.arctan2(r_bf[1], r_bf[0]))
     return lat_deg, lon_deg, t_sim / 86400.0, case_id
+
+
+# ----------------------------------------------------------------------
+# Axis presentation
+# ----------------------------------------------------------------------
+
+
+def time_axis(span_s: float) -> tuple[float, str]:
+    """Pick a readable time unit (divisor, label) for a plot axis from
+    the plotted span: seconds for a sub-minute orbit up to days for a
+    multi-day run. Keeps every view from printing a raw six-digit
+    second count on a days-long run.
+
+    Every binary SpOdy writes stores t in seconds (consistent with the
+    integrator and the C structs); the unit is a display choice only,
+    made per view from what it is about to draw."""
+    if span_s >= 2 * 86400.0:
+        return 86400.0, "days"
+    if span_s >= 2 * 3600.0:
+        return 3600.0, "h"
+    if span_s >= 2 * 60.0:
+        return 60.0, "min"
+    return 1.0, "s"
 
 
 # ----------------------------------------------------------------------

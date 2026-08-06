@@ -41,7 +41,12 @@ from .altitude_bands import (
     band_population,
 )
 from .context import PlotContext, ctx_missing_message, resolve_run_context
-from .derived import decimate_for_display, events_digest, impact_latlon
+from .derived import (
+    decimate_for_display,
+    events_digest,
+    impact_latlon,
+    time_axis,
+)
 from .scene3d import add_reference_triads
 from .spec import PlotSpec
 
@@ -51,20 +56,6 @@ from .spec import PlotSpec
 # the events.h C struct), but at user-visible scales (days-long batch
 # runs, multi-day debris-cloud decay) day-level axes read better.
 _SEC_PER_DAY = 86400.0
-
-
-def _time_axis(span_s: float) -> tuple[float, str]:
-    """Pick a readable time unit (divisor, label) for an events / band
-    plot axis from the plotted span: seconds for a sub-minute orbit up
-    to days for a multi-day batch. Keeps every timeline / band view
-    from printing a raw six-digit second count on a days-long run."""
-    if span_s >= 2 * 86400.0:
-        return 86400.0, "days"
-    if span_s >= 2 * 3600.0:
-        return 3600.0, "h"
-    if span_s >= 2 * 60.0:
-        return 60.0, "min"
-    return 1.0, "s"
 
 
 # Cache for the grayscale-and-downsampled Mollweide central-body
@@ -300,7 +291,7 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
     # days-long batch, seconds on a single short orbit).
     all_t = d["t"]
     t_lo, t_hi = float(all_t.min()), float(all_t.max())
-    div, unit = _time_axis(t_hi - t_lo)
+    div, unit = time_axis(t_hi - t_lo)
     style = {None:  dict(marker="|", s=200),
              True:  dict(marker="^", s=44, color="tab:green"),
              False: dict(marker="v", s=44, color="tab:green")}
@@ -359,7 +350,7 @@ def _plot_events_timeline_density(ax: Axes, d: np.ndarray) -> None:
     t_max = max(float(ts.max()) for _, ts in rows)
     if t_max <= t_min:
         t_max = t_min + 1.0
-    div, unit = _time_axis(t_max - t_min)
+    div, unit = time_axis(t_max - t_min)
     n_bins = 300
     edges = np.linspace(t_min, t_max, n_bins + 1)
     hist = np.zeros((len(rows), n_bins))
@@ -849,7 +840,7 @@ def _plot_bands_time(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
         return
     is_batch = "case_idx" in d.dtype.names
     labels = band_edge_labels(res.thresholds_km)
-    div, unit = _time_axis(res.window_s)
+    div, unit = time_axis(res.window_s)
     colors = _band_colors(len(res.bands))
     y = np.arange(len(res.bands))
     vals = np.array([b.total_time_s for b in res.bands]) / div
@@ -889,7 +880,7 @@ def _plot_bands_gantt(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
         return
     labels = band_edge_labels(seg.thr)
     colors = _band_colors(len(labels))
-    div, unit = _time_axis(seg.window_s)
+    div, unit = time_axis(seg.window_s)
     objs = np.unique(seg.obj)
     obj0 = int(objs[0])                # per-run file -> the only object
     m = seg.obj == obj0
@@ -943,7 +934,7 @@ def _plot_bands_population(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     # vertices -- minutes of draw time for a picture the canvas cannot
     # resolve anyway.
     grid, pop, exact = band_population(seg)
-    div, unit = _time_axis(seg.window_s)
+    div, unit = time_axis(seg.window_s)
     x = grid / div
     base = np.zeros(grid.size)
     for b in range(len(labels)):
@@ -985,7 +976,7 @@ def _plot_bands_heatmap(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     labels = band_edge_labels(thr)
     n_bands = len(labels)
     rows = ids
-    div, unit = _time_axis(float(times.max()) if times.size else 1.0)
+    div, unit = time_axis(float(times.max()) if times.size else 1.0)
     im = ax.imshow(times / div, aspect="auto", cmap="viridis",
                    origin="upper", interpolation="nearest")
     ax.set_xticks(range(n_bands))

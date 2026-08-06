@@ -27,6 +27,7 @@ import numpy as np
 from matplotlib.axes import Axes
 
 from .context import PlotContext, ctx_missing_message, resolve_run_context
+from .derived import time_axis
 from .overlays import make_2d_overlay
 from .spec import PlotSpec
 
@@ -77,19 +78,39 @@ def _perturbation_channels(d: np.ndarray, ctx: "PlotContext | None"
     return [(name, v) for name, v in channels if np.any(v > 0.0)]
 
 
+def _time_axis_data(ax: Axes, d: np.ndarray) -> tuple[np.ndarray, str]:
+    """Simulation time rescaled to a readable unit, plus its axis
+    label. An accelerations file routinely spans days at a 60 s output
+    cadence, where a raw second count prints as a six-digit axis.
+
+    The choice is memoised on the Axes because `make_2d_overlay` calls
+    the plot fn once per file against the SAME axes: letting a 12 h
+    file pick hours while a 6-day file picks days would draw the two
+    curves on silently different scales."""
+    choice = getattr(ax, "_spody_time_unit", None)
+    if choice is None:
+        span = float(d["t"][-1] - d["t"][0]) if d.size else 0.0
+        choice = time_axis(span)
+        ax._spody_time_unit = choice
+    div, label = choice
+    return d["t"] / div, label
+
+
 def _plot_acc_total(ax: Axes, d: np.ndarray) -> None:
-    ax.semilogy(d["t"], _norm3(d["acc_total"]))
-    ax.set_xlabel("t [s]"); ax.set_ylabel("|a_total| [km/s²]")
+    t, unit = _time_axis_data(ax, d)
+    ax.semilogy(t, _norm3(d["acc_total"]))
+    ax.set_xlabel(f"t [{unit}]"); ax.set_ylabel("|a_total| [km/s²]")
     ax.set_title("Total acceleration magnitude")
     ax.grid(True, which="both", alpha=0.3)
 
 
 def _plot_acc_breakdown(ax: Axes, d: np.ndarray,
                         ctx: "PlotContext | None" = None) -> None:
-    ax.semilogy(d["t"], _norm3(d["acc_2body"]), label="2-body")
+    t, unit = _time_axis_data(ax, d)
+    ax.semilogy(t, _norm3(d["acc_2body"]), label="2-body")
     for name, mag in _perturbation_channels(d, ctx):
-        ax.semilogy(d["t"], mag, label=name)
-    ax.set_xlabel("t [s]"); ax.set_ylabel("|a| [km/s²]")
+        ax.semilogy(t, mag, label=name)
+    ax.set_xlabel(f"t [{unit}]"); ax.set_ylabel("|a| [km/s²]")
     ax.set_title("Per-force acceleration magnitude")
     # Fixed corner, never loc="best": with one line per third body this
     # plot can carry 10+ series, and "best" re-scans every point of
@@ -141,16 +162,17 @@ def _plot_acc_budget(ax: Axes, d: np.ndarray,
     positive = share[share > 0.0]
     floor = (max(float(np.percentile(positive, 0.5)), 1e-6) * 0.5
              if positive.size else 1e-6)
+    t, unit = _time_axis_data(ax, d)
     for (name, _), row, mean in zip(channels, share, share.mean(axis=1)):
         # Time-averaged share in the legend text: it ranks the forces
         # without the reader having to eyeball a log axis.
-        line, = ax.semilogy(d["t"], row, label=f"{name}  ({mean:#.3g}%)")
-        ax.fill_between(d["t"], row, floor, color=line.get_color(), alpha=0.15)
-    ax.set_xlabel("t [s]"); ax.set_ylabel("share of Σ|a| [%]")
+        line, = ax.semilogy(t, row, label=f"{name}  ({mean:#.3g}%)")
+        ax.fill_between(t, row, floor, color=line.get_color(), alpha=0.15)
+    ax.set_xlabel(f"t [{unit}]"); ax.set_ylabel("share of Σ|a| [%]")
     ax.set_title(_BUDGET_TITLE)
     # 200 not 100 so the dominant curve does not sit on the frame.
     ax.set_ylim(floor, 200.0)
-    ax.set_xlim(float(d["t"][0]), float(d["t"][-1]))
+    ax.set_xlim(float(t[0]), float(t[-1]))
     # Centre-right: on a log share axis the dominant force pins to the
     # top and the rest to the bottom, leaving the middle decades empty.
     ax.legend(loc="center right", fontsize="small", framealpha=0.85)
@@ -158,8 +180,9 @@ def _plot_acc_budget(ax: Axes, d: np.ndarray,
 
 
 def _plot_acc_eclipse(ax: Axes, d: np.ndarray) -> None:
-    ax.plot(d["t"], d["eclipse_fraction"])
-    ax.set_xlabel("t [s]"); ax.set_ylabel("eclipse fraction")
+    t, unit = _time_axis_data(ax, d)
+    ax.plot(t, d["eclipse_fraction"])
+    ax.set_xlabel(f"t [{unit}]"); ax.set_ylabel("eclipse fraction")
     ax.set_title("Sunlight fraction (1 = full sun, 0 = full umbra)")
     ax.set_ylim(-0.05, 1.05); ax.grid(True, alpha=0.3)
 
