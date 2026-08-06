@@ -17,52 +17,65 @@ graphical front-end, both fed by a plain-text input file.
 
 ## Status
 
-**Beta — fully end-to-end, growing scope.** The whole pipeline
-runs out of the box from a `git clone --recursive` to a published
-PyInstaller bundle: single-scenario propagation, multi-case batch
-(sequential + OpenMP parallel), two **central bodies** (Moon and
-Earth, the latter with IAU 2006/2000A_R06 + IERS EOP for the
-inertial-to-ITRS rotation), two **dynamics models** selected per
-TOML (`high_fidelity`, the full force-model integrator, and
-`cr3bp`, the synodic-rotating Circular Restricted 3-Body Problem),
-**two flavours of initial state** (Cartesian or Keplerian
-elements referenced to the central body / one of the CR3BP
-primaries; the central-body input can also be expressed in the
-body-fixed basis at the run epoch, ITRS or PA, or &mdash; around the
-Moon &mdash; in Ely's orbit-plane frame that lunar frozen orbits are
-defined in, and the engine rotates to ICRF at sim setup),
-**multi-occulter SRP eclipse** (every
-third body can shade the satellite, overlapping shadows combined by
-inclusion&ndash;exclusion, so the Earth darkens a lunar orbiter),
-**atmospheric drag** around the Earth (native NRLMSISE-00 with
-CelesTrak space weather, plus an engine-side density-scale
-calibration against a reference ephemeris),
-event detection (always-on multi-body IMPACT with
-sub-millisecond Hermite + Brent localisation, opt-in ECLIPSE and
-altitude crossings),
-TOML schema validation, per-force acceleration breakdown, run-
-folder layout with timestamp-prefixed snapshot + outputs, and a
-PySide6 desktop frontend covering Setup wizard, TOML editor with
-syntax-aware autocompletion, embedded runner, and a full Analysis
-tab (Plot / Table / Info split, per-plot Export CSV, per-kind
-key/value summary panel with diff-aware |&Delta;r| / |&Delta;v|
-/ RIC rows, optional equirectangular star-map background on the
-3D scene, batch-event impact maps in 2D equirectangular +
-Mollweide projections + density heatmap, 3D body-textured impact
-scene with body-fixed + ICRF triads, diff-RIC plots, Jacobi-
-constant conservation for CR3BP). Releases ship signed-sha256 bundles for Windows / Linux
-x86_64 / macOS arm64 plus a 14-chapter user manual PDF.
+**Beta — fully end-to-end, growing scope.** The whole pipeline runs
+out of the box, from a `git clone --recursive` to a published
+PyInstaller bundle.
 
-The library underneath (`spody-core`) is validated against SPICE
-LRO POD ephemerides (sub-km position drift over the 6-day window,
-Moon central body), GLONASS R03 broadcast vs MGEX SP3 (177 m RMS
-on 24h, ~200 m/day linear growth over 7 days, Earth central body),
-and a scipy DOP853 differential-corrector closure on an L1 Lyapunov
-(30 microns / 1.6e-10 km/s over one synodic period, CR3BP). The
-Python-side `spopy` package re-implements the read-side helpers
-(DE440 reader, ICRF&lt;-&gt;Moon Principal Axes rotations) bit-
-identically (104/104 checks at atol 1e-9 km/rad, &sim;1 ULP IEEE
-754).
+**Propagation**
+
+- Single-scenario `propagate` and multi-case `batch`, the latter
+  sequential or OpenMP-parallel.
+- Two **central bodies**: the Moon, and the Earth with IAU
+  2006/2000A_R06 + IERS EOP driving the inertial-to-ITRS rotation.
+- Two **dynamics models**, selected per TOML: `high_fidelity` (the
+  full force-model integrator) and `cr3bp` (the synodic-rotating
+  Circular Restricted 3-Body Problem).
+- Two **initial-state flavours**, Cartesian or Keplerian, the latter
+  referenced to the central body or to one of the CR3BP primaries.
+  Either can be written in the body-fixed basis at the run epoch
+  (ITRS or PA) or, around the Moon, in Ely's orbit-plane frame that
+  lunar frozen orbits are defined in; the engine rotates to ICRF at
+  sim setup.
+
+**Force model**
+
+- Spherical-harmonic gravity with an optional adaptive truncation
+  degree that follows the orbit radius at bit-identical output.
+- **Multi-occulter SRP eclipse**: every third body can shade the
+  satellite, overlapping shadows combined by inclusion&ndash;exclusion,
+  so the Earth darkens a lunar orbiter.
+- **Atmospheric drag** around the Earth: native NRLMSISE-00 with
+  CelesTrak space weather, plus an engine-side density-scale
+  calibration against a reference ephemeris.
+- **Event detection**: always-on multi-body IMPACT, opt-in ECLIPSE
+  and altitude crossings, all localised to sub-millisecond by
+  Hermite + Brent.
+
+**Tooling**
+
+- TOML schema validation, per-force acceleration breakdown, and a
+  run-folder layout with timestamp-prefixed snapshot + outputs.
+- A PySide6 desktop frontend: Setup wizard, TOML editor with
+  syntax-aware autocompletion, embedded runner, and a full Analysis
+  tab — Plot / Table / Info split, per-plot Export CSV, per-kind
+  key/value summary with diff-aware |&Delta;r| / |&Delta;v| / RIC
+  rows, batch-event impact maps (equirectangular + Mollweide +
+  density heatmap), a 3D body-textured impact scene with body-fixed
+  and ICRF triads, an optional equirectangular star-map background,
+  diff-RIC plots, and Jacobi-constant conservation for CR3BP.
+- Releases ship signed-sha256 bundles for Windows / Linux x86_64 /
+  macOS arm64, plus a 14-chapter user manual PDF.
+
+**Validation.** The library underneath (`spody-core`) is checked
+against SPICE LRO POD ephemerides (sub-km position drift over the
+6-day window, Moon central body), GLONASS R03 broadcast vs MGEX SP3
+(177 m RMS on 24h, ~200 m/day linear growth over 7 days, Earth
+central body), and a scipy DOP853 differential-corrector closure on
+an L1 Lyapunov (30 microns / 1.6e-10 km/s over one synodic period,
+CR3BP). The Python-side `spopy` package re-implements the read-side
+helpers (DE440 reader, ICRF&lt;-&gt;Moon Principal Axes rotations)
+bit-identically: 104/104 checks at atol 1e-9 km/rad, &sim;1 ULP
+IEEE 754.
 
 The remaining narrow scope keeps the "beta" label: no Mars /
 Sun-Earth central bodies, drag limited to the Earth (the per-body
