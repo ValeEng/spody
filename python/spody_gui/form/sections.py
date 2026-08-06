@@ -1693,6 +1693,9 @@ class SectionBuildersMixin:
         # hasattr guard: this reflow can fire between section builds.
         if hasattr(self, "_cr3bp_from_btn"):
             self._cr3bp_from_btn.setVisible(is_hf)
+        # Batch cases_frame: its non-rotating entry names the frame the
+        # propagator integrates in, so it follows the model too.
+        self._sync_cases_frame_label()
         # Frame combo is owned exclusively by
         # `_refresh_input_frame_availability` (called below) -- having
         # this method ALSO rebuild it caused races where the BF entry
@@ -1927,13 +1930,19 @@ class SectionBuildersMixin:
         f.addRow("", self._batch_cases_status)
 
         # Frame selector for the state-vector columns in the cases file.
-        # spody.exe only knows ICRF; this combo tells the GUI whether
-        # the user's CSV is already in ICRF (used as-is) or in RIC
+        # Tells the GUI whether the user's CSV is already in the frame
+        # the propagator integrates in (used as-is) or in a rotating one
         # (rotated at Generate-TOML using [initial_state] as the
-        # reference orbit). The cases_frame key is only emitted when
-        # not the default.
+        # reference orbit).
+        #
+        # The first entry is NOT a fixed string: the engine adds the
+        # offsets in its own frame, which is ICRF under high_fidelity
+        # and synodic under cr3bp, so calling it "icrf" in a CR3BP run
+        # would name the wrong frame on the one option whose whole
+        # meaning is "these components are already correct".
+        # `_sync_cases_frame_label` retitles it on every model change.
         self._batch_cases_frame_combo = QComboBox()
-        for frame_name in ("icrf", "ric", "lvlh"):
+        for frame_name in (self._cases_target_frame(), "ric", "lvlh"):
             self._batch_cases_frame_combo.addItem(frame_name)
         self._batch_cases_frame_combo.currentTextChanged.connect(
             self._on_cases_frame_changed)

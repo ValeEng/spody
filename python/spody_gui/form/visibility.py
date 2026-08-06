@@ -643,6 +643,27 @@ class VisibilityMixin:
         model = combo.currentText() if isinstance(combo, QComboBox) else ""
         return "synodic" if model == "cr3bp" else "icrf"
 
+    def _sync_cases_frame_label(self) -> None:
+        """Retitle the combo's non-rotating entry after a
+        dynamics_model change, preserving the user's selection.
+
+        Item 0 names the frame the propagator integrates in, so it
+        follows the model. The rotating entries never move, which is
+        what lets the selection be restored by index rather than by
+        text -- the text of the very item that may have just changed."""
+        combo = getattr(self, "_batch_cases_frame_combo", None)
+        if combo is None:
+            return
+        want = self._cases_target_frame()
+        if combo.itemText(0) == want:
+            return
+        was = combo.currentIndex()
+        combo.blockSignals(True)
+        combo.setItemText(0, want)
+        combo.setCurrentIndex(was)
+        combo.blockSignals(False)
+        self._update_cases_frame_status()
+
     def _resolved_cases_file(self) -> str:
         """Compute the cases_file value that spody.exe will see, from
         the current source path + frame combo. Returns an empty string

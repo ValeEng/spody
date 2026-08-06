@@ -227,11 +227,20 @@ class RoundTripMixin:
         # source); the TOML carries three batch keys whose contract is:
         #
         #   cases_source_file = the path the user chose (= widget text)
-        #   cases_frame       = "icrf" | "ric" (what frame the source is in)
+        #   cases_frame       = what frame the source is in: a rotating
+        #                       one ("ric" | "lvlh") or the propagator's
+        #                       own ("icrf" under high_fidelity,
+        #                       "synodic" under cr3bp)
         #   cases_file        = what spody.exe actually reads
-        #                       == cases_source_file when icrf
-        #                       == <stem>_wrt_icrf.csv when ric (the
-        #                          rotated copy the GUI writes at Generate)
+        #                       == cases_source_file for a non-rotating
+        #                          source
+        #                       == <stem>_wrt_<target>.csv for a rotating
+        #                          one (the copy the GUI writes at
+        #                          Generate). `<target>` MUST come from
+        #                          `_resolved_cases_file`, the same
+        #                          helper the writer and the status line
+        #                          use -- spelling it out here once got
+        #                          it out of step with them.
         #
         # The triple is emitted regardless of mode so loading is
         # symmetric and the schema is self-describing: any reader can
@@ -245,12 +254,7 @@ class RoundTripMixin:
         if source:
             flat["batch.cases_source_file"] = source
             flat["batch.cases_frame"]       = frame
-            if frame in self._ROTATING_FRAMES:
-                p = Path(source)
-                flat["batch.cases_file"] = str(
-                    p.with_name(f"{p.stem}_wrt_icrf.csv"))
-            else:
-                flat["batch.cases_file"] = source
+            flat["batch.cases_file"] = self._resolved_cases_file() or source
 
         result = explode_dotted(flat)
 
