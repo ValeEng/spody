@@ -193,6 +193,15 @@ def resolve_run_context(events_path: Path) -> dict | None:
         central_body       : str
         cases_file         : Path | None  (resolved next to the snapshot)
         toml_path          : Path
+        third_bodies       : list[str] -- `force_model.third_bodies` in
+                             declaration order, which is the SAME order
+                             the engine uses to fill
+                             `ForceBreakdown.acc_thirdbody[i]`
+                             (sim_setup.c resolves names to (NAIF, mu)
+                             pairs index by index). The per-force
+                             acceleration views rely on that to label
+                             each third-body channel with its body name;
+                             the binary itself carries only `n_third`.
         altitude_crossings : list of {"body": str, "altitude_km": float,
                              "action": str} -- one per configured
                              [[events.altitude_crossing]] entry (empty
@@ -231,6 +240,9 @@ def resolve_run_context(events_path: Path) -> dict | None:
                     break
             except OSError:
                 continue
+    third_raw = force.get("third_bodies", [])
+    third_bodies = ([str(b) for b in third_raw]
+                    if isinstance(third_raw, list) else [])
     alt_crossings: list[dict] = []
     for entry in cfg.get("events", {}).get("altitude_crossing", []):
         if not isinstance(entry, dict):
@@ -250,6 +262,7 @@ def resolve_run_context(events_path: Path) -> dict | None:
         "central_body":   str(force.get("central_body", "")),
         "cases_file":     cases_path,
         "toml_path":      toml_path,
+        "third_bodies":   third_bodies,
         "altitude_crossings": alt_crossings,
     }
 

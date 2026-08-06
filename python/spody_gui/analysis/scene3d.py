@@ -38,7 +38,6 @@ from spoviz import decoration as sv_decoration
 
 from .. import constants
 from ..central_bodies import default_central_body, resolve_central_body
-from ..toml_io import read_toml
 from ..vtk_canvas import MOON_RADIUS_KM, VtkCanvas
 from .context import PlotContext, resolve_run_context
 
@@ -103,15 +102,8 @@ def add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
     if resolved is None:
         return
     info, eph = resolved
-    # `resolve_run_context` doesn't expose third_bodies today; re-read
-    # the snapshot toml directly to avoid bloating its return shape
-    # for a single caller.
-    try:
-        cfg = read_toml(info["toml_path"])
-    except (OSError, ValueError):
-        return
-    bodies_raw = cfg.get("force_model", {}).get("third_bodies", [])
-    if not isinstance(bodies_raw, list) or not bodies_raw:
+    bodies_raw = info["third_bodies"]
+    if not bodies_raw:
         return
 
     from .. import assets, paths
