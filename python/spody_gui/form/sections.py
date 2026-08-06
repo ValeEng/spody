@@ -1028,6 +1028,95 @@ class SectionBuildersMixin:
                 self._write_float(k, float(v))
         return True
 
+    def _cr3bp_primary_relative_state(self
+                                      ) -> tuple["np.ndarray", "np.ndarray",
+                                                 str] | None:
+        """Reference orbit for the rotating-frame cases pipeline under
+        CR3BP: `(r, v, primary_name)` in SYNODIC components, measured
+        from the primary the object is orbiting.
+
+        The [initial_state] cartesian block is barycentre-centred, and
+        a local-vertical axis built there would point along the
+        primary-primary line rather than along the local up -- for a
+        close orbit the two are almost perpendicular. So the primary's
+        offset is removed first. Its velocity needs no correction: in
+        the rotating frame both primaries are stationary, so the
+        object's synodic velocity already IS its velocity relative to
+        them.
+
+        Which primary is picked: the nearer one. That is unambiguous
+        for anything actually orbiting a primary (the only case where
+        a local-vertical frame means something), needs no extra TOML
+        key, and cannot silently disagree with a stale
+        `force_model.central_body` -- which the CR3BP RHS ignores. The
+        name is returned so the caller can put it on screen.
+
+        Keplerian input goes through the same chain the engine uses in
+        `finalize_keplerian_initial_state` -- keplerian_to_cartesian on
+        the reference primary's mu, then the synodic transform -- so
+        the basis is built on the state the engine will actually start
+        from, not on a parallel derivation of it.
+
+        None when the pair or the state cannot be resolved.
+        """
+        import math
+        import numpy as np
+        kind, _frame = self._ic_current_view()
+        if kind == "cartesian":
+            r = self._read_vec3("initial_state.position_km")
+            v = self._read_vec3("initial_state.velocity_kms")
+            if r is None or v is None:
+                return None
+        else:
+            ctx = self._resolve_kep_mu_and_synodic()
+            block = self._snapshot_ic_block("keplerian")
+            if ctx is None or ctx[1] is None or block is None:
+                return None
+            mu_ref, syn = ctx
+            anom_combo = self._widgets.get("initial_state.anomaly_type")
+            anom_type = (anom_combo.currentText()
+                         if isinstance(anom_combo, QComboBox) else "true")
+            try:
+                from spopy import keplerian_to_cartesian, mean_to_true_anom
+                from spopy.cr3bp import inertial_to_synodic
+                nu = math.radians(block["initial_state.anomaly_deg"])
+                if anom_type == "mean":
+                    nu = mean_to_true_anom(
+                        nu, block["initial_state.eccentricity"])
+                r_pi, v_pi = keplerian_to_cartesian(
+                    block["initial_state.semi_major_axis_km"],
+                    block["initial_state.eccentricity"],
+                    math.radians(block["initial_state.inclination_deg"]),
+                    math.radians(block["initial_state.raan_deg"]),
+                    math.radians(block["initial_state.arg_periapsis_deg"]),
+                    nu, mu_ref)
+                r, v = inertial_to_synodic(r_pi, v_pi, syn["mu1"], syn["mu2"],
+                                           syn["L"], syn["primary_index"])
+                r = np.asarray(r, dtype=float)
+                v = np.asarray(v, dtype=float)
+            except (ValueError, ZeroDivisionError):
+                return None
+
+        p1_combo = self._widgets.get("cr3bp.primary_1")
+        p2_combo = self._widgets.get("cr3bp.primary_2")
+        p1 = p1_combo.currentText() if isinstance(p1_combo, QComboBox) else ""
+        p2 = p2_combo.currentText() if isinstance(p2_combo, QComboBox) else ""
+        from ..central_bodies import resolve_central_body
+        spec1 = resolve_central_body(p1)
+        spec2 = resolve_central_body(p2)
+        L = CR3BP_L_KM.get((p1, p2))
+        if spec1 is None or spec2 is None or L is None:
+            return None
+
+        mu_tot = spec1.mu_km3_s2 + spec2.mu_km3_s2
+        x1 = -(spec2.mu_km3_s2 / mu_tot) * L
+        x2 = +(spec1.mu_km3_s2 / mu_tot) * L
+        d1 = float(np.linalg.norm(r - np.array([x1, 0.0, 0.0])))
+        d2 = float(np.linalg.norm(r - np.array([x2, 0.0, 0.0])))
+        if d1 <= d2:
+            return r - np.array([x1, 0.0, 0.0]), v, p1
+        return r - np.array([x2, 0.0, 0.0]), v, p2
+
     def _resolve_kep_mu_and_synodic(self) -> tuple[float, dict] | None:
         """Look up the reference-body mu (+ CR3BP geometry when needed)
         for the current dynamics_model + reference_body combo. Returns

@@ -684,27 +684,45 @@ class RoundTripMixin:
             src = (toml_path.parent / src).resolve()
         if not src.is_file():
             return ("error", f"cases_file not found:\n  {src}")
-        out = src.with_name(f"{src.stem}_wrt_icrf.csv")
+        target = self._cases_target_frame()
+        out = src.with_name(f"{src.stem}_wrt_{target}.csv")
 
-        # Reference orbit = the form's canonical cartesian-inertial
-        # state, NOT the raw [initial_state] keys: the rotating-frame
-        # axes are a property of the physical orbit, so they must be
-        # built in ICRF whatever (kind, frame) the user is typing in.
-        # Reading the raw keys would miss a Keplerian block entirely
-        # (it has no cartesian keys) and would silently build the basis
-        # out of body-fixed / orbit-plane components.
-        kind, frame = self._ic_current_view()
-        block = self._snapshot_ic_block(kind)
-        rv = (self._ic_block_to_cart_inertial(block, kind, frame)
-              if block is not None else None)
-        if rv is None:
-            return ("error",
-                    f"Could not resolve the reference orbit from the "
-                    f"{kind} / {frame} [initial_state] block -- it "
-                    f"defines the axes the cases CSV is written in. "
-                    f"Fill every field; for a non-inertial frame also "
-                    f"set simulation.et_start_s and the ephemeris file.")
-        r_ref, v_ref = rv
+        # Reference orbit: the state the propagator will actually start
+        # from, expressed in the frame the propagator integrates in.
+        # The rotation kernel is frame-agnostic -- it builds the local
+        # basis from (r, v) and writes the rotated offsets back in the
+        # SAME components -- so handing it the right representation is
+        # the whole of the model dependency.
+        if target == "synodic":
+            # CR3BP: the synodic state itself, measured from the
+            # primary being orbited (the block is barycentre-centred).
+            ref = self._cr3bp_primary_relative_state()
+            if ref is None:
+                return ("error",
+                        "Could not resolve the reference orbit from the "
+                        "[initial_state] synodic block. Fill all six "
+                        "components and pick a curated pair in [cr3bp].")
+            r_ref, v_ref, _primary = ref
+        else:
+            # High fidelity: canonical cartesian-inertial, NOT the raw
+            # [initial_state] keys. The axes are a property of the
+            # physical orbit, so they must be built in ICRF whatever
+            # (kind, frame) the user is typing in -- reading the raw
+            # keys would miss a Keplerian block entirely (it has no
+            # cartesian keys) and would silently build the basis out of
+            # body-fixed / orbit-plane components.
+            kind, frame = self._ic_current_view()
+            block = self._snapshot_ic_block(kind)
+            rv = (self._ic_block_to_cart_inertial(block, kind, frame)
+                  if block is not None else None)
+            if rv is None:
+                return ("error",
+                        f"Could not resolve the reference orbit from the "
+                        f"{kind} / {frame} [initial_state] block -- it "
+                        f"defines the axes the cases CSV is written in. "
+                        f"Fill every field; for a non-inertial frame also "
+                        f"set simulation.et_start_s and the ephemeris file.")
+            r_ref, v_ref = rv
 
         cols_map: dict[str, Any] = data.get("batch", {}).get("columns", {})
         pos_by_idx: dict[int, str] = {}
@@ -790,6 +808,6 @@ class RoundTripMixin:
         # Brief on-the-fly status so the user gets immediate feedback
         # without an extra dialog.
         self._batch_cases_status.setText(
-            f"({frame.upper()} -> ICRF: {info['n_rows']} rows written to "
-            f"{out.name})")
+            f"({frame.upper()} -> {self._cases_target_frame().upper()}: "
+            f"{info['n_rows']} rows written to {out.name})")
         return True

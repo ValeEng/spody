@@ -628,6 +628,21 @@ class VisibilityMixin:
             return _frames.lvlh_basis, _frames.rotate_state_csv_lvlh_to_icrf
         raise ValueError(f"no rotation helpers for frame {frame!r}")
 
+    def _cases_target_frame(self) -> str:
+        """Frame the rotated cases CSV is written in: whatever the
+        propagator integrates in. `icrf` under high_fidelity, `synodic`
+        under cr3bp.
+
+        Batch offsets are added to `initial_state.position_km` /
+        `velocity_kms` by the engine AFTER the initial state has been
+        collapsed to the propagator's own representation, so rotating
+        into anything else would add components of one frame to a
+        vector of another. That is the same failure the ICRF collapse
+        was introduced to fix; this is its CR3BP half."""
+        combo = self._widgets.get("simulation.dynamics_model")
+        model = combo.currentText() if isinstance(combo, QComboBox) else ""
+        return "synodic" if model == "cr3bp" else "icrf"
+
     def _resolved_cases_file(self) -> str:
         """Compute the cases_file value that spody.exe will see, from
         the current source path + frame combo. Returns an empty string
@@ -641,29 +656,41 @@ class VisibilityMixin:
             return src
         # ric / lvlh: rotated copy alongside the source. Preserve
         # relative-ness (cases_file in the TOML is interpreted relative
-        # to the TOML file's directory). Same '_wrt_icrf' suffix for
-        # every rotating frame -- the destination is always ICRF.
+        # to the TOML file's directory).
         p = Path(src)
-        return str(p.with_name(f"{p.stem}_wrt_icrf.csv"))
+        return str(p.with_name(
+            f"{p.stem}_wrt_{self._cases_target_frame()}.csv"))
 
     def _update_cases_frame_status(self) -> None:
         """Single-line help text under the frame combo telling the user
-        what spody.exe will actually read. spody.exe only accepts ICRF
-        natively; this status keeps that explicit."""
+        what spody.exe will actually read, and in which frame. The
+        engine adds the offsets in the propagator's own frame, so the
+        target changes with dynamics_model -- naming it here is what
+        keeps the user from reading LVLH numbers against the wrong
+        axes."""
         derived = self._resolved_cases_file()
         frame = self._batch_cases_frame_combo.currentText()
+        target = self._cases_target_frame()
         if not derived:
             self._batch_frame_status.setText(
                 "Pick a cases CSV above.")
             return
         if frame in self._ROTATING_FRAMES:
+            extra = ""
+            if target == "synodic":
+                ref = self._cr3bp_primary_relative_state()
+                extra = (f" Local axes are built about {ref[2]}."
+                         if ref else
+                         " (primary not resolved yet -- fill [cr3bp].)")
             self._batch_frame_status.setText(
                 f"{frame.upper()} source. At Generate the GUI rotates "
-                f"the state columns and writes '{Path(derived).name}'; "
-                f"spody.exe reads THAT file.")
+                f"the state columns into {target.upper()} and writes "
+                f"'{Path(derived).name}'; spody.exe reads THAT file."
+                f"{extra}")
         else:
             self._batch_frame_status.setText(
-                f"ICRF source. spody.exe reads it directly "
+                f"Source is taken verbatim as {target.upper()} "
+                f"components; spody.exe reads it directly "
                 f"('{Path(derived).name}').")
 
     # ------------------------------------------------------------------
@@ -708,7 +735,8 @@ class VisibilityMixin:
         # Keep the header label in sync with the actually-selected
         # rotating frame so messages don't lie about the convention.
         self._batch_rotated_preview_header.setText(
-            f"Rotated preview (post {frame.upper()} -> ICRF):")
+            f"Rotated preview (post {frame.upper()} -> "
+            f"{self._cases_target_frame().upper()}):")
 
         try:
             data = self.to_dict()
