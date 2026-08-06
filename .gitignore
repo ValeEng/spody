@@ -99,6 +99,11 @@ examples/glonass_r03_validation/*
 # out of the box.
 !examples/iss_drag_calibration/iss_oem_2024_07_03_15d_ref.bin
 
+# Local-only scratch scenario: the CR3BP closure check lives here so
+# it can be re-run against the engine, but it is a personal
+# correctness probe (like tests/), not a bundled example.
+examples/cr3bp_closure_test/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,6 +1,9 @@
-# PyInstaller bundle outputs (also covered by root .gitignore)
+# PyInstaller bundle outputs (also covered by root .gitignore).
+# dist-* covers the throwaway comparison bundles (dist-audit/, ...)
+# produced when diffing one build against another.
 build/
 dist/
+dist-*/
 # NOTE: do NOT ignore *.spec -- the bundle spec is tracked so the
 # build stays reproducible across machines.
 
