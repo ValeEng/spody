@@ -171,14 +171,16 @@ inside `[batch]`:
 | TOML key            | Meaning                                                              |
 |---------------------|----------------------------------------------------------------------|
 | `cases_source_file` | The path the user picked &mdash; the file the form shows.            |
-| `cases_frame`       | `"icrf"` (default), `"ric"`, or `"lvlh"`: the frame of the source.   |
+| `cases_frame`       | `"ric"` or `"lvlh"` for a rotating source; otherwise the propagator's own frame &mdash; `"icrf"` under `high_fidelity`, `"synodic"` under `cr3bp` &mdash; meaning the components are used as they are. The combo relabels that first entry when you switch model. |
 | `cases_file`        | The file `spody.exe` actually reads. See the rule below.             |
 
 The contract between the three keys is:
 
-- **`cases_frame = "icrf"`**: `cases_file` equals
-  `cases_source_file` byte for byte. The picked CSV goes straight
-  to `spody.exe`.
+- **`cases_frame` = the propagator's own frame** (`"icrf"` /
+  `"synodic"`): `cases_file` equals `cases_source_file` byte for
+  byte. The picked CSV goes straight to `spody.exe`. A TOML written
+  by an older SpOdy that says `"icrf"` on a CR3BP run still loads:
+  both spellings mean "use the components as they are".
 - **`cases_frame = "ric"` or `"lvlh"`**: at **Generate-TOML** the
   GUI
   1. reads the column-mapping table to find which CSV columns
