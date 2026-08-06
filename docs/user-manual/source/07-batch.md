@@ -191,9 +191,10 @@ The contract between the three keys is:
   3. rotates each row's position triplet and velocity triplet by
      `R @ vec` (**pure change of basis** &mdash; the reference
      vector is *not* added to the result);
-  4. writes the rotated copy to `<stem>_wrt_icrf.csv` next to the
-     source;
-  5. emits `cases_file = "<stem>_wrt_icrf.csv"` so `spody.exe`
+  4. writes the rotated copy to `<stem>_wrt_<target>.csv` next to
+     the source, where `<target>` is the frame the propagator
+     integrates in (see *Which frame the offsets land in* below);
+  5. emits `cases_file = "<stem>_wrt_<target>.csv"` so `spody.exe`
      reads the rotated copy. `cases_source_file` and
      `cases_frame` round out the triple so the form restores its
      rotating-frame state on the next Load without the user
@@ -207,7 +208,7 @@ than run with stale rows. The only time the rebuild is skipped is when
 you answer *Discard* at the unsaved-changes prompt &mdash; the run then
 uses the TOML already on disk, and the rotated copy that goes with it.
 
-Treat `<stem>_wrt_icrf.csv` as regenerable output: keep the **source**
+Treat the `_wrt_` copy as regenerable output: keep the **source**
 CSV under version control, not the rotated one, and copying a scenario
 elsewhere only needs the source.
 
@@ -216,20 +217,65 @@ its TOML parser only reads the keys it knows about. The two extras
 are also a placeholder for a future engine-side rotating-frame
 handler that would take the source CSV directly.
 
+### Which frame the offsets land in
+
+The engine adds batch offsets to `initial_state.position_km` /
+`velocity_kms` **after** the initial state has been collapsed to the
+representation the propagator integrates in. That representation is
+not the same for the two dynamics models, so neither is the rotation
+target:
+
+| `dynamics_model` | reference orbit used for the basis | file written |
+|---|---|---|
+| `high_fidelity` | central-body inertial (ICRF) | `<stem>_wrt_icrf.csv` |
+| `cr3bp` | synodic rotating, relative to the primary | `<stem>_wrt_synodic.csv` |
+
+Rotating into the other one would add components of one frame to a
+vector expressed in another &mdash; the offsets would still *look*
+plausible, they would simply point somewhere else.
+
+Two details specific to CR3BP:
+
+**The basis is built about the primary, not the barycentre.** The
+`[initial_state]` block under CR3BP is barycentre-centred, and a
+local-vertical axis taken there points along the primary-primary
+line. For a close orbit that is nearly perpendicular to the real
+local vertical &mdash; on a lunar ELFO the two differ by almost 90&deg;.
+The GUI therefore removes the primary's offset first, picking the
+**nearer** primary and naming it in the status line under the combo
+(*"Local axes are built about Moon."*), so the choice is visible and
+checkable. Its velocity needs no correction: in the rotating frame
+both primaries are stationary, so the object's synodic velocity
+already is its velocity relative to them.
+
+**Keplerian input works too.** It goes through the same chain the
+engine uses &mdash; Kepler elements to Cartesian on the reference
+primary's `mu`, then the synodic transform &mdash; so the basis is
+built on the state the engine will actually start from rather than on
+a parallel derivation of it.
+
+A consequence worth stating for &Delta;V work: a velocity offset
+expressed in synodic components is the *same physical* &Delta;V it
+would be in inertial components, because the rotating and inertial
+velocities differ by `omega x r`, which depends only on position and
+is unchanged by an instantaneous burn. Only the direction of the
+along-track axis differs slightly (a fraction of a degree for a close
+orbit). The magnitude is preserved exactly.
+
 ### Live rotated preview
 
 When the combo is set to a rotating frame, a second preview table
 appears under the standard cases-CSV preview, showing the first 10
 rows *after* rotation. Its header reads
-**Rotated preview (post RIC -> ICRF)** or
-**(post LVLH -> ICRF)** depending on the active frame, so the
-displayed convention is never ambiguous. It refreshes
+**Rotated preview (post RIC -> ICRF)**, **(post LVLH -> SYNODIC)**
+and so on &mdash; naming both the source convention and the target
+&mdash; so the displayed convention is never ambiguous. It refreshes
 automatically when you change the source path, the frame combo,
 or re-read the columns &mdash; that automatic refresh only redraws
 the table, it never touches the filesystem.
 
 A **Rotate + refresh** button on top of it does both halves: it
-writes `<stem>_wrt_icrf.csv` to disk *and* recomputes the table, so
+writes the rotated copy to disk *and* recomputes the table, so
 you can open the rotated file and check it before committing to a
 run. Use it after editing `[initial_state]` or the column-mapping
 table. It is never a prerequisite &mdash; running rotates again on
@@ -253,19 +299,25 @@ value &mdash; useful only if the CSV's row magnitudes are already
 on the order of the reference state, which is unusual for sensor-
 frame measurements).
 
-### Offsets are always in ICRF
+### Offsets are always in the propagator's own frame
 
-`[initial_state]` may be written in any frame the schema allows
-(`central_inertial`, `central_body_fixed`, `orbit_plane`) and as
-either Cartesian or Keplerian. Before the first case is applied,
+`[initial_state]` may be written in any frame the schema allows and
+as either Cartesian or Keplerian. Before the first case is applied,
 `spody batch` collapses it to the one representation the propagator
-consumes: a central-inertial Cartesian `(position, velocity)` pair.
-**Every batch offset is therefore interpreted in ICRF**, regardless
-of how the base state was expressed.
+consumes, and **every batch offset is interpreted in that same
+representation**, regardless of how the base state was expressed:
+
+- under `high_fidelity`, a central-inertial (ICRF) Cartesian
+  `(position, velocity)` pair &mdash; whether the block was written
+  as `central_inertial`, `central_body_fixed` or `orbit_plane`,
+  Cartesian or Keplerian;
+- under `cr3bp`, the synodic rotating pair.
 
 That is what makes the RIC / LVLH pipeline above correct: the GUI
-rotates the cases CSV into ICRF, the base is resolved to ICRF, and
-the addition happens between two quantities in the same frame.
+rotates the cases CSV into the *same* frame the base is resolved to,
+so the addition happens between two quantities in one frame. It is
+also why the rotation target follows `dynamics_model` (see *Which
+frame the offsets land in*).
 
 Nothing is required of you, and the TOML keeps the frame you wrote
 &mdash; it is worth knowing only if you hand-write a batch file, or

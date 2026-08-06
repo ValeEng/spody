@@ -1475,6 +1475,24 @@ Each entry: the rule, and the symptom you'll see if you break it.
   `orbit_plane` state, larger than) the offset it asked for, with no
   error — while `propagate` on the same TOML stays correct, which is
   what makes it hard to spot.*
+- **A batch offset lives in the propagator's frame, and so must
+  whatever produces it.** The corollary of the invariant above: the
+  offsets are added AFTER the collapse, so they are ICRF components
+  under `high_fidelity` and synodic ones under `cr3bp`. Anything
+  GUI-side that manufactures offsets — today the RIC / LVLH rotation
+  in `form/roundtrip.py` — has to build its basis from the state in
+  that same frame, which is why `_cases_target_frame()` keys off
+  `dynamics_model` and the derived file is named `_wrt_<target>.csv`.
+  Two traps in the CR3BP half. The synodic block is
+  **barycentre-centred**, so a local-vertical axis built from it
+  points along the primary-primary line — on a close lunar orbit that
+  is nearly perpendicular to the real local vertical, so the primary's
+  offset must be removed first. And the synodic velocity needs no
+  correction: the primaries are stationary in the rotating frame, so
+  it already is the velocity relative to them. *Symptom of breakage:
+  a debris sweep whose cases are all rotated coherently but into the
+  wrong plane — the cloud has the right shape and the wrong
+  orientation, and every case still propagates without complaint.*
 - **Recurring events need dense output.** Eclipse / altitude
   crossings fire from the RK45 dense-output path; other integrators
   don't provide it and `spody_event_check` has no fallback.

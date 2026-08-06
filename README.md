@@ -251,8 +251,11 @@ Ordered roughly by what unlocks the most for users.
       inline `{ target = "...", mode = "delta" }` (additive
       perturbation); empty-string `target = ""` sentinel for metadata
       columns
-- [x] Rotating-frame batch input: `cases_frame = "ric"` or `"lvlh"`
-      rotated to ICRF at Generate-TOML by the GUI
+- [x] Rotating-frame batch input: `cases_frame = "ric"` or `"lvlh"`,
+      rotated at Generate-TOML by the GUI into whichever frame the
+      propagator integrates in — ICRF under `high_fidelity`, synodic
+      under `cr3bp` (there the local basis is built about the nearer
+      primary, not the barycentre)
 - [x] **PySide6 desktop frontend** under [`python/`](python/):
       - Setup wizard for asset downloads (DE440, GRGM1200B,
         EIGEN-6C4 with auto ICGEM &rarr; .tab conversion, IERS EOP

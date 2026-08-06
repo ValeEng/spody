@@ -4,6 +4,39 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
+## Unreleased
+
+### Changed
+
+- **Rotating-frame batch cases now target the propagator's own frame.**
+  RIC / LVLH case CSVs were always rotated into ICRF, which is correct
+  only under `high_fidelity`. Under `cr3bp` the propagator consumes
+  synodic components, so the rotated offsets were unusable there and
+  the pipeline bailed out with a message telling the user to set
+  `et_start_s` and an ephemeris file &mdash; neither of which exists in
+  a CR3BP run.
+
+  The rotation now targets ICRF under `high_fidelity` (unchanged) and
+  the synodic rotating frame under `cr3bp`. The derived file is named
+  after the target (`_wrt_icrf.csv` / `_wrt_synodic.csv`), and the
+  status line, preview header and Generate message all name it, so
+  LVLH numbers cannot be read against the wrong axes.
+
+  Under CR3BP the local basis is built from the state relative to the
+  **primary**, not to the barycentre the block is expressed in: a
+  local vertical taken at the barycentre points along the
+  primary-primary line, which for a close orbit is nearly
+  perpendicular to the real one. The nearer primary is chosen and
+  named in the status line. Keplerian input goes through the same
+  chain the engine uses, so the basis is built on the state the engine
+  actually starts from.
+
+  Verified: the three rotated axes match `lvlh_basis` exactly in both
+  models; a 4-case CR3BP batch run through the engine lands its
+  initial states within 5e-12 km and 3e-14 m/s of the intended
+  offsets; the `high_fidelity` path still writes `_wrt_icrf.csv` with
+  identical numbers.
+
 ## v0.4.1-beta &mdash; 2026-08-05
 
 ### Added
