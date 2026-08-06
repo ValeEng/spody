@@ -1,10 +1,12 @@
 # Debris RIC demo — sensor-frame batch input
 
-Seven-case batch that exercises the GUI's RIC -> ICRF rotation
-pipeline: the source CSV (`cases_ric.csv`) describes a small debris
-cloud expressed in the radial / in-track / cross-track frame of a
-reference satellite, and the GUI rotates the state columns to ICRF
-at Generate-TOML before `spody.exe` reads the resolved file.
+Seven-case batch that exercises the GUI's rotating-frame pipeline:
+the source CSV (`cases_ric.csv`) describes a small debris cloud
+expressed in the radial / in-track / cross-track frame of a
+reference satellite, and the GUI rotates the state columns into the
+frame the propagator integrates in at Generate-TOML, before
+`spody.exe` reads the resolved file. This scenario runs under
+`high_fidelity`, so that target frame is ICRF.
 
 ## Scenario
 
@@ -22,37 +24,47 @@ at Generate-TOML before `spody.exe` reads the resolved file.
 
 ## How the workflow splits across GUI and engine
 
-The `spody` propagator (`spody.exe`) **only accepts ICRF central-
-inertial state**. The RIC pipeline lives entirely in the GUI:
+A batch cases CSV must reach `spody.exe` already expressed in the
+frame the propagator integrates in — ICRF under `high_fidelity`,
+the synodic rotating frame under `cr3bp`. Local orbital frames are
+a GUI-side convenience, and the whole rotation lives there:
 
 1. **GUI side** (Python, [`python/spody_gui/frames.py`](../../python/spody_gui/frames.py)).
-   When the `[batch]` form's `cases_frame` combo is set to `ric`, on
-   every Generate-TOML the GUI:
+   When the `[batch]` form's `cases_frame` combo is set to a
+   rotating frame (`ric` or `lvlh`), on every Generate-TOML the GUI:
    - reads the 6 state-vector columns of `cases_ric.csv`
      (identified from `[batch.columns]` — any column whose target is
      `initial_state.position_km[i]` or `velocity_kms[i]`);
    - rotates each row's `[dr_x, dr_y, dr_z]` and `[dv_x, dv_y, dv_z]`
      using `R = ric_basis(r_ref, v_ref)` where the reference orbit
      comes from `[initial_state]`;
-   - writes the rotated copy to `cases_ric_wrt_icrf.csv` next to the
-     source. Pure change of basis — **no** addition of the reference
-     state.
+   - writes the rotated copy next to the source, named after the
+     target frame: `cases_ric_wrt_icrf.csv` here, and
+     `<stem>_wrt_synodic.csv` for a CR3BP scenario. Pure change of
+     basis — **no** addition of the reference state.
    - emits three coordinated keys in `[batch]`:
      `cases_source_file` (the file you picked),
-     `cases_frame` (`"icrf"` or `"ric"`),
+     `cases_frame` (the source frame),
      `cases_file` (what `spody.exe` reads &mdash; equal to the source
-     when icrf, the rotated copy when ric). `spody.exe` ignores the
-     first two; they round-trip the form's RIC state so re-opening
-     the TOML restores the combo + source path without you having to
-     re-pick anything.
+     when no rotation is needed, the rotated copy otherwise).
+     `spody.exe` ignores the first two; they round-trip the form's
+     rotating-frame state so re-opening the TOML restores the combo
+     + source path without you having to re-pick anything.
 2. **C side** (`spody.exe`, `mode = "delta"` in `[batch.columns]`).
    For each case spody computes
    ```
    final[i] = initial_state.<vec>[i] + cell
    ```
    adding the rotated offset to the `[initial_state]` base. No
-   spody-core changes are needed; `mode = "delta"` already exists
-   since the `e1a8826` commit.
+   spody-core changes are needed: `mode = "delta"` is part of the
+   batch column schema.
+
+> Under `cr3bp` the local basis is built from the state relative to
+> the nearer **primary**, not to the barycentre the block is
+> expressed in — a local vertical taken at the barycentre points
+> along the primary-primary line, which for a close orbit is nearly
+> perpendicular to the real one. The status line under the combo
+> names both the target frame and the primary it picked.
 
 ## RIC convention
 
@@ -62,6 +74,11 @@ would report). The GUI does NOT add an `omega × r` term — this is
 NOT the Hill / Clohessy-Wiltshire rotating-frame convention used
 in rendezvous literature. See the docstring of
 [`python/spody_gui/frames.py`](../../python/spody_gui/frames.py).
+
+The `lvlh` option next to it is the NASA/Goddard LVLH convention
+(*z* toward nadir, *y* along the negative orbit normal), not a
+renaming of RIC — the two differ by axis choice and sign, so a CSV
+written for one is wrong under the other.
 
 The 7 cases are intentionally simple to make the rotation visible:
 
@@ -78,9 +95,10 @@ The 7 cases are intentionally simple to make the rotation visible:
 ## Run (GUI)
 
 The committed TOML points `cases_file` at `cases_ric.csv` (the
-RIC-frame source). The GUI's `cases_frame` combo defaults to `icrf`,
-so on first open you have to switch it to `ric` to enable the
-rotation:
+RIC-frame source). The `cases_frame` combo offers three entries —
+the propagator's own frame (`icrf` here, `synodic` under CR3BP),
+plus `ric` and `lvlh` — and defaults to the first, so on first open
+you have to switch it to `ric` to enable the rotation:
 
 1. `spody-gui` → **File → Open** → `examples/debris_ric_demo/input.toml`.
 2. In the `[batch]` group, change **cases_frame** from `icrf` to `ric`.
@@ -93,7 +111,9 @@ rotation:
 4. **Run → Batch** (`Ctrl+B`).
 
 Per-case binaries land in
-`examples/debris_ric_demo/output/<UTC-ISO8601>/debris_ric_demo_{ref,lead,trail,high,low,side_p,side_n}_state_icrf.bin`.
+`examples/debris_ric_demo/output/<ts>/<ts>_debris_ric_demo_{ref,lead,trail,high,low,side_p,side_n}_state_icrf.bin`,
+where `<ts>` is the run folder's UTC-ISO8601 timestamp, repeated as
+a prefix on every file inside it.
 
 ## Run (CLI only)
 
@@ -114,6 +134,8 @@ rotate_state_csv_ric_to_icrf(
     vel_columns=("dv_x_kms", "dv_y_kms", "dv_z_kms"),
 )
 ```
+
+(`rotate_state_csv_lvlh_to_icrf` is the LVLH twin, same signature.)
 
 Then edit `cases_file` in the TOML to point at
 `cases_ric_wrt_icrf.csv` and run:

@@ -13,8 +13,14 @@ source under [`source/`](source/), CSS in
 ```
 
 Produces `spody-user-manual.html` and `spody-user-manual.pdf`
-alongside this README. Both are gitignored: the source files are
-the tracked truth.
+alongside this README. The HTML is an intermediate and is
+gitignored; **the PDF is tracked** so bundle builds never depend on
+a Chromium-class browser being available in CI.
+
+That makes rebuilding a manual step: nothing regenerates the
+committed PDF automatically. After any change to `source/*.md`, run
+`build_pdf.py` and commit the refreshed PDF in the same `docs:`
+commit as the Markdown.
 
 The build needs:
 
@@ -49,8 +55,13 @@ counters; you do not write chapter numbers in the Markdown source.
 
 ## Distribution
 
-The intent is to ship the produced PDF inside the PyInstaller
-bundle (`docs/` next to `spody-gui.exe`), reachable from the
-**Help &rsaquo; User manual** menu entry in the GUI. The bundle
-spec at `python/spody_gui.spec` can include this PDF as a
-`datas` entry once the writing pass is complete.
+The PDF ships inside the PyInstaller bundle under `docs/` next to
+`spody-gui.exe`, reachable from the **Help &rsaquo; User manual**
+menu entry in the GUI. The bundle spec at
+[`python/spody_gui.spec`](../../python/spody_gui.spec) probes for
+the tracked PDF and appends it to `datas`; if the file is missing
+it prints a warning and the bundle ships without the menu entry
+working. [`python/build_bundle.py`](../../python/build_bundle.py)
+attempts a rebuild before packing, best-effort: if Edge is missing
+it warns and falls back to the committed PDF, which is exactly why
+that PDF is tracked.

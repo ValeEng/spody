@@ -34,8 +34,12 @@ defined in, and the engine rotates to ICRF at sim setup),
 **multi-occulter SRP eclipse** (every
 third body can shade the satellite, overlapping shadows combined by
 inclusion&ndash;exclusion, so the Earth darkens a lunar orbiter),
+**atmospheric drag** around the Earth (native NRLMSISE-00 with
+CelesTrak space weather, plus an engine-side density-scale
+calibration against a reference ephemeris),
 event detection (always-on multi-body IMPACT with
-sub-millisecond Hermite + Brent localisation, opt-in ECLIPSE),
+sub-millisecond Hermite + Brent localisation, opt-in ECLIPSE and
+altitude crossings),
 TOML schema validation, per-force acceleration breakdown, run-
 folder layout with timestamp-prefixed snapshot + outputs, and a
 PySide6 desktop frontend covering Setup wizard, TOML editor with
@@ -60,10 +64,11 @@ Python-side `spopy` package re-implements the read-side helpers
 identically (104/104 checks at atol 1e-9 km/rad, &sim;1 ULP IEEE
 754).
 
-The remaining narrow scope keeps the "beta" label: no atmospheric
-drag yet, no Mars / Sun-Earth central bodies, no in-app cases-CSV
-generator, and the release Win bundle pins Python 3.9 to dodge a
-known apiset/PyInstaller interaction on some end-user Win10
+The remaining narrow scope keeps the "beta" label: no Mars /
+Sun-Earth central bodies, drag limited to the Earth (the per-body
+atmosphere hook exists, the second model does not), no in-app
+cases-CSV generator, and the release Win bundle pins Python 3.9 to
+dodge a known apiset/PyInstaller interaction on some end-user Win10
 builds. See [`CHANGELOG.md`](CHANGELOG.md) for what landed when.
 
 ---
@@ -128,7 +133,7 @@ Smoke test:
 
 ```bash
 $ ./build/spody info
-SpOdy app  : 0.2.0-beta
+SpOdy app  : 0.4.1-beta
 spody-core : 1.2.0  (git <sha>, built <timestamp>)
 ```
 
@@ -140,13 +145,17 @@ spody-core : 1.2.0  (git <sha>, built <timestamp>)
 spody <command> [options]
 
 Commands:
-  propagate  <input.toml> [--out <dir>]   run a single simulation
-  batch      <input.toml>                 run a multi-case batch
-  validate   <input.toml>                 check input file (no run)
-  convert    <kind> <args...>             convert external formats
-                                          (sp3 | glonass | gps |
-                                          harmonics_icgem)
+  propagate   <input.toml> [--out <dir>]  run a single simulation
+  batch       <input.toml>                run a multi-case batch
+  validate    <input.toml>                check input file (no run)
+  convert     <kind> <args...>            convert external formats
+                                          (ephemeris | harmonics_icgem |
+                                          sp3 | glonass | gps | oem)
+  calibrate   <input.toml> <ref.bin> [--window <hours>]
+                                          fit the drag density-scale k(t)
   info                                    print version + capabilities
+  maxhgdegree <harmonics_file> <x> <y> <z>
+                                          largest useful harmonics degree
 ```
 
 All commands are functional. For the full input file schema (TOML), see
@@ -154,8 +163,9 @@ All commands are functional. For the full input file schema (TOML), see
 copy from: [`lro_6day/`](examples/lro_6day/) (Moon HF),
 [`batch_demo/`](examples/batch_demo/) (batch sweep),
 [`gps_g11_validation/`](examples/gps_g11_validation/) (Earth HF
-vs SP3), [`cr3bp_em_l4/`](examples/cr3bp_em_l4/) (CR3BP L4
-stability).
+vs SP3), [`iss_drag_calibration/`](examples/iss_drag_calibration/)
+(LEO drag + `spody calibrate`),
+[`cr3bp_em_l4/`](examples/cr3bp_em_l4/) (CR3BP L4 stability).
 
 ---
 
@@ -343,6 +353,7 @@ Ordered roughly by what unlocks the most for users.
       [`debris_impact_demo/`](examples/debris_impact_demo/),
       [`gps_g11_validation/`](examples/gps_g11_validation/),
       [`glonass_r03_validation/`](examples/glonass_r03_validation/),
+      [`iss_drag_calibration/`](examples/iss_drag_calibration/),
       [`cr3bp_em_l4/`](examples/cr3bp_em_l4/) (Earth-Moon L4
       stability smoke test)
 
@@ -359,7 +370,7 @@ Ordered roughly by what unlocks the most for users.
       longer need the GUI to pre-rotate them
 - [ ] PyInstaller runtime hook to drop the Python 3.9 pin in the
       Windows release path
-- [ ] Additional examples: ISS LEO with drag, GEO with SRP
+- [ ] Additional examples: GEO with SRP
 - [ ] Conjunction-analysis feature (deep design parked; see internal
       brainstorm)
 
@@ -380,6 +391,8 @@ spody/
 │   ├── toml_input.{c,h}      # TOML parser, validator, batch matrix loader, [cr3bp] schema branch
 │   ├── central_body.{c,h}    # app-side central-body registry (Moon, Earth, ...)
 │   ├── dynamics_model.{c,h}  # high_fidelity / cr3bp dispatch table
+│   ├── atmosphere_nrlmsise00.{c,h} # per-body atmosphere callback + space-weather input
+│   ├── calibrate.{c,h}       # density-scale k(t) fit driving `spody calibrate`
 │   ├── sim_setup.{c,h}       # InputConfig -> SimulationShared + SimulationWorker (per-model branches)
 │   └── sim_run.{c,h}         # propagation loop, CSV / binary writers, SPDYEVTB
 ├── examples/                 # input TOML examples (schema guide in examples/README.md)
@@ -390,6 +403,7 @@ spody/
 │   ├── debris_impact_demo/   # 10-case batch with guaranteed impacts (impact-view dataset)
 │   ├── gps_g11_validation/   # Earth HF vs IGS SP3 (GPS G11, multi-day)
 │   ├── glonass_r03_validation/ # Earth HF vs MGEX SP3 (GLONASS R03, 7-day)
+│   ├── iss_drag_calibration/ # ISS 15-day drag bench vs NASA/JSC OEM + `spody calibrate`
 │   └── cr3bp_em_l4/          # CR3BP Earth-Moon L4 30-day stability smoke test
 ├── python/
 │   ├── spody_gui/            # PySide6 frontend (Setup wizard, TOML editor, runner,

@@ -37,7 +37,9 @@ spody batch examples/debris_demo/input.toml
 ```
 
 Per-case binaries land in
-`examples/debris_demo/output/<UTC-ISO8601>/debris_am_sweep_{low,mid,high}_state_icrf.bin`.
+`examples/debris_demo/output/<ts>/<ts>_debris_am_sweep_{low,mid,high}_state_icrf.bin`,
+where `<ts>` is the run folder's UTC-ISO8601 timestamp, repeated as
+a prefix on every file inside it.
 
 ## Notes
 

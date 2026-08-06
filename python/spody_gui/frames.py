@@ -13,11 +13,22 @@
 # limitations under the License.
 """Reference-frame conversions for batch input CSVs.
 
-The spody propagator integrates in the central-body inertial, ICRF-aligned
-frame (harmonics rotation pipeline and ephemeris third-body resolution both
-assume it). This module lets the GUI accept batch cases whose state-vector
-columns are expressed in a *different* frame and pre-process them into ICRF
-before spody.exe sees them.
+A batch cases CSV must reach spody.exe already expressed in the frame the
+propagator integrates in: the central-body inertial, ICRF-aligned frame
+under `high_fidelity` (the harmonics rotation pipeline and the ephemeris
+third-body resolution both assume it), the synodic rotating frame under
+`cr3bp`. This module lets the GUI accept batch cases whose state-vector
+columns are expressed in a local orbital frame instead, and pre-process
+them into the target frame before spody.exe sees them.
+
+The rotation kernel is frame-agnostic: it builds the local basis out of
+the reference `(r, v)` it is handed and writes the rotated offsets back in
+those SAME components. Choosing the right representation is therefore the
+whole of the model dependency, and it belongs to the caller
+(`form/roundtrip.py`) -- ICRF under `high_fidelity`, and under `cr3bp` the
+synodic state measured from the nearer primary rather than from the
+barycentre the block is expressed in. The `*_to_icrf` function names are
+historical and describe the common case, not a constraint.
 
 Convention used here for RIC
 ----------------------------

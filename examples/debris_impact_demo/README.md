@@ -1,8 +1,9 @@
 # Debris impact demo — batch with guaranteed surface crossings
 
-Ten-case batch crafted to exercise the four batch-event views in the
+Ten-case batch crafted to exercise the batch-event views in the
 Analysis tab (timeline, time-to-impact histogram, survival timeline,
-impact lat/lon map + 3D). Every case is a fragment dropped on a
+impact lat/lon maps in equirectangular and Mollweide projections,
+impact density heatmap, 3D impact scene). Every case is a fragment dropped on a
 prograde polar trajectory whose perilunio sits below the lunar
 surface — most cases crash, a few have enough extra energy to skim
 the surface and survive the 3 h window.
@@ -43,9 +44,10 @@ Per-case deltas split into two axes:
 
 After `spody batch input.toml` finishes:
 
-- ~6–7 cases produce one `IMPACT` row in
-  `output/<run>/debris_impact_demo_events.bin`, latitudes clustered
-  near the south pole, longitudes spread across ~120° of arc.
+- ~6–7 cases produce one `IMPACT` row in the batch-aggregated
+  `output/<ts>/<ts>_debris_impact_demo_events.bin`, latitudes
+  clustered near the south pole, longitudes spread across ~120° of
+  arc.
 - ~3–4 cases survive the full 3 h. They appear in the survival
   timeline as green bars reaching the right edge.
 - Each case (impacted or not) may also produce 0–2 `ECLIPSE` rows
@@ -62,21 +64,25 @@ for the committed `et_start_s`.
 From the GUI:
 
 1. `spody-gui` → **File → Open** → `examples/debris_impact_demo/input.toml`.
-2. **Run → Batch** (`Ctrl+B`). Per-case state binaries land in
-   `output/<UTC-ISO8601>/`, the aggregated events file is
-   `debris_impact_demo_events.bin` in that same folder.
+2. **Run → Batch** (`Ctrl+B`). Per-case state binaries land in the
+   run folder `output/<ts>/`, the aggregated events file is
+   `<ts>_debris_impact_demo_events.bin` in that same folder.
 3. Switch to the **Analysis** tab, working dir set to
    `examples/debris_impact_demo/output/`. Click the events file and
-   try the five leaves under `events_batch`:
-   - **Events timeline** — IMPACT + ECLIPSE stacked.
+   try the leaves under `events_batch`:
+   - **Events timeline** — IMPACT + ECLIPSE stacked (a *density*
+     variant takes over when the log is large enough that one
+     marker per record would stall the canvas).
    - **Time-to-impact histogram** — distribution of `t_trigger`.
    - **Survival timeline per case** — red bars (impacted, ending at
      `t_impact`) vs green bars (survivors, reaching `duration_s`).
-   - **Impact lat/lon on Moon** — equirectangular scatter; if the
-     NASA SVS LROC texture is downloaded via the Setup wizard, it
-     shows up as a photo background.
-   - **Impact 3D on Moon** — same impacts as 30-km spheres on the
-     textured Moon, colour-keyed by `case_idx`.
+   - **Impact lat/lon (equirect)** and **(Mollweide)** — scatter in
+     two projections; if the NASA SVS LROC texture is downloaded
+     via the Setup wizard, it shows up as a photo background.
+   - **Impact density heatmap** — the same impacts binned, for when
+     the scatter saturates.
+   - **Impact 3D on central body** — same impacts as 30-km spheres
+     on the textured Moon, colour-keyed by `case_idx`.
 
 From the CLI:
 

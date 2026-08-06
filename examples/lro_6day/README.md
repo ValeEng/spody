@@ -27,8 +27,9 @@ The TOML references two data files that are **not** in the repository
 - `external/spody-core/raw_data/GRGM1200B/gggrx_1200b_sha.tab`
   (NASA PGDA -- spherical-harmonic coefficients)
 - `external/spody-core/raw_data/DE440/de440.spody`
-  (built once from the JPL ASCII chunks via
-  `spody_createfile_MappedEphemerisData`)
+  (built once from the JPL ASCII chunks with
+  `spody convert ephemeris <folder> 440 01950`, which the GUI's
+  Setup wizard also runs for you)
 
 Drop them in place before running the example.
 
@@ -47,12 +48,15 @@ From the repo root:
 
 On Windows the binary is `build\Release\spody.exe`.
 
-Outputs (8641 records each):
+Each run creates its own folder `output/<ts>/` and prefixes every
+file inside it with that same UTC-ISO8601 timestamp, so runs never
+overwrite each other. Outputs (8641 records each):
 
-| File                              | Format                                              | Size   |
-|-----------------------------------|-----------------------------------------------------|--------|
-| `output/lro_6day_state_icrf.csv`  | header + `%.15e` CSV (`t, x, y, z, vx, vy, vz`)     | ~1.4 MB |
-| `output/lro_6day_state_icrf.bin`  | magic `SPDYOUT_` + 16 B header + 56 B raw records   | ~484 KB |
+| File                                       | Format                                              | Size   |
+|--------------------------------------------|-----------------------------------------------------|--------|
+| `<ts>/<ts>_input.toml`                     | snapshot of the input that produced the run         | ~2 KB   |
+| `<ts>/<ts>_lro_6day_state_icrf.csv`        | header + `%.15e` CSV (`t, x, y, z, vx, vy, vz`)     | ~1.4 MB |
+| `<ts>/<ts>_lro_6day_state_icrf.bin`        | magic `SPDYOUT_` + 16 B header + 56 B raw records   | ~484 KB |
 
 Indicative wall time on a desktop x86-64 in Release: ~1.5 s. Adaptive
 RKDP45 takes a few hundred accepted steps; switching to
@@ -67,31 +71,11 @@ itself. The **final** position drift vs SPICE LRO POD at `t = 6 days` is
 on the order of **~110 m** (dominated by the SPICE reconstruction, not
 by spody).
 
-To get the exact number on your machine, run the spody-core validation
-that compares spody side-by-side against the SPICE columns of the
-internal bench:
-
-```sh
-cd external/spody-core
-cmake -B build -DSPODY_BUILD_TVB=ON
-cmake --build build --config Release
-./build/tvb/validations/val_propagator_lro \
-    raw_data/DE440/de440.spody \
-    raw_data/GRGM1200B/gggrx_1200b_sha.tab \
-    tvb/validations/val_lro00000.dat \
-    80                                          # harmonics degree
-```
-
-The line of interest is:
-
-```
-=== Old propagator (cols 1-6) vs SPICE (cols 7-12) -- bench-internal ===
-Position error |dr|   : max <X> km | mean <Y> km  (worst t=<T> s)
-```
-
-Compare it with the `spody` vs reference numbers reported a few lines
-above -- they agree to ~322 microns over 6 days, which is the
-spody-vs-reference noise floor.
+To reproduce the comparison, convert an LRO POD ephemeris covering the
+window into a SpOdy reference binary and diff it against this run in the
+Analysis tab: load both the propagated `*_state_icrf.bin` and the
+reference, pick a **Diff** plot, and the Info tab reports
+|&Delta;r| / |&Delta;v| plus the RIC decomposition over the whole span.
 
 Raising `harmonics_degree` to `150` reduces the residual only
 marginally (the GRGM1200B coefficients become weakly observed beyond
