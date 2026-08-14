@@ -308,7 +308,12 @@ def info_rows_events(data: np.ndarray, snapshot: dict | None,
             rows.append(("Duration min", fmt_duration(float(durations_s.min()))))
             rows.append(("Duration avg", fmt_duration(float(durations_s.mean()))))
             rows.append(("Duration max", fmt_duration(float(durations_s.max()))))
-    if dig.n_altcross > 0 and central_body is not None:
+    # Life markers alone are enough to place every object in a band, so
+    # a run whose objects all stayed put still gets the section -- that
+    # file has no crossings at all, and it is exactly the one whose
+    # occupancy is worth reading. `_altitude_band_rows` returns nothing
+    # when the bands cannot be defined (no thresholds to infer from).
+    if (dig.n_altcross > 0 or dig.n_initial > 0) and central_body is not None:
         rows += _altitude_band_rows(data, dig, snapshot,
                                      central_body, is_batch)
     return rows
