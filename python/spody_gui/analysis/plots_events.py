@@ -28,6 +28,7 @@ import numpy as np
 from matplotlib import colormaps as mpl_colormaps
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
+from matplotlib.ticker import MaxNLocator
 
 from spody_io import EVENT_KIND_ECLIPSE, EVENT_KIND_IMPACT
 
@@ -39,6 +40,7 @@ from .altitude_bands import (
     band_edge_labels,
     band_inputs_from_snapshot,
     band_population,
+    band_snapshot,
 )
 from .context import PlotContext, ctx_missing_message, resolve_run_context
 from .derived import (
@@ -234,6 +236,19 @@ def impacts_latlon_csv(d: np.ndarray, ctx: "PlotContext") -> str | None:
     return "\n".join(lines) + "\n"
 
 
+def _no_trigger_message(ax: Axes, title: str) -> None:
+    """Both timeline views need a y-row per event series, and a file can
+    now legitimately have none: life markers alone mean every object
+    stayed put and fired nothing. That is a result, not an empty file,
+    so it gets a sentence instead of a crash on `min()` of no rows."""
+    ax.text(0.5, 0.5,
+            "No triggers in this file — only life markers.\n"
+            "Every object was propagated without firing an event.",
+            ha="center", va="center", transform=ax.transAxes)
+    ax.set_title(title)
+    ax.set_xticks([]); ax.set_yticks([])
+
+
 def _timeline_rows(d: np.ndarray) -> "list[tuple[str, list]]":
     """The y-rows shared by both timeline views, in a stable order
     (impacts on top, then eclipses, then altitudes ascending) so the
@@ -287,6 +302,9 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
         ax.set_title("No events recorded"); ax.set_xlabel("t [s]"); return
 
     rows = _timeline_rows(d)
+    if not rows:
+        _no_trigger_message(ax, "Event timeline")
+        return
     # Time unit from the full span of plotted events (days on a
     # days-long batch, seconds on a single short orbit).
     all_t = d["t"]
@@ -309,7 +327,13 @@ def _plot_events_timeline(ax: Axes, d: np.ndarray) -> None:
     ax.set_yticklabels([label for label, _ in rows])
     ax.set_ylim(-0.5, len(rows) - 0.5)
     ax.set_xlabel(f"t [{unit}]")
-    title = f"Event timeline ({len(d)} triggers)"
+    # Life markers are not triggers and get no row of their own (the
+    # per-case lifespan already has the survival timeline). They still
+    # set the x span, which is the point: the axis now covers the whole
+    # analysis window instead of stopping at the last crossing.
+    dig = events_digest(d)
+    title = (f"Event timeline "
+             f"({len(d) - dig.n_initial - dig.n_final} triggers)")
     if decimated:
         title += "  --  thinned to canvas resolution"
     ax.set_title(title)
@@ -345,6 +369,9 @@ def _plot_events_timeline_density(ax: Axes, d: np.ndarray) -> None:
     rows = [(label, np.concatenate([s[0] for s in series]) if len(series) > 1
              else series[0][0])
             for label, series in _timeline_rows(d)]
+    if not rows:
+        _no_trigger_message(ax, "Event timeline density")
+        return
 
     t_min = min(float(ts.min()) for _, ts in rows)
     t_max = max(float(ts.max()) for _, ts in rows)
@@ -362,7 +389,9 @@ def _plot_events_timeline_density(ax: Axes, d: np.ndarray) -> None:
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels([label for label, _ in rows])
     ax.set_xlabel(f"t [{unit}]")
-    ax.set_title(f"Event timeline density  ({len(d)} triggers, "
+    dig = events_digest(d)
+    ax.set_title(f"Event timeline density  "
+                 f"({len(d) - dig.n_initial - dig.n_final} triggers, "
                  f"{n_bins} bins)")
     cb = ax.figure.colorbar(pm, ax=ax, label="events per bin",
                             fraction=0.046, pad=0.02)
@@ -994,6 +1023,69 @@ def _plot_bands_heatmap(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
     cb.ax.tick_params(labelsize="x-small")
 
 
+def _plot_bands_snapshot(ax: Axes, d: np.ndarray, ctx: "PlotContext") -> None:
+    """Where the population sits at ONE instant, as a bar per band.
+
+    The companion of "Time per band": that one answers "how much time
+    was spent down there over the whole run", this one answers "how many
+    objects are down there right now". For a debris study the two say
+    genuinely different things -- a cloud can rack up enormous
+    cumulative time in a shell it has entirely left by day 300.
+
+    Objects whose propagation had already ended are shown as their own
+    bar, because they are the difference between "fraction of the cloud"
+    and "fraction of what is left of the cloud"."""
+    title = f"Band snapshot ({ctx.central_body.name})"
+    thresholds, stop, duration = _band_inputs_for(ctx)
+    if ctx.snapshot_t_s is None:
+        ctx_missing_message(
+            ax, title,
+            "Pick a snapshot time (days from the start) in Plot options.")
+        return
+    snap = band_snapshot(d, ctx.central_body.naif_id, ctx.snapshot_t_s,
+                         thresholds_km=thresholds,
+                         stop_thresholds_km=stop, duration_s=duration)
+    if snap is None:
+        ctx_missing_message(
+            ax, title, "No central-body altitude-crossing events here.")
+        return
+
+    div, unit = time_axis(snap.window_s)
+    t_txt = f"{snap.t_s / div:.4g} {unit}"
+    if snap.t_s > snap.window_s:
+        ctx_missing_message(
+            ax, title,
+            f"t = {t_txt} is past the end of the run "
+            f"({snap.window_s / div:.4g} {unit}).")
+        return
+
+    labels = band_edge_labels(snap.thr)
+    colors = _band_colors(len(labels))
+    values = list(snap.counts)
+    if snap.n_ended:
+        labels = labels + ["ended (impact / stop)"]
+        colors = colors + [(0.55, 0.55, 0.55, 1.0)]
+        values = values + [snap.n_ended]
+    y = np.arange(len(labels))
+    ax.barh(y, values, color=colors, edgecolor="black", linewidth=0.4)
+    total = max(1, snap.n_objects)
+    for i, v in enumerate(values):
+        if v <= 0:
+            continue
+        ax.text(v, i, f"  {v}  ({100.0 * v / total:.3g} %)",
+                va="center", fontsize="small")
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.set_xlabel(f"objects at t = {t_txt}"
+                  f"   ({snap.n_objects} propagated)")
+    ax.set_title(f"{title}  --  t = {t_txt}")
+    ax.grid(True, axis="x", alpha=0.3)
+    ax.margins(x=0.18)          # room for the value labels
+    # Counting objects: half an object does not exist, and on a small
+    # batch the default locator otherwise offers 0.5 / 1.5 / 2.5.
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+
 _BAND_CAT = "Altitude bands"
 
 SPECS_SINGLE: list[PlotSpec] = [
@@ -1003,6 +1095,9 @@ SPECS_SINGLE: list[PlotSpec] = [
              category=_BAND_CAT, mode="context",
              models=("high_fidelity",)),
     PlotSpec("Band occupancy timeline",     "2d", _plot_bands_gantt,
+             category=_BAND_CAT, mode="context",
+             models=("high_fidelity",)),
+    PlotSpec("Band snapshot at t",          "2d", _plot_bands_snapshot,
              category=_BAND_CAT, mode="context",
              models=("high_fidelity",)),
 ]
@@ -1043,6 +1138,9 @@ SPECS_BATCH: list[PlotSpec] = [
              category=_BAND_CAT, mode="context",
              models=("high_fidelity",)),
     PlotSpec("Per-case time in band",        "2d", _plot_bands_heatmap,
+             category=_BAND_CAT, mode="context",
+             models=("high_fidelity",)),
+    PlotSpec("Band snapshot at t",           "2d", _plot_bands_snapshot,
              category=_BAND_CAT, mode="context",
              models=("high_fidelity",)),
 ]

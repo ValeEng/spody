@@ -59,6 +59,12 @@ class PlotOptionsDialog(QDialog):
     # "icrf" / "bf"; AnalysisPanel stores the choice and re-renders
     # the active plot.
     plotFrameChanged   = Signal(str)
+    # Emitted when the user edits the altitude-band snapshot instant.
+    # Payload is DAYS of sim time, or a negative value for "blank".
+    # AnalysisPanel stores it and re-renders, exactly like the frame
+    # radio -- the snapshot view is the one band view that depends on a
+    # user-chosen parameter rather than on the file alone.
+    bandSnapshotChanged = Signal(float)
 
     # The CSV export types the dialog offers, in display order:
     # (id, radio label, tooltip). Availability per type is data-driven
@@ -76,6 +82,12 @@ class PlotOptionsDialog(QDialog):
          "One row per IMPACT: case id, body-fixed latitude / longitude, "
          "and time of flight. Needs an events file with at least one "
          "impact on a body that has a body-fixed frame."),
+        ("snapshot", "Band snapshot (per object, at one instant)",
+         "One row per object with the band it occupies at the snapshot "
+         "time set below -- the instantaneous companion of the "
+         "cumulative bands table. Objects whose run had already ended "
+         "are kept with band = -1 so the row set stays the whole "
+         "population."),
     )
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -109,6 +121,34 @@ class PlotOptionsDialog(QDialog):
         frame_lay = QVBoxLayout(frame_box)
         frame_lay.addWidget(self._rb_icrf)
         frame_lay.addWidget(self._rb_bf)
+
+        # ---- Altitude-band snapshot instant --------------------------
+        # Unlike every other band view, the snapshot needs a parameter
+        # the file cannot supply: WHICH instant. It lives outside the
+        # export box because it drives both the plot and the snapshot
+        # export -- keeping it inside would tie a plot parameter to an
+        # export radio's enabled state.
+        snap_box = QGroupBox("Altitude-band snapshot")
+        snap_row = QHBoxLayout()
+        self._snap_edit = QLineEdit()
+        self._snap_edit.setPlaceholderText("not set")
+        self._snap_edit.setMaximumWidth(80)
+        self._snap_edit.setValidator(QDoubleValidator(0.0, 1.0e12, 6, self))
+        self._snap_edit.setToolTip(
+            "Instant to snapshot, in days from the start of the run. "
+            "Drives the 'Band snapshot at t' plot and the band-snapshot "
+            "CSV export. Leave blank to leave the view unset.")
+        self._snap_edit.editingFinished.connect(self._on_snapshot_edited)
+        snap_row.addWidget(QLabel("at"))
+        snap_row.addWidget(self._snap_edit)
+        snap_row.addWidget(QLabel("days from start"))
+        snap_row.addStretch(1)
+        self._snap_hint = QLabel("")
+        self._snap_hint.setStyleSheet("color: gray;")
+        self._snap_hint.setWordWrap(True)
+        snap_lay = QVBoxLayout(snap_box)
+        snap_lay.addLayout(snap_row)
+        snap_lay.addWidget(self._snap_hint)
 
         # ---- CSV export ---------------------------------------------
         # A box that lists the available CSV export types as radios and
@@ -165,6 +205,7 @@ class PlotOptionsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(intro)
         lay.addWidget(frame_box)
+        lay.addWidget(snap_box)
         lay.addWidget(export_box)
         lay.addWidget(self._status)
         lay.addStretch(1)
@@ -188,6 +229,30 @@ class PlotOptionsDialog(QDialog):
                       and bands_rb.isChecked() and bands_rb.isEnabled())
         self._win_label.setEnabled(active)
         self._win_edit.setEnabled(active)
+
+    def _on_snapshot_edited(self) -> None:
+        """`editingFinished` (Enter or focus-out), not `textChanged`: a
+        re-render of a million-segment batch per keystroke would make
+        the field unusable."""
+        days = self.band_snapshot_days()
+        self.bandSnapshotChanged.emit(-1.0 if days is None else days)
+
+    def band_snapshot_days(self) -> "float | None":
+        """Snapshot instant in days of sim time, or None when blank /
+        not a non-negative number. The panel converts to seconds."""
+        txt = self._snap_edit.text().strip().replace(",", ".")
+        if not txt:
+            return None
+        try:
+            v = float(txt)
+        except ValueError:
+            return None
+        return v if v >= 0.0 else None
+
+    def set_snapshot_hint(self, text: str) -> None:
+        """Show the loaded run's valid range under the field: without it
+        the user has to guess whether the run is 6 days or 365 long."""
+        self._snap_hint.setText(text)
 
     def altitude_window_days(self) -> "float | None":
         """Upper bound (days of sim time) typed for the altitude-band

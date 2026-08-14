@@ -102,7 +102,10 @@ from .analysis import (
 )
 from .analysis.altitude_bands import (
     altitude_bands_per_object,
+    analyze_altitude_bands,
     band_inputs_from_snapshot,
+    band_snapshot,
+    band_snapshot_to_csv,
     per_object_bands_to_csv,
 )
 from .analysis.info import (
@@ -113,7 +116,11 @@ from .analysis.info import (
     info_rows_run_summary,
     info_rows_traj,
 )
-from spody_io import EVENT_KIND_ALT_CROSSING, EVENT_KIND_IMPACT
+from spody_io import (
+    EVENT_KIND_ALT_CROSSING,
+    EVENT_KIND_IMPACT,
+    EVENT_KIND_INITIAL_STATE,
+)
 from .analysis.plots_diff import align_or_interp
 from .analysis.plots_events import impacts_latlon_csv
 from .analysis.table_model import FIELD_DISPLAY_RENAME
@@ -350,6 +357,12 @@ class AnalysisPanel(QWidget):
         # central body's body-fixed basis when the user picks BF in
         # the Plot-options dialog.
         self._plot_frame: str = "icrf"
+
+        # Instant (seconds of sim time) for the altitude-band snapshot
+        # view and its export, collected in days by the Plot-options
+        # dialog. None = the user has not picked one, which the view
+        # reports rather than defaulting to an arbitrary instant.
+        self._snapshot_t_s: float | None = None
 
         # Scene-options state lives on the panel; the dialog mutates
         # it in place. Every toggle ends up driving a re-render via
@@ -1488,10 +1501,13 @@ class AnalysisPanel(QWidget):
                 self._on_export_requested)
             self._plot_options_dialog.plotFrameChanged.connect(
                 self._on_plot_frame_changed)
+            self._plot_options_dialog.bandSnapshotChanged.connect(
+                self._on_band_snapshot_changed)
         self._plot_options_dialog.set_export_availability(
             self._export_availability())
         self._plot_options_dialog.set_frame(self._plot_frame)
         self._refresh_plot_options_bf_availability()
+        self._refresh_snapshot_hint()
         self._plot_options_dialog.clear_status()
         self._plot_options_dialog.show()
         self._plot_options_dialog.raise_()
@@ -1513,6 +1529,37 @@ class AnalysisPanel(QWidget):
         current = self._plot_tree.currentItem()
         if current is not None and current.data(0, _SPEC_ROLE) is not None:
             self._on_plot_tree_clicked(current, 0)
+
+    def _on_band_snapshot_changed(self, days: float) -> None:
+        """User set (or cleared) the band-snapshot instant. Stored in
+        seconds and re-rendered immediately, same contract as the frame
+        radio -- the dialog sends a negative value to mean 'blank'."""
+        t_s = None if days < 0.0 else days * 86400.0
+        if t_s == self._snapshot_t_s:
+            return
+        self._snapshot_t_s = t_s
+        if self._plot_options_dialog is not None:
+            self._plot_options_dialog.set_export_availability(
+                self._export_availability())
+        current = self._plot_tree.currentItem()
+        if current is not None and current.data(0, _SPEC_ROLE) is not None:
+            self._on_plot_tree_clicked(current, 0)
+
+    def _refresh_snapshot_hint(self) -> None:
+        """Tell the dialog the loaded run's length so the snapshot field
+        has a scale: the same number means a mid-run instant on a
+        year-long batch and 'past the end' on a six-day propagation."""
+        if self._plot_options_dialog is None:
+            return
+        duration = 0.0
+        if self._path is not None and self._central_body is not None:
+            snapshot = resolve_run_context(self._path)
+            _thr, _stop, duration_s = band_inputs_from_snapshot(
+                snapshot, self._central_body.name)
+            duration = duration_s or 0.0
+        self._plot_options_dialog.set_snapshot_hint(
+            f"run length: {duration / 86400.0:.6g} days" if duration > 0.0
+            else "run length unknown (no input.toml next to this file)")
 
     def _refresh_plot_options_bf_availability(self) -> None:
         """Push the BF-availability state into the Plot-options
@@ -1538,6 +1585,11 @@ class AnalysisPanel(QWidget):
             "lines": self._can_export_active_plot_csv(),
             "bands": self._can_export_altitude_bands_csv(),
             "impacts": self._can_export_impacts_csv(),
+            # The snapshot export needs the same data as the bands one
+            # PLUS an instant to snapshot; without the latter there is
+            # nothing to write, so the radio greys until it is set.
+            "snapshot": (self._can_export_altitude_bands_csv()
+                         and self._snapshot_t_s is not None),
         }
 
     def _on_export_requested(self, export_id: str) -> None:
@@ -1549,6 +1601,8 @@ class AnalysisPanel(QWidget):
             self._export_altitude_bands_csv()
         elif export_id == "impacts":
             self._export_impacts_csv()
+        elif export_id == "snapshot":
+            self._export_band_snapshot_csv()
 
     def _can_export_active_plot_csv(self) -> bool:
         """True iff the matplotlib figure currently shows a 2D plot
@@ -1637,8 +1691,13 @@ class AnalysisPanel(QWidget):
                 or self._data is None or self._central_body is None):
             return False
         d = self._data
-        return bool(((d["kind"] == EVENT_KIND_ALT_CROSSING)
-                     & (d["naif_id"] == self._central_body.naif_id)).any())
+        on_body = d["naif_id"] == self._central_body.naif_id
+        # A life marker is enough on its own: a batch whose objects all
+        # stayed inside one band has no crossing at all, and that is
+        # precisely the run whose occupancy table is worth exporting.
+        return bool((on_body & ((d["kind"] == EVENT_KIND_ALT_CROSSING)
+                                | (d["kind"] == EVENT_KIND_INITIAL_STATE))
+                     ).any())
 
     def _export_altitude_bands_csv(self) -> None:
         """Write the altitude-band occupancy table -- one row per batch
@@ -1671,14 +1730,62 @@ class AnalysisPanel(QWidget):
                 "file.")
             return
         thr, from_snapshot, rows = res
+        # Whether the rows are every propagated object or only the ones
+        # that crossed something -- the header states it so the file's
+        # own denominator is unambiguous. The analysis is memoised, so
+        # this second call is a cache hit on the same reconstruction.
+        pooled = analyze_altitude_bands(
+            self._data, self._central_body.naif_id,
+            thresholds_km=thresholds, stop_thresholds_km=stop_thresholds,
+            duration_s=duration)
         csv_text = per_object_bands_to_csv(
             thr, from_snapshot, rows,
             self._central_body.naif_id, self._central_body.name,
-            t_max_s=t_max_s)
+            t_max_s=t_max_s,
+            from_markers=bool(pooled is not None and pooled.from_markers))
         stem = self._path.stem if self._path is not None else "events"
         suffix = "" if win_days is None else f"_0-{win_days:g}d"
         self._save_csv_text(csv_text, f"{stem}_altitude_bands{suffix}.csv",
                             "Export altitude bands CSV", "altitude bands CSV")
+
+    def _export_band_snapshot_csv(self) -> None:
+        """Write the band snapshot -- one row per object with the band it
+        occupies at the chosen instant -- to a CSV file. Shares the
+        cached reconstruction with the cumulative bands export, so the
+        two are guaranteed to agree on thresholds, window and object
+        set."""
+        if self._snapshot_t_s is None:
+            QMessageBox.information(
+                self, "No snapshot time",
+                "Set a snapshot time (days from the start) in the "
+                "Plot-options dialog first.")
+            return
+        snapshot = resolve_run_context(self._path)
+        thresholds, stop_thresholds, duration = band_inputs_from_snapshot(
+            snapshot, self._central_body.name)
+        snap = band_snapshot(
+            self._data, self._central_body.naif_id, self._snapshot_t_s,
+            thresholds_km=thresholds, stop_thresholds_km=stop_thresholds,
+            duration_s=duration)
+        if snap is None:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "The altitude-band analysis produced no bands for this "
+                "file.")
+            return
+        if snap.t_s > snap.window_s:
+            QMessageBox.information(
+                self, "Snapshot past the end",
+                f"t = {snap.t_s / 86400.0:g} days is past the end of "
+                f"this run ({snap.window_s / 86400.0:g} days). Every "
+                f"object would be reported as ended.")
+            return
+        csv_text = band_snapshot_to_csv(
+            snap, self._central_body.naif_id, self._central_body.name)
+        stem = self._path.stem if self._path is not None else "events"
+        days = self._snapshot_t_s / 86400.0
+        self._save_csv_text(csv_text, f"{stem}_band_snapshot_{days:g}d.csv",
+                            "Export band snapshot CSV", "band snapshot CSV")
 
     def _can_export_impacts_csv(self) -> bool:
         """True iff the loaded file is an events log with at least one
@@ -1820,6 +1927,7 @@ class AnalysisPanel(QWidget):
             dynamics_model=self._dynamics_model,
             cr3bp_primaries=self._cr3bp_primaries,
             plot_frame=self._plot_frame,
+            snapshot_t_s=self._snapshot_t_s,
         )
 
     def _third_bodies_from_snapshot(self) -> list[str]:

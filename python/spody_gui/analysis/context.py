@@ -127,6 +127,13 @@ class PlotContext:
     # bodies without a registered bf_orientation silently fall back
     # to "icrf" inside `_state_in_plot_frame`.
     plot_frame: str = "icrf"
+    # Instant (seconds of sim time) for the altitude-band snapshot view
+    # and its CSV export -- the one view that is not cumulative. None
+    # means "not chosen yet": the view says so rather than inventing a
+    # default, because every instant tells a different story and a
+    # silently-picked one would be read as if it had been asked for.
+    # The Plot-options dialog collects it in DAYS and the panel converts.
+    snapshot_t_s: float | None = None
 
 
 def find_run_input_toml(events_path: Path) -> Path | None:

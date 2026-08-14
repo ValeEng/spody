@@ -32,15 +32,26 @@ timeline reconstruction exact without needing the trajectory file:
     the trigger state `y` (documented contract in spody_events.h) --
     up-crossing of threshold k lands in band k+1, down-crossing lands
     in band k;
-  - the FIRST event pins the initial band: an up-crossing of k means
-    the object started in band k, a down-crossing in band k+1.
+  - the initial band comes from the object's INITIAL_STATE life marker
+    (`distance_km - radius_km` at t0). Only on a file written before
+    those existed is it inferred from the FIRST event instead: an
+    up-crossing of k means the object started in band k, a
+    down-crossing in band k+1.
 
-The analysis window per object closes at the earliest of: the planned
-duration (run snapshot), the object's IMPACT trigger, or its first
-crossing of a threshold configured with a stop-class action. A run
-stopped by `action = "stop"` (no log) leaves no trace in the events
-file, so its tail segment is attributed to the planned duration --
-prefer `log_and_stop` when the occupancy statistics matter.
+Life markers also fix the two holes the crossing stream alone cannot
+cover. An object confined between two thresholds crosses nothing for
+the whole run: with markers it is a first-class object with one
+full-window segment in its birth band, without them it was absent
+from the analysis AND from its own denominator. And the analysis
+window per object is read off its FINAL_STATE marker, written at the
+instant the propagation actually stopped.
+
+Without markers the window still closes at the earliest of: the
+planned duration (run snapshot), the object's IMPACT trigger, or its
+first crossing of a threshold configured with a stop-class action --
+and a run stopped by `action = "stop"` (no log) leaves no trace, so
+its tail is attributed to the planned duration. `log_and_stop` was
+the workaround; on a file with markers it no longer matters.
 
 Only crossings measured from the CENTRAL body are analysed: their `y`
 state is body-centric, so the radial-velocity direction test is exact.
@@ -54,7 +65,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from spody_io import EVENT_KIND_ALT_CROSSING, EVENT_KIND_IMPACT
+from spody_io import (
+    EVENT_KIND_ALT_CROSSING,
+    EVENT_KIND_FINAL_STATE,
+    EVENT_KIND_IMPACT,
+    EVENT_KIND_INITIAL_STATE,
+)
 
 from .derived import (
     cache_key,
@@ -68,10 +84,12 @@ from .derived import (
 # altitude helper: the event timeline views cluster the same way). Kept
 # importable from here for the callers that already reach for it.
 __all__ = [
-    "BandStats", "BandAnalysis", "BandSegments", "cluster_altitudes",
+    "BandStats", "BandAnalysis", "BandSegments", "BandSnapshot",
+    "cluster_altitudes",
     "analyze_altitude_bands", "altitude_bands_per_object",
     "altitude_bands_per_object_grids",
     "altitude_band_segments", "band_edge_labels", "band_population",
+    "band_snapshot", "band_snapshot_to_csv",
     "band_inputs_from_snapshot", "per_object_bands_to_csv",
 ]
 
@@ -101,10 +119,15 @@ class BandAnalysis:
     thresholds_km: tuple[float, ...]   # sorted ascending
     from_snapshot: bool                # False = clustered from records
     bands: tuple[BandStats, ...]       # len == len(thresholds_km) + 1
-    n_objects: int                     # objects with >= 1 crossing
+    n_objects: int                     # every propagated object once the
+                                       # file carries life markers; before
+                                       # them, only objects with >= 1 crossing
     window_s: float                    # max per-object end time
     ended_by_impact: int               # objects whose window closed early
     ended_by_stop: int                 #   (impact trigger / stop-class alt)
+    from_markers: bool                 # start band / window measured, not inferred
+    n_no_crossing: int                 # objects confined inside one band
+    start_band_conflicts: int          # marker vs inference disagreements
 
 
 # The band reconstruction is the one O(N) step, and the Info tab re-runs
@@ -140,8 +163,12 @@ class _Recon:
     window_s: float
     ended_by_impact: int
     ended_by_stop: int
+    from_markers: bool           # life markers drove start band / window
+    n_no_crossing: int           # objects that never crossed a threshold
+    start_band_conflicts: int    # marker vs direction-inference mismatch
     group_obj: np.ndarray        # (G,)  object id per group (ascending)
     init_band: np.ndarray        # (G,)  band each object starts in
+    t_end_pg: np.ndarray         # (G,)  end of each object's own window
     seg_band: np.ndarray         # (S,)  band of each segment
     seg_start: np.ndarray        # (S,)
     seg_end: np.ndarray          # (S,)
@@ -169,9 +196,13 @@ def _reconstruct(events: np.ndarray, central_naif: int,
     are avoided -- fields are masked one column at a time, and `r.v` is
     contracted on the strided (N, 6) view before masking, so the peak
     extra allocation is a handful of N-element float columns."""
-    m_alt = ((events["kind"] == EVENT_KIND_ALT_CROSSING)
-             & (events["naif_id"] == central_naif))
-    if not m_alt.any():
+    kind = events["kind"]
+    on_body = events["naif_id"] == central_naif
+    m_alt = (kind == EVENT_KIND_ALT_CROSSING) & on_body
+    m_ini = (kind == EVENT_KIND_INITIAL_STATE) & on_body
+    m_fin = (kind == EVENT_KIND_FINAL_STATE) & on_body
+    from_markers = bool(m_ini.any())
+    if not (m_alt.any() or from_markers):
         return None
 
     h_obs = (np.asarray(events["distance_km"][m_alt], dtype=float)
@@ -179,24 +210,44 @@ def _reconstruct(events: np.ndarray, central_naif: int,
     if thresholds_km:
         thr = np.unique(np.asarray(sorted(thresholds_km), dtype=float))
         from_snapshot = True
-    else:
+    elif h_obs.size:
         thr = cluster_altitudes(h_obs)
         from_snapshot = False
+    else:
+        # Markers but no crossing anywhere and no configured thresholds:
+        # there is nothing to infer band edges from. The caller's
+        # "no bands for this file" path is the honest answer.
+        return None
     n_bands = len(thr) + 1
+
+    is_batch = "case_idx" in (events.dtype.names or ())
+
+    def case_ids(mask: np.ndarray) -> np.ndarray:
+        return (np.asarray(events["case_idx"][mask], dtype=np.int64)
+                if is_batch else np.zeros(int(mask.sum()), dtype=np.int64))
+
+    # Life markers: the object's own record of where it started and when
+    # its run ended. They replace two inferences -- the start band read
+    # off the first crossing's direction, and the window end guessed
+    # from (planned duration, impact, stop action) -- with measurements,
+    # and they are the only trace of an object that crossed nothing.
+    ini_obj = case_ids(m_ini)
+    ini_h = (np.asarray(events["distance_km"][m_ini], dtype=float)
+             - np.asarray(events["radius_km"][m_ini], dtype=float))
+    fin_obj = case_ids(m_fin)
+    fin_t = np.asarray(events["t"][m_fin], dtype=float)
 
     # Nearest-threshold index + direction (r.v sign), all vectorised.
     k_idx = nearest_index(h_obs, thr)
     y = events["y"]
     rdot = np.einsum("ij,ij->i", y[:, 0:3], y[:, 3:6])[m_alt]
     valid = rdot != 0.0          # drop tangent grazings (direction undefined)
-    if not valid.any():
+    if not (valid.any() or from_markers):
         return None
     t = np.asarray(events["t"][m_alt], dtype=float)[valid]
     k_idx = k_idx[valid]
     up = (rdot[valid] > 0.0).astype(np.int64)
-    is_batch = "case_idx" in (events.dtype.names or ())
-    obj = (np.asarray(events["case_idx"][m_alt], dtype=np.int64)[valid]
-           if is_batch else np.zeros(int(valid.sum()), dtype=np.int64))
+    obj = case_ids(m_alt)[valid]
 
     # Stop-class thresholds -> band-boundary indices.
     stop_bands: set[int] = set()
@@ -230,38 +281,72 @@ def _reconstruct(events: np.ndarray, central_naif: int,
         order = np.lexsort((t, obj))
     so, st, sk, sup = obj[order], t[order], k_idx[order], up[order]
     N = len(so)
-    is_first = np.empty(N, bool)
-    is_first[0] = True
-    is_first[1:] = so[1:] != so[:-1]
-    is_last = np.empty(N, bool)
-    is_last[-1] = True
-    is_last[:-1] = so[:-1] != so[1:]
-    grp = np.cumsum(is_first) - 1               # group index 0..G-1
-    grp_starts = np.flatnonzero(is_first)
-    G = len(grp_starts)
-    group_obj = so[grp_starts]                  # ascending object id
+    is_first = np.zeros(N, bool)
+    is_last = np.zeros(N, bool)
+    if N:
+        is_first[0] = True
+        is_first[1:] = so[1:] != so[:-1]
+        is_last[-1] = True
+        is_last[:-1] = so[:-1] != so[1:]
+    cross_starts = np.flatnonzero(is_first)
+
+    # Object universe. With life markers it is every propagated object,
+    # which is exactly what the crossing stream alone could not give:
+    # an object confined inside one band fires nothing and used to
+    # vanish from the analysis (and from its denominator). Without
+    # markers -- files written before they existed -- it degrades to
+    # the old behaviour, the set of objects that crossed something.
+    group_obj = (np.union1d(ini_obj, so[cross_starts]) if from_markers
+                 else so[cross_starts])
+    G = len(group_obj)
+    if G == 0:
+        return None
+    grp = np.searchsorted(group_obj, so)         # group index per crossing
 
     # Band each crossing lands in (up -> k+1, down -> k). The band a
     # segment sits in is band_after of the PREVIOUS event; the first
     # event of each object is pinned to its start band instead.
     band_after = sk + sup
     band_during = np.empty(N, np.int64)
-    band_during[1:] = band_after[:-1]
     start_band_all = sk + (1 - sup)             # up -> k, down -> k+1
-    band_during[is_first] = start_band_all[is_first]
     seg_start = np.empty(N)
-    seg_start[1:] = st[:-1]
-    seg_start[is_first] = 0.0
+    if N:
+        band_during[1:] = band_after[:-1]
+        seg_start[1:] = st[:-1]
+        seg_start[is_first] = 0.0
+
+    # --- start band per object --------------------------------------
+    # Measured from the INITIAL_STATE marker when there is one; only
+    # otherwise inferred from the first crossing's direction. Where both
+    # exist they must agree: a mismatch means a crossing was missed
+    # (an unrefined step jumping a whole band) or the direction test is
+    # invalid for this file, so it is counted and surfaced rather than
+    # quietly resolved.
+    init_band = np.full(G, -1, np.int64)
+    if from_markers:
+        init_band[np.searchsorted(group_obj, ini_obj)] = np.searchsorted(
+            thr, ini_h, side="right")
+    conflicts = 0
+    if N:
+        g_first = grp[is_first]
+        inferred = start_band_all[is_first]
+        known = init_band[g_first] >= 0
+        conflicts = int(np.count_nonzero(
+            init_band[g_first][known] != inferred[known]))
+        init_band[g_first[~known]] = inferred[~known]
+        band_during[is_first] = init_band[g_first]
+    np.maximum(init_band, 0, out=init_band)      # unreachable, keeps indices safe
 
     # --- per-object window end: min(duration, impact, stop) but never
     #     before the object's last crossing ----------------------------
-    t_last = st[is_last]                         # max time per group
-    if stop_bands:
+    t_last = np.zeros(G)
+    if N:
+        t_last[grp[is_last]] = st[is_last]
+    stop_pg = np.full(G, np.inf)
+    if stop_bands and N:
         is_stop = np.isin(sk, list(stop_bands))
-        stop_pg = np.minimum.reduceat(np.where(is_stop, st, np.inf),
-                                      grp_starts)
-    else:
-        stop_pg = np.full(G, np.inf)
+        stop_pg[grp[cross_starts]] = np.minimum.reduceat(
+            np.where(is_stop, st, np.inf), cross_starts)
     impact_pg = np.full(G, np.inf)
     for key, ti in impact_dict.items():
         gi = int(np.searchsorted(group_obj, key))
@@ -277,20 +362,37 @@ def _reconstruct(events: np.ndarray, central_naif: int,
     val = np.where(m_stop, stop_pg, val)
     cause = np.where(m_stop, 2, cause)
     t_end_pg = np.maximum(val, t_last)
+    # A FINAL_STATE marker IS the end of that object's run -- written at
+    # the instant the propagation stopped, whatever stopped it -- so it
+    # replaces the reconstruction above instead of being merged with it.
+    # `cause` is left as computed: it labels WHY the run ended, which the
+    # marker does not carry.
+    if fin_t.size:
+        t_end_pg[np.searchsorted(group_obj, fin_obj)] = fin_t
+        t_end_pg = np.maximum(t_end_pg, t_last)
     ended_by_impact = int((cause == 1).sum())
     ended_by_stop = int((cause == 2).sum())
     window_s = float(t_end_pg.max())
 
     # --- segments (dur > 0): regular [seg_start, t] in band_during,
-    #     plus one final [t_last, t_end] per object in its last band ----
-    reg_dur = st - seg_start
-    reg_m = reg_dur > 0.0
-    fin_band = band_after[is_last]               # per group (ascending)
-    fin_m = (t_end_pg - t_last) > 0.0
-    seg_band = np.concatenate([band_during[reg_m], fin_band[fin_m]])
-    seg_start_all = np.concatenate([seg_start[reg_m], t_last[fin_m]])
-    seg_end_all = np.concatenate([st[reg_m], t_end_pg[fin_m]])
-    seg_group = np.concatenate([grp[reg_m], np.arange(G)[fin_m]])
+    #     plus one tail [t_last, t_end] per object in its last band.
+    #     For an object that never crossed anything the tail IS the
+    #     whole run: [0, t_end] in its start band. ---------------------
+    reg_m = (st - seg_start) > 0.0
+    has_cross = np.zeros(G, bool)
+    tail_band = np.zeros(G, np.int64)
+    tail_start = np.zeros(G)
+    if N:
+        g_last = grp[is_last]
+        has_cross[g_last] = True
+        tail_band[g_last] = band_after[is_last]
+        tail_start[g_last] = st[is_last]
+    tail_band[~has_cross] = init_band[~has_cross]
+    tail_m = (t_end_pg - tail_start) > 0.0
+    seg_band = np.concatenate([band_during[reg_m], tail_band[tail_m]])
+    seg_start_all = np.concatenate([seg_start[reg_m], tail_start[tail_m]])
+    seg_end_all = np.concatenate([st[reg_m], t_end_pg[tail_m]])
+    seg_group = np.concatenate([grp[reg_m], np.arange(G)[tail_m]])
 
     # Entries: a crossing that actually changes band (band change is
     # essentially always true; the mask guards the rare snapped tie).
@@ -299,10 +401,13 @@ def _reconstruct(events: np.ndarray, central_naif: int,
         thr=thr, from_snapshot=from_snapshot, n_bands=n_bands, n_objects=G,
         window_s=window_s, ended_by_impact=ended_by_impact,
         ended_by_stop=ended_by_stop, group_obj=group_obj,
-        init_band=start_band_all[is_first],
+        init_band=init_band,
         seg_band=seg_band, seg_start=seg_start_all, seg_end=seg_end_all,
         seg_group=seg_group, ent_band=band_after[entry_m],
-        ent_group=grp[entry_m], ent_time=st[entry_m])
+        ent_group=grp[entry_m], ent_time=st[entry_m], t_end_pg=t_end_pg,
+        from_markers=from_markers,
+        n_no_crossing=int((~has_cross).sum()),
+        start_band_conflicts=conflicts)
 
 
 def _recon_cached(events, central_naif, thresholds_km,
@@ -431,6 +536,9 @@ def _analyze_impl(events, central_naif, thresholds_km,
         window_s=rec.window_s,
         ended_by_impact=rec.ended_by_impact,
         ended_by_stop=rec.ended_by_stop,
+        from_markers=rec.from_markers,
+        n_no_crossing=rec.n_no_crossing,
+        start_band_conflicts=rec.start_band_conflicts,
     )
 
 
@@ -557,6 +665,119 @@ def altitude_bands_per_object(events: np.ndarray, central_naif: int,
 
 
 @dataclass(frozen=True)
+class BandSnapshot:
+    """Where every object is at ONE instant, as opposed to the pooled
+    views, which are all cumulative over a window.
+
+    `band[g]` is the band object `obj[g]` occupies at `t_s`, or -1 when
+    its propagation had already ended by then (impact, stop trigger, or
+    simply a shorter window). Keeping the ended objects in the array
+    rather than dropping them is what makes `counts / n_objects` an
+    honest fraction of the ORIGINAL population: a debris cloud that has
+    lost half its objects to impacts must not read as if the survivors
+    were everything."""
+    thr: np.ndarray
+    from_snapshot: bool
+    from_markers: bool
+    t_s: float
+    obj: np.ndarray              # (G,) object ids, ascending
+    band: np.ndarray             # (G,) band at t_s, -1 = already ended
+    counts: np.ndarray           # (n_bands,) objects per band at t_s
+    n_objects: int               # G, the whole population
+    n_ended: int                 # objects already gone at t_s
+    window_s: float              # latest end time over all objects
+
+
+def band_snapshot(events: np.ndarray, central_naif: int, t_s: float,
+                  thresholds_km: "list[float] | None" = None,
+                  stop_thresholds_km: "list[float] | None" = None,
+                  duration_s: "float | None" = None,
+                  ) -> "BandSnapshot | None":
+    """Per-object band occupancy AT `t_s` (seconds of sim time).
+
+    Reads the same cached reconstruction the cumulative views use, so
+    asking for several instants of one file costs one reconstruction
+    plus a vectorised interval lookup each. None when the file carries
+    no usable central-body crossing or marker.
+
+    A segment is the half-open interval [start, end), which is what
+    makes the lookup unambiguous at an interior band change: at the
+    exact instant of a crossing the object is already in the band it
+    moved INTO. The one exception is an object's very last instant --
+    `t_s == t_end` would fall outside every half-open segment and read
+    as "gone" for an object that is merely at the end of its window --
+    so the final segment is closed at its right end."""
+    rec = _recon_cached(events, central_naif,
+                        thresholds_km, stop_thresholds_km, duration_s)
+    if rec is None:
+        return None
+    G = rec.n_objects
+    t = float(t_s)
+
+    band = np.full(G, -1, np.int64)
+    inside = (rec.seg_start <= t) & (t < rec.seg_end)
+    band[rec.seg_group[inside]] = rec.seg_band[inside]
+
+    # Right-closed final segment: pick each object's last band and use
+    # it for the objects that are alive at t but matched no half-open
+    # interval, which can only be the t == t_end boundary.
+    is_final = rec.seg_end >= rec.t_end_pg[rec.seg_group]
+    final_band = np.full(G, -1, np.int64)
+    final_band[rec.seg_group[is_final]] = rec.seg_band[is_final]
+    at_end = (band < 0) & (t >= 0.0) & (t <= rec.t_end_pg)
+    band[at_end] = final_band[at_end]
+
+    alive = band >= 0
+    return BandSnapshot(
+        thr=rec.thr, from_snapshot=rec.from_snapshot,
+        from_markers=rec.from_markers, t_s=t,
+        obj=rec.group_obj, band=band,
+        counts=np.bincount(band[alive], minlength=rec.n_bands),
+        n_objects=G, n_ended=int((~alive).sum()), window_s=rec.window_s)
+
+
+def band_snapshot_to_csv(snap: BandSnapshot, body_naif: int,
+                         body_name: str = "") -> str:
+    """Serialise a `BandSnapshot`: `#`-comment metadata header, then one
+    row per object with the band it occupies at the snapshot instant and
+    that band's altitude range.
+
+    An object whose run had already ended is written with `band = -1`
+    and empty range cells rather than being omitted -- the row set is
+    then the whole population, and a reader can compute fractions of it
+    without a second file. No altitude column: the reconstruction knows
+    which band an object is in between two crossings, not where inside
+    it, and inventing an interpolated altitude would be a fabrication."""
+    thr = snap.thr
+    n_bands = len(thr) + 1
+    edges = [0.0, *thr.tolist(), float("inf")]
+    lines = [
+        "# SpOdy altitude-band snapshot (per object, at one instant)",
+        f"# body_name,{body_name}",
+        f"# body_naif,{body_naif}",
+        f"# thresholds_km,{';'.join(f'{h:g}' for h in thr)}",
+        f"# threshold_source,"
+        f"{'snapshot' if snap.from_snapshot else 'clustered_from_records'}",
+        f"# object_source,"
+        f"{'all_propagated' if snap.from_markers else 'only_with_crossings'}",
+        f"# t_s,{snap.t_s:.6g}",
+        f"# t_days,{snap.t_s / 86400.0:.6g}",
+        f"# n_objects,{snap.n_objects}",
+        f"# n_ended,{snap.n_ended}",
+        "# band,-1 = propagation already ended at this instant; "
+        "0 = below the lowest threshold",
+        "case_id,band,band_lo_km,band_hi_km",
+    ]
+    for obj_id, b in zip(snap.obj.tolist(), snap.band.tolist()):
+        if b < 0:
+            lines.append(f"{obj_id},-1,,")
+        else:
+            hi = "inf" if b == n_bands - 1 else f"{edges[b + 1]:g}"
+            lines.append(f"{obj_id},{b},{edges[b]:g},{hi}")
+    return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
 class BandSegments:
     """Flat per-segment arrays for the occupancy plots: each index is one
     interval an object spent in a band. Kept as parallel numpy arrays (no
@@ -662,7 +883,8 @@ def _band_label(thr: np.ndarray, b: int) -> str:
 def per_object_bands_to_csv(thr: np.ndarray, from_snapshot: bool,
                             rows: list, body_naif: int,
                             body_name: str = "",
-                            t_max_s: "float | None" = None) -> str:
+                            t_max_s: "float | None" = None,
+                            from_markers: bool = False) -> str:
     """Serialise `altitude_bands_per_object` output as CSV: a
     `#`-comment metadata header, then ONE ROW PER OBJECT (ascending id)
     with, for each band in ascending-altitude order, a pair of columns
@@ -672,7 +894,13 @@ def per_object_bands_to_csv(thr: np.ndarray, from_snapshot: bool,
     `t_max_s` is the analysis window's upper bound (from
     `altitude_bands_per_object`); it is recorded in the metadata header
     so the file states which slice of the run it covers. `None` =
-    whole run."""
+    whole run.
+
+    `from_markers` says whether the row set is EVERY propagated object
+    (life markers present) or only those that crossed a threshold. That
+    single flag decides whether `n_objects` here is a valid denominator
+    for per-object fractions, so it is written into the header rather
+    than left for the reader to guess."""
     n_bands = len(thr) + 1
     thr_txt = ";".join(f"{h:g}" for h in thr)
     window_txt = "full_run" if t_max_s is None else f"0..{t_max_s:g}"
@@ -689,6 +917,7 @@ def per_object_bands_to_csv(thr: np.ndarray, from_snapshot: bool,
         f"# threshold_source,{'snapshot' if from_snapshot else 'clustered_from_records'}",
         f"# window_s,{window_txt}",
         f"# n_objects,{len(rows)}",
+        f"# object_source,{'all_propagated' if from_markers else 'only_with_crossings'}",
         "# columns: per band a (total time in band [s], entries into band) pair",
         ",".join(header),
     ]

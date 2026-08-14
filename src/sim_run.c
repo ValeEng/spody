@@ -43,6 +43,7 @@
  */
 #include "sim_run.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -136,6 +137,11 @@ static int emit_breakdown(FILE *fp, const ForceModelContext *ctx,
  * opt-in (cfg->events_log non-empty) but the IMPACT check is always on
  * -- if disabled, triggers still stop the propagation, they just are
  * not recorded.
+ *
+ * A log that exists always opens with an INITIAL_STATE record per
+ * propagated object and closes with a FINAL_STATE one (see
+ * emit_life_markers): those are not triggers, they are the object's
+ * life span, and they are unconditional exactly like the IMPACT check.
  * -------------------------------------------------------------------------- */
 
 #define SPODY_EVT_MAGIC   "SPDYEVT_"
@@ -239,6 +245,60 @@ static int emit_event_batch(BatchEventSink *sink, const SpodyEvent *ev) {
         local_ok = (fwrite(&r, sizeof r, 1, sink->fp) == 1);
     }
     return local_ok ? 0 : -1;
+}
+
+/* Life markers (INITIAL_STATE / FINAL_STATE).
+ *
+ * One pair per propagated object, written unconditionally: they are not
+ * predicates and never go through check_events. Their job is to make
+ * the log complete -- an object confined between two altitude
+ * thresholds fires nothing at all, and without a marker it is
+ * indistinguishable from an object that was never run. They also carry
+ * the analysis window (t0 .. t_end) and the starting altitude, so the
+ * post-processing no longer has to reach for the run's input snapshot.
+ *
+ * Written once per body whose distance is available without an
+ * ephemeris query: the central body in HF, both primaries in CR3BP
+ * (where neither is "central" and each carries a fixed synodic
+ * reference point). Third-body markers are deliberately skipped -- the
+ * band analysis is central-body only, so they would cost one ephemeris
+ * query per case and per marker for no consumer today.
+ *
+ * The record is built by copying the body's IMPACT event, which already
+ * holds the right naif_id / radius_km / reference point, and handing it
+ * to the same two sinks as any trigger -- so the wire format stays
+ * known in exactly one place, batch runs keep their critical section,
+ * and `distance_km - radius_km` is the altitude for a marker exactly as
+ * it is for an altitude crossing. */
+static int emit_life_markers(spody_event_kind kind, double t,
+                             const double y[6],
+                             const SpodyEvent *events, int n_events,
+                             const ForceModelContext *ctx,
+                             FILE *evt_fp, BatchEventSink *batch_sink) {
+    if (!evt_fp && !batch_sink) return 0;
+
+    for (int i = 0; i < n_events; ++i) {
+        if (events[i].kind != SPODY_EVENT_KIND_IMPACT) continue;
+
+        double dx = y[0], dy = y[1], dz = y[2];
+        if (events[i].has_ref_point) {
+            dx -= events[i].ref_point[0];
+            dy -= events[i].ref_point[1];
+            dz -= events[i].ref_point[2];
+        } else if (events[i].naif_id != ctx->naif_central) {
+            continue;   /* third body: distance needs the ephemeris */
+        }
+
+        SpodyEvent m = events[i];   /* naif_id, radius_km, ref point */
+        m.kind      = kind;
+        m.t_trigger = t;
+        for (int k = 0; k < 6; ++k) m.y_trigger[k] = y[k];
+        m.distance_at_trigger = sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (evt_fp && emit_event(evt_fp, &m) < 0) return -1;
+        if (batch_sink && emit_event_batch(batch_sink, &m) < 0) return -1;
+    }
+    return 0;
 }
 
 /* --------------------------------------------------------------------------
@@ -434,6 +494,12 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
     SpodyEvent *events = NULL;
     int         n_events = 0;
     int         rc = SPODY_OK;
+    /* Stop-class event that ended the run, if any. Set at the two
+     * termination sites below and read once by the FINAL_STATE marker,
+     * which must timestamp the physical end of the propagation (the
+     * trigger) rather than the end of the accepted step that contained
+     * it -- the same convention the trajectory endpoint already uses. */
+    const SpodyEvent *stop_ev = NULL;
 
     /* ----- open the requested output files ----- */
     if (cfg->csv_file[0]) {
@@ -512,6 +578,13 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 "write failed on initial accelerations record");
         rc = SPODY_ERR_IO; goto cleanup;
     }
+    if (emit_life_markers(SPODY_EVENT_KIND_INITIAL_STATE,
+                          w->integ.t, w->integ.y, events, n_events,
+                          &w->ctx, evt, batch_sink) < 0) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "events_log write failed on initial-state record");
+        rc = SPODY_ERR_IO; goto cleanup;
+    }
 
     const double t_end = cfg->duration_s;
     const double eps   = 1.0e-9;
@@ -577,6 +650,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 rc = SPODY_ERR_IO; goto cleanup;
             }
             if (ev_rc > 0) {
+                stop_ev = &events[first];
                 spody_log_printf(
                     "  IMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
                     events[first].naif_id, events[first].t_trigger,
@@ -655,6 +729,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 rc = SPODY_ERR_IO; goto cleanup;
             }
             if (ev_rc > 0) {
+                stop_ev = &events[first];
                 spody_log_printf(
                     "  IMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
                     events[first].naif_id, events[first].t_trigger,
@@ -665,6 +740,22 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
     }
 
 cleanup:
+    /* FINAL_STATE closes every run that terminated normally, whatever
+     * ended it: the planned duration, an impact, or a stop-class
+     * altitude crossing. A run that died (integrator failure, I/O
+     * error) leaves its INITIAL_STATE unmatched on purpose -- that
+     * asymmetry is the only in-file trace of a case that did not
+     * complete, and post-processing should surface it rather than
+     * silently treat the object as having survived the window. */
+    if (rc == SPODY_OK
+        && emit_life_markers(SPODY_EVENT_KIND_FINAL_STATE,
+                             stop_ev ? stop_ev->t_trigger : w->integ.t,
+                             stop_ev ? stop_ev->y_trigger : w->integ.y,
+                             events, n_events, &w->ctx, evt, batch_sink) < 0) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "events_log write failed on final-state record");
+        rc = SPODY_ERR_IO;
+    }
     if (csv) fclose(csv);
     if (bin) fclose(bin);
     if (acc) fclose(acc);

@@ -55,7 +55,9 @@ import numpy as np
 from spody_io import (
     EVENT_KIND_ALT_CROSSING,
     EVENT_KIND_ECLIPSE,
+    EVENT_KIND_FINAL_STATE,
     EVENT_KIND_IMPACT,
+    EVENT_KIND_INITIAL_STATE,
 )
 
 
@@ -202,6 +204,15 @@ class EventsDigest:
     n_impact: int
     n_eclipse: int
     n_altcross: int
+    # Life markers (INITIAL_STATE / FINAL_STATE), zero on files written
+    # before they existed. `n_objects_seen` is the authoritative object
+    # count -- every propagated object emits an INITIAL_STATE whether or
+    # not it ever fires a predicate -- and `n_incomplete` counts objects
+    # whose FINAL_STATE never arrived, i.e. runs that died mid-flight.
+    n_initial: int
+    n_final: int
+    n_objects_seen: int
+    n_incomplete: int
     t_impact: np.ndarray
     case_impact: np.ndarray
     eclipse_durations_s: np.ndarray
@@ -226,20 +237,47 @@ def _digest_impl(events: np.ndarray) -> EventsDigest:
     m_imp = kind == EVENT_KIND_IMPACT
     m_ecl = kind == EVENT_KIND_ECLIPSE
     m_alt = kind == EVENT_KIND_ALT_CROSSING
+    m_ini = kind == EVENT_KIND_INITIAL_STATE
+    m_fin = kind == EVENT_KIND_FINAL_STATE
     t_impact = np.asarray(t_all[m_imp], dtype=float)
 
     # Case bookkeeping via bincount: O(N) with no sort, where the
     # obvious `np.unique` would sort ten million ids on every load.
+    #
+    # "Cases with events" counts cases that fired a PREDICATE, so the
+    # life markers are excluded from it: they are present for every
+    # propagated case by construction, and counting them would silently
+    # turn the row into "batch size" and make it disagree with the same
+    # row on a pre-marker file.
     case_all = events["case_idx"] if is_batch else None
     case_impact = (np.asarray(case_all[m_imp], dtype=np.int64) if is_batch
                    else np.zeros(0, dtype=np.int64))
+    m_trig = ~(m_ini | m_fin)
     if is_batch and len(events):
-        n_cases_with_events = int(np.count_nonzero(
-            np.bincount(np.asarray(case_all, dtype=np.int64))))
+        n_cases_with_events = int(np.count_nonzero(np.bincount(
+            np.asarray(case_all[m_trig], dtype=np.int64)))
+            if m_trig.any() else 0)
         n_cases_impacted = int(np.count_nonzero(
             np.bincount(case_impact)) if case_impact.size else 0)
     else:
         n_cases_with_events = n_cases_impacted = 0
+
+    # Objects seen / never closed. In CR3BP a case emits one marker per
+    # primary, so counting DISTINCT cases (not records) is what makes
+    # this an object count in both dynamics models.
+    n_initial, n_final = int(m_ini.sum()), int(m_fin.sum())
+    if not n_initial:
+        n_objects_seen = n_incomplete = 0
+    elif is_batch:
+        ini_b = np.bincount(np.asarray(case_all[m_ini], dtype=np.int64))
+        fin_b = np.bincount(np.asarray(case_all[m_fin], dtype=np.int64),
+                            minlength=ini_b.size)
+        n_objects_seen = int(np.count_nonzero(ini_b))
+        n_incomplete = int(np.count_nonzero((ini_b > 0)
+                                            & (fin_b[:ini_b.size] == 0)))
+    else:
+        n_objects_seen = 1
+        n_incomplete = 0 if n_final else 1
 
     # --- eclipse pairing ------------------------------------------------
     # The engine emits one ECLIPSE record per sign crossing of
@@ -303,6 +341,8 @@ def _digest_impl(events: np.ndarray) -> EventsDigest:
         n_records=len(events), is_batch=is_batch,
         n_impact=int(m_imp.sum()), n_eclipse=int(m_ecl.sum()),
         n_altcross=int(m_alt.sum()),
+        n_initial=n_initial, n_final=n_final,
+        n_objects_seen=n_objects_seen, n_incomplete=n_incomplete,
         t_impact=t_impact, case_impact=case_impact,
         eclipse_durations_s=eclipse_durations_s,
         n_cases_with_events=n_cases_with_events,

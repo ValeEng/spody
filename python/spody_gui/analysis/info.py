@@ -257,6 +257,13 @@ def info_rows_events(data: np.ndarray, snapshot: dict | None,
         ("ECLIPSE count", f"{dig.n_eclipse}"),
         ("ALT_CROSSING count", f"{dig.n_altcross}"),
     ]
+    if dig.n_initial:
+        # Life markers make the log self-describing: the object count no
+        # longer needs cases.csv, and an object that fired nothing at all
+        # is finally visible here instead of being absent.
+        rows.append(("Objects propagated", f"{dig.n_objects_seen}"))
+        if dig.n_incomplete:
+            rows.append(("Objects never closed", f"{dig.n_incomplete}"))
     if is_batch:
         cases_impacted = dig.n_cases_impacted
         rows.append(("Cases with events", f"{dig.n_cases_with_events}"))
@@ -332,8 +339,25 @@ def _altitude_band_rows(data: np.ndarray, dig: "EventsDigest",
         src = "snapshot" if res.from_snapshot else "clustered from records"
         rows.append(("Thresholds [km]", f"{thr_txt}  ({src})"))
         if is_batch:
-            rows.append(("Objects analysed",
-                         f"{res.n_objects} (with ≥ 1 crossing)"))
+            # With life markers the object set is the whole batch, so the
+            # old "(with >= 1 crossing)" caveat would be a lie -- and the
+            # objects that crossed nothing are worth calling out, since
+            # they are the ones a pre-marker file lost silently.
+            scope = ("propagated" if res.from_markers
+                     else "with ≥ 1 crossing")
+            rows.append(("Objects analysed", f"{res.n_objects} ({scope})"))
+            if res.from_markers and res.n_no_crossing:
+                rows.append(("Confined to one band",
+                             f"{res.n_no_crossing} (never crossed a "
+                             f"threshold)"))
+        if res.start_band_conflicts:
+            # Measured start band vs the one inferred from the first
+            # crossing's direction. They can only disagree if a crossing
+            # was missed -- an unrefined step jumping a whole band -- so
+            # this row is a data-quality warning, not a statistic.
+            rows.append(("Start-band mismatches",
+                         f"{res.start_band_conflicts} (marker vs first "
+                         f"crossing — check `refined`)"))
         window_txt = fmt_duration(res.window_s)
         trunc = []
         if res.ended_by_impact:

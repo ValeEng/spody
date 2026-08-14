@@ -57,6 +57,14 @@ extern "C" {
  * file under an OpenMP critical, with `case_idx` set to the row index of
  * the case in cases_file (0-based, matches the order in cases.csv).
  *
+ * Every case also contributes an INITIAL_STATE and (unless it died) a
+ * FINAL_STATE record, so `case_idx` values present in the file are the
+ * complete list of propagated cases -- post-processing gets the batch
+ * size from the log itself instead of re-reading cases.csv, and a case
+ * that never fires a predicate is no longer invisible. Records from
+ * concurrent cases interleave freely; only the (case_idx, t) pair
+ * orders them.
+ *
  * Single-propagate runs pass `batch_sink = NULL` and the legacy per-run
  * EventRecord file (magic 'SPDYEVT_') driven by cfg->events_log keeps
  * working unchanged. The two paths are independent: in batch mode the

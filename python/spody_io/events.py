@@ -22,7 +22,12 @@ preamble (see `headers.py`):
 
       double t            sim time of trigger [s]
       int32  kind         spody_event_kind enum (IMPACT=0, ECLIPSE=1,
-                          ALT_CROSSING=2)
+                          ALT_CROSSING=2, INITIAL_STATE=3,
+                          FINAL_STATE=4 -- the last two are life
+                          markers, one pair per propagated object,
+                          written unconditionally rather than on a
+                          predicate; files written before 2026-08 have
+                          none)
       int32  naif_id      body involved in the trigger
       double radius_km    threshold used for the predicate (for
                           ALT_CROSSING: the body's physical radius --
@@ -65,9 +70,16 @@ from .headers import (
 
 # Mirror of spody_event_kind in spody_events.h. Keep in sync if more
 # kinds are added (apsides, geodetic regions, ...).
-EVENT_KIND_IMPACT       = 0
-EVENT_KIND_ECLIPSE      = 1
-EVENT_KIND_ALT_CROSSING = 2
+EVENT_KIND_IMPACT        = 0
+EVENT_KIND_ECLIPSE       = 1
+EVENT_KIND_ALT_CROSSING  = 2
+# Life markers, written unconditionally once each per propagated object
+# rather than on a predicate: INITIAL_STATE at t0, FINAL_STATE at
+# whatever ended the run. `radius_km` / `distance_km` follow the
+# ALT_CROSSING convention (body radius / body-centric distance), so
+# `distance_km - radius_km` is the altitude for these too.
+EVENT_KIND_INITIAL_STATE = 3
+EVENT_KIND_FINAL_STATE   = 4
 
 # Per-run record (SPDYEVT_): 80 bytes.
 EVENT_DTYPE = np.dtype({
@@ -150,6 +162,7 @@ def _read_batch(fp: BinaryIO, path: Path) -> np.ndarray:
 # Re-export for backward-compat callers that imported HEADER_BYTES from here.
 __all__ = [
     "EVENT_KIND_IMPACT", "EVENT_KIND_ECLIPSE", "EVENT_KIND_ALT_CROSSING",
+    "EVENT_KIND_INITIAL_STATE", "EVENT_KIND_FINAL_STATE",
     "EVENT_DTYPE", "BATCH_EVENT_DTYPE",
     "read_events", "HEADER_BYTES",
 ]
