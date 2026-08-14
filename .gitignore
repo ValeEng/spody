@@ -141,6 +141,13 @@ tools/
 # personal correctness/accuracy material, intentionally unversioned.
 tests/
 
+# Local-only release rehearsal: reproduces the Windows leg of
+# .github/workflows/release.yml on this machine (MinGW engine build,
+# DLL import gate, manual PDF, PyInstaller bundle, archive + sha256)
+# so a broken release is caught before the tag is pushed. Holds build
+# trees and multi-hundred-MB archives; never committed.
+release-test/
+
 # Claude operating notes + workspace: local-only (machine-specific paths).
 CLAUDE.md
 .claude/
