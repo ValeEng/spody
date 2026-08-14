@@ -268,7 +268,7 @@ is active whenever at least one type is available. The dialog shows a
 *Saving to&hellip;* status during the write and auto-closes on
 success; errors stay visible so you can adjust the destination.
 
-Three export types today:
+Four export types today:
 
 - **Plot lines (as drawn)** &mdash; every `Line2D` on the active
   figure (single, overlay and tile modes supported). One section per
@@ -303,10 +303,37 @@ Three export types today:
   `lat_deg` / `lon_deg` (the same projection as the impact lat/lon
   maps) and time of flight (`tof_s`, `tof_days`), rows ascending by
   case id.
+- **Band snapshot (per object, at one instant)** &mdash; the
+  instantaneous companion of the cumulative bands table, enabled once
+  the file qualifies for that one *and* a snapshot time is set (see
+  below). One row per object: `case_id`, the `band` index it occupies
+  at that instant, and that band's `band_lo_km` / `band_hi_km`.
+  Objects whose run had already ended are kept with `band = -1` and
+  empty range cells, so the row set is the whole population and a
+  reader can compute fractions of it without a second file. The
+  `#`-header records the instant twice (`t_s` and `t_days`), the
+  object count and how many had ended. There is deliberately **no
+  altitude column**: between two crossings the reconstruction knows
+  which band an object is in, not where inside it, and an interpolated
+  altitude would be fabricated &mdash; read the trajectory `.bin` if
+  you need the actual altitude at an instant.
 
-The band and impact exports read the events data, not the figure, so
-they work from any plot in the events tree (not only their matching
-view).
+The band, snapshot and impact exports read the events data, not the
+figure, so they work from any plot in the events tree (not only their
+matching view).
+
+### Altitude-band snapshot
+
+Its own box, above *Export CSV*: a single field, `at [N] days from
+start`, with the loaded run's length shown underneath so the number
+has a scale. It sits outside the export box because it drives both
+the *Band snapshot at t* plot (chapter 9) and the snapshot export &mdash;
+tying a plot parameter to an export radio's enabled state would be
+wrong. Confirm with Enter (or by leaving the field) and the active
+plot redraws; clear it to unset. It is independent of the
+`bands window` field inside the export box, which means something
+different: that one is the *upper bound of a cumulative window*, this
+one is *an instant*.
 
 ## 3D UTC overlay
 
@@ -533,10 +560,18 @@ options dialog's primary selector for a per-primary breakdown).
 
 The top *Events* section is shared between per-run and batch
 events: **Total records**, **IMPACT count**, **ECLIPSE count**.
+A file carrying life markers (chapter 6) adds **Objects
+propagated** &mdash; the authoritative object count, straight from
+the log rather than from `cases.csv` &mdash; and, only when the
+number is non-zero, **Objects never closed**, i.e. cases whose
+`FINAL_STATE` never arrived because the run died mid-flight.
 Batch logs add three extra rows up there (**Cases with events**,
 **Cases with impact**, and &mdash; when the cases CSV is
 resolved next to the snapshot &mdash; **Cases total (CSV)**,
-**Survivors (no impact)**, **Impact rate %**).
+**Survivors (no impact)**, **Impact rate %**). *Cases with events*
+counts cases that fired a **predicate**: the markers are excluded
+from it, otherwise it would silently become a second, redundant
+batch-size row and stop agreeing with the same row on an older file.
 
 Two derived sections follow when the underlying counts are
 non-zero:
@@ -544,7 +579,10 @@ non-zero:
 - *Impact timing* (any IMPACT row present) &mdash; first / last
   / median / mean impact time, each formatted as raw seconds
   with the friendly (min / h / d) equivalent in parentheses.
-- *Altitude bands* (any central-body `ALT_CROSSING` row present)
+- *Altitude bands* (any central-body `ALT_CROSSING` row, **or** a
+  central-body life marker with thresholds in the run snapshot &mdash;
+  a run whose objects all stayed inside one band has no crossings at
+  all, and is precisely the one whose occupancy is worth reading)
   &mdash; the configured thresholds, sorted ascending, split the
   altitude axis into bands `[surface, h_a)`, `[h_a, h_b)`, &hellip;,
   `[h_top, &infin;)`. For each band the summary reports **Entries**
@@ -555,11 +593,27 @@ non-zero:
   the band, time-averaged) plus **Objects visiting**. The timeline is
   reconstructed from the crossing records alone (no trajectory file):
   the crossed threshold comes from `distance_km - radius_km` snapped
-  to the nearest configured value, the direction from the sign of
-  **r&middot;v** at the trigger state, and each object's window closes
-  at the earliest of the planned duration, its impact, or its first
-  stop-class crossing. Thresholds entered out of order (or duplicated)
-  are sorted and de-duplicated, so the bands are always well-formed.
+  to the nearest configured value and the direction from the sign of
+  **r&middot;v** at the trigger state. Where each object *starts*, and
+  when its window *ends*, are read from its life markers (chapter 6);
+  only on a pre-marker file are they inferred instead &mdash; the
+  start band from the direction of the first crossing, the window from
+  the earliest of the planned duration, the object's impact, and its
+  first stop-class crossing. Thresholds entered out of order (or
+  duplicated) are sorted and de-duplicated, so the bands are always
+  well-formed.
+
+  Three rows appear only with markers. **Objects analysed** says
+  *propagated* rather than *with &ge; 1 crossing*, because the object
+  set is now the whole batch; **Confined to one band** counts the
+  objects that never crossed a threshold at all, which a pre-marker
+  file lost silently; and **Start-band mismatches** counts objects
+  whose measured start band disagrees with the one inferred from their
+  first crossing. That last row is a data-quality warning rather than
+  a statistic: the two can only disagree if a crossing went
+  unrecorded, which points at an `[[events.altitude_crossing]]` entry
+  running with `refined = false` and a step long enough to jump a
+  whole band.
   Crossings measured from a third body get a counts-only line (their
   trigger state isn't body-centric, so occupancy isn't reconstructed).
 - *Eclipses* (any ECLIPSE row present) &mdash; **Trigger

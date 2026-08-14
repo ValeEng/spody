@@ -553,6 +553,45 @@ Any trajectory that crosses a central-body or third-body surface
 section. The section only controls the opt-in eclipse and altitude
 detection above.
 
+### Life markers (`INITIAL_STATE` / `FINAL_STATE`)
+
+Also unconditional, and also not configurable: whenever an events log
+is written, every propagated object contributes one `INITIAL_STATE`
+record at `t = 0` and one `FINAL_STATE` record at whatever ended its
+run &mdash; the planned duration, an impact, or a stop-class altitude
+crossing. They are not triggers: no predicate is evaluated and
+nothing can suppress them.
+
+They exist because a log built only from triggers is not a complete
+record of what was propagated. An object that stays between two
+altitude thresholds for the whole run crosses nothing, so it wrote
+nothing, and was indistinguishable from an object that never ran
+&mdash; including in its own denominator, which silently inflated
+every per-object percentage computed from the file. With the markers,
+the `case_idx` values present in a batch log are the complete list of
+propagated cases, so post-processing no longer needs `cases.csv` to
+know the batch size.
+
+They also carry the object's starting altitude and the true end of
+its window, which is what lets the altitude-band analysis measure
+those two facts instead of inferring them from the direction of the
+first crossing and from the planned duration.
+
+Field layout follows the altitude-crossing convention &mdash;
+`radius_km` is the body's radius, `distance_km` the body-centric
+distance, so `distance_km - radius_km` is the altitude. One marker is
+written per body whose distance needs no ephemeris query: the central
+body in high fidelity, both primaries in CR3BP. A `FINAL_STATE` that
+never arrives after an `INITIAL_STATE` means that case died mid-run
+(integrator or I/O failure); the Info tab reports those as *Objects
+never closed*.
+
+**Reading older files.** Logs written before August 2026 carry no
+markers and are read exactly as before. New logs are two records per
+object per body longer, so an events `.bin` from before that date is
+not byte-comparable with a fresh one &mdash; trajectory and
+acceleration binaries are unaffected.
+
 ## `[batch]` (optional)
 
 Multi-case sweep section. Present only when the *Enable [batch]*

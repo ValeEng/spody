@@ -97,6 +97,19 @@ All little-endian, 8-byte magic + version/dim header:
 | `SPDYEVTB` | batch-aggregated events (extra `case_idx`) | `sim_run.c` | `spody_io/events.py` |
 | `SPDYEPET` | compiled DE440 ephemeris (`.spody`) | offline generator | spody-core + `spopy/ephemeris.py` |
 
+Both events formats carry two record kinds that are **not** triggers:
+`INITIAL_STATE` (3) and `FINAL_STATE` (4), the per-object life
+markers written unconditionally by `emit_life_markers` in
+`sim_run.c`. Adding a kind to `spody_event_kind` is deliberately
+non-breaking — both dispatch switches in `spody_events.c` end in
+`default: break`, so an unknown kind never fires — but every *reader*
+that partitions records by kind must be revisited: the per-kind
+digest in `analysis/derived.py`, the label map in
+`analysis/table_model.py`, and any count that means "triggers" rather
+than "records" (both event-timeline titles subtract the markers).
+The rule of thumb: a marker is part of the population, never part of
+the statistics.
+
 A new format field means touching **both** sides plus `detect_kind`
 in `spody_gui/analysis/registry.py`. Never change a record layout in
 place — bump the header version and keep the reader
@@ -155,7 +168,11 @@ backward-compatible.
     events view derives from the raw array belongs here, not in the
     plot function** — see the scale rules in §5.3.
   - `altitude_bands.py` — the band-occupancy reconstruction behind
-    the Info rows, the four band plots and the per-element CSV.
+    the Info rows, the five band plots and the two band CSVs. One
+    cached `_Recon` per file feeds every consumer, so the cumulative
+    views, the per-object export and the instant snapshot can never
+    disagree on thresholds, object set or window. Prefer adding a
+    reader of `_Recon` over adding a second pass on the raw array.
   - `scene3d.py` — GUI glue over `spoviz.decoration`: keeps the
     historical `(canvas, ctx, times_s)` signatures, resolves the
     run-folder snapshot / texture assets / `spody_const.h` radii,
@@ -645,15 +662,38 @@ analysis is a figure. Two adjacent extension points:
   in `analysis/altitude_bands.py`, NOT inside `info.py`) so it is
   unit-testable without Qt and reusable by an export. Formatting goes
   through `fmt_num` / `fmt_duration` so precision stays uniform.
-- *A second export action*: `plot_options.py` hosts the export
-  buttons. A new one is a `Signal` + a `set_<name>_enabled` method on
-  `PlotOptionsDialog`, connected in `_on_open_plot_options` and
-  re-synced in `_sync_anim_bar_to_canvas` (fires after every render).
+- *A second export action*: the export types live in one place, the
+  `_EXPORT_TYPES` tuple in `plot_options.py` — `(id, radio label,
+  tooltip)`. Adding one is: append an entry there; add
+  `"<id>": <bool>` to `_export_availability()` in
+  `analysis_panel.py`; add an `elif export_id == "<id>"` branch to
+  `_on_export_requested`; write the `_export_<name>_csv` method. The
+  dialog needs no new signal — `exportRequested` already carries the
+  id — and the radio greys itself from the availability dict.
   Gate it on the DATA, not the figure, when the export derives from
-  the loaded array rather than the drawn lines — the altitude-band CSV
-  is enabled by `_can_export_altitude_bands_csv` (central-body
-  `ALT_CROSSING` present), independent of which plot is showing. The
-  altitude-band feature is the worked template for both points.
+  the loaded array rather than the drawn lines: the altitude-band CSV
+  is enabled by `_can_export_altitude_bands_csv` (a central-body
+  `ALT_CROSSING` **or** life marker present), independent of which
+  plot is showing. Serialise in the analysis module, not in the panel
+  (`per_object_bands_to_csv`, `band_snapshot_to_csv`), and put the
+  provenance in a `#`-comment header — thresholds, their source,
+  whether the rows are the whole population, the window. A CSV whose
+  denominator is ambiguous is a CSV that will be misread.
+- *A view that needs a user-chosen parameter*: most plots are a pure
+  function of the file, but some need an input the file cannot supply
+  (the band snapshot needs *which instant*). The path is: a field on
+  `PlotContext` (`analysis/context.py`), set in
+  `_build_plot_context`; panel state holding it; a control plus a
+  `Signal` on `PlotOptionsDialog`; a panel slot that stores the value,
+  re-syncs export availability and re-renders via
+  `_on_plot_tree_clicked`. Emit on `editingFinished`, never
+  `textChanged` — a re-render per keystroke on a million-segment batch
+  makes the field unusable. When the parameter is unset, say so in the
+  view instead of inventing a default: a silently chosen instant is
+  read as if it had been asked for.
+
+  The altitude-band feature is the worked template for all three
+  points.
 
 **Scale (millions of rows).** An events log routinely carries millions
 of records &mdash; a debris batch of a few thousand cases crossing five

@@ -8,6 +8,64 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Per-object life markers in the events log
+  (`INITIAL_STATE` / `FINAL_STATE`).** Every propagated object now
+  writes one record at `t = 0` and one at whatever ended its run
+  (planned duration, impact, or stop-class altitude crossing). They
+  are unconditional, like the always-on IMPACT check, and they are not
+  predicates &mdash; no trigger condition is evaluated and nothing can
+  suppress them.
+
+  They close a hole a trigger-only log could not: an object that stays
+  between two altitude thresholds for the whole run crosses nothing,
+  so it wrote nothing, and was indistinguishable from an object that
+  was never propagated &mdash; including in its own denominator, which
+  silently inflated every per-object percentage computed from the
+  file. The `case_idx` values in a batch log are now the complete list
+  of propagated cases, so post-processing gets the batch size from the
+  log instead of from `cases.csv`.
+
+  One marker is written per body whose distance needs no ephemeris
+  query: the central body in high fidelity, both primaries in CR3BP.
+  Field layout follows the altitude-crossing convention, so
+  `distance_km - radius_km` is the altitude for a marker exactly as it
+  is for a crossing.
+
+- **Altitude-band analysis reads the markers.** The band each object
+  starts in is now *measured* from its `INITIAL_STATE` altitude rather
+  than inferred from the direction of its first crossing, and the
+  analysis window comes from `FINAL_STATE` rather than from the
+  earliest of (planned duration, impact, stop trigger). Objects that
+  never crossed a threshold are first-class, with one full-window
+  segment in their birth band. Where the measured and inferred start
+  bands disagree the Info tab reports it as **Start-band mismatches**:
+  the two can only differ if a crossing went unrecorded, which points
+  at `refined = false` with a step long enough to jump a whole band.
+
+  Files written before the markers keep the old inference path, and on
+  a file carrying both the two agree bit for bit.
+
+- **`Band snapshot at t` plot + `Band snapshot` CSV export.** The
+  instantaneous companion of the cumulative band views: one bar per
+  band holding the objects in it at a single instant, chosen in days
+  in *Plot options &rarr; Altitude-band snapshot*. Objects whose run
+  had already ended get their own bar, and stay in the CSV with
+  `band = -1`, so a fraction is always a fraction of the original
+  population rather than of a denominator that shrinks as a debris
+  cloud dies.
+
+### Changed
+
+- Events `.bin` files are two records per object per body longer than
+  before, so a fresh events log is **not byte-comparable** with one
+  archived before this change. Trajectory and acceleration binaries
+  are unaffected (verified bit-identical on the GPS-G11 scenario).
+- The altitude-band CSV export header gained an `object_source` line
+  (`all_propagated` / `only_with_crossings`) stating whether its rows
+  are the whole population &mdash; i.e. whether `n_objects` is a valid
+  denominator. Readers that skip a fixed number of header lines
+  instead of filtering on `#` need one more.
+
 - **Perturbation budget plot (Analysis tab, accelerations files).**
   Each perturbing force as a share of the sum of the magnitudes, the
   central two-body term excluded, with its time-averaged share in the

@@ -49,7 +49,9 @@ PyInstaller bundle.
   calibration against a reference ephemeris.
 - **Event detection**: always-on multi-body IMPACT, opt-in ECLIPSE
   and altitude crossings, all localised to sub-millisecond by
-  Hermite + Brent.
+  Hermite + Brent — plus per-object life markers, so a log records
+  every object that was propagated and not only those that fired
+  something.
 
 **Tooling**
 
@@ -259,6 +261,11 @@ Ordered roughly by what unlocks the most for users.
       ALT_CROSSING (`[[events.altitude_crossing]]`, ascending +
       descending, per-event refinement opt-out), all with sub-
       microsecond Hermite + Brent localisation
+- [x] Per-object life markers (INITIAL_STATE / FINAL_STATE, always on
+      like IMPACT): an object that fires no predicate at all is still
+      in the log, so the object count and each object's starting
+      region and window come from the file instead of being inferred
+      or read out of `cases.csv`
 - [x] Two object schemas: `[spacecraft]` (mass + area) and `[debris]`
       (A/m only, mass-irrelevant); mutually exclusive at parse with
       mode-tagged batch targets
@@ -309,11 +316,13 @@ Ordered roughly by what unlocks the most for users.
         box** (a radio list of export types + one Export button, each
         greying out by data availability: figure lines, altitude-band
         per-element `time / entries`, impact `lat/lon + time of
-        flight`), **altitude-band occupancy analysis** for
+        flight`, per-object band snapshot at a chosen instant),
+        **altitude-band occupancy analysis** for
         `altitude_crossing` events (per-band entries / time /
-        dwell / population in the Info tab, four dedicated plots
+        dwell / population in the Info tab, five dedicated plots
         &mdash; time-per-band bars, single-object occupancy Gantt,
-        batch population-over-time, per-case heatmap &mdash; and
+        batch population-over-time, per-case heatmap, and a
+        snapshot-at-an-instant bar chart &mdash; and
         per-altitude event-timeline rows; vectorised + cached so
         ten-million-event logs don't stall the tab &mdash; one shared
         per-file derivation behind the Info rows and every event plot,

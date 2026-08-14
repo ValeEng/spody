@@ -645,7 +645,12 @@ When an events file carries `altitude_crossing` triggers on the
 central body, an **Altitude bands** folder appears in the plot tree.
 The thresholds, sorted ascending, split the altitude axis into bands
 (chapter 8, *Info tab &rarr; Altitude bands*); these views draw the
-occupancy reconstructed from the crossing records. All are
+occupancy reconstructed from the crossing records, plus the
+`INITIAL_STATE` / `FINAL_STATE` life markers that pin where each
+object started and when its run ended (chapter 6, *Life markers*).
+On a file written before those existed the reconstruction falls back
+to inferring both, and an object that never crossed a threshold is
+missing from these views entirely. All are
 high-fidelity only (the reconstruction measures altitude from the
 central body; the CR3BP synodic frame has no comparable altitude) and
 colour the bands with a sequential map (dark = low, bright = high) so
@@ -696,5 +701,35 @@ Heatmap with one row per case (ascending id) and one column per band,
 coloured by the time that case spent in the band. The visual
 companion of the *Altitude bands* CSV export &mdash; spot at a glance
 which cases live low vs high.
+
+**Overlay-safe.** No (single-file aggregate).
+
+#### Band snapshot at t
+
+Every other view in this folder is cumulative; this one is a single
+instant. One horizontal bar per band holding the objects that are in
+it at time *t*, labelled with the count and its percentage of the
+population. The companion of *Time per band*: that answers "how much
+time was spent down there over the whole run", this answers "how many
+objects are down there right now". A debris cloud can accumulate an
+enormous time in a shell it has entirely left by day 300, and only
+the snapshot shows that.
+
+**Choosing the instant.** *Plot options &rarr; Altitude-band
+snapshot*, field `at [N] days from start`. Confirm with Enter and the
+view redraws. The field shows the loaded run's length underneath, so
+the number has a scale. Until you set one, the view says so rather
+than picking a default: every instant tells a different story, and a
+silently chosen one would be read as if it had been asked for. An
+instant past the end of the run is reported as such instead of
+drawing a chart in which everything has ended.
+
+**The `ended` bar.** Objects whose propagation had already finished
+&mdash; impact, stop-class trigger, or simply a shorter window &mdash;
+get their own grey bar rather than disappearing. This is what keeps
+the percentages honest: on a year-long debris run where half the
+fragments have hit the surface, dropping them would compute every
+fraction against a denominator that shrinks as the cloud dies. The
+bars plus `ended` always sum to the propagated population.
 
 **Overlay-safe.** No (single-file aggregate).
