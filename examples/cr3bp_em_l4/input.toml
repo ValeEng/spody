@@ -9,8 +9,11 @@
 # stays at L4 indefinitely (any small perturbation gives bounded
 # epicyclic motion around the point).
 #
-# Validation: |r(t) - r_L4| should stay near zero over the 30-day
-# propagation (up to numerical noise from rel_tol and IC quantisation).
+# Validation: |r(t) - r_L4| stays below 1 um for the whole 30-day
+# propagation (measured max 2.7e-07 m, which is the 9-decimal
+# truncation of the coordinates below, and |v| < 3e-16 km/s). The
+# equilibrium is exact, not approximate: metres of deviation are a
+# regression, not noise.
 # All paths are relative to this TOML file.
 
 [simulation]
@@ -32,18 +35,17 @@ primary_2 = "Moon"
 
 [initial_state]
 # L4 in the synodic frame: ((1/2 - mu) * L, (sqrt(3)/2) * L, 0) with
-# L = 384400 km. The values below were computed with GMAT's mu =
-# 0.012150585609 = 1/(1 + 81.30056), the DE405 Earth-Moon mass ratio;
-# the mu the engine resolves from the GM values above is
-# 0.0121505853505625. The two agree to 8 digits, so the choice of mu
-# moves L4 by 10 cm -- irrelevant here.
+# L = 384400 km and mu = 0.0121505853505625, the mass ratio the engine
+# resolves from the two GM values in the block above.
 #
-# Exact L4 under either mu is (187529.315, 332900.165) km, so the
-# state below sits 35 m off in x and 5 m off in y: that is the "IC
-# quantisation" the header mentions, not a constants mismatch. The
-# offset only adds a small bounded epicycle around the point.
+# Keep every digit. x is (1/2 - mu) * L, so dx = L * dmu: ONE dropped
+# digit of mu displaces L4 by 38 m, and the dynamics then amplify the
+# offset (35 m of initial error grew into a 410 m epicycle over these
+# same 30 days). Rounding the coordinates costs the same way: 2
+# decimals is up to 5 m per component. Recompute both if EARTH_MU or
+# MOON_MU ever change: they are exact for the mu above and nothing else.
 frame        = "synodic_rotating"
-position_km  = [187529.35, 332900.16, 0.0]
+position_km  = [187529.314991244, 332900.165214738, 0.0]
 velocity_kms = [0.0, 0.0, 0.0]
 
 [integrator]

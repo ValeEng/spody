@@ -70,15 +70,8 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   block travels with the output binaries. The `validate` summary also
   gained a `dynamics model` line, printed under either model.
 
-  The bundled `cr3bp_em_l4` example carries the block, and its
-  `[initial_state]` comment now names the mu the engine actually uses
-  (`0.0121505853505625`, from `EARTH_MU` / `MOON_MU`) next to the
-  GMAT / DE405 value its L4 coordinates were computed with
-  (`0.012150585609` = 1/(1 + 81.30056)). The two agree to 8 digits, so
-  they place L4 within 10 cm of each other; the state in the file sits
-  35 m (x) and 5 m (y) from exact L4 under either mu, which is IC
-  quantisation and not a constants mismatch. The initial state itself
-  is unchanged.
+  The bundled `cr3bp_em_l4` example carries the block, and writing it
+  out is what exposed the bug below.
 
 ### Changed
 
@@ -153,6 +146,28 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   initial states within 5e-12 km and 3e-14 m/s of the intended
   offsets; the `high_fidelity` path still writes `_wrt_icrf.csv` with
   identical numbers.
+
+### Fixed
+
+- **`cr3bp_em_l4` now actually starts at L4.** Its initial state was
+  35 m off in x and 5 m off in y, and the dynamics amplified that into
+  a 410 m epicycle (max at day 21) over the 30-day run &mdash; measured
+  against `((1/2 - mu) * L, (sqrt(3)/2) * L, 0)`. The offset was a
+  precision loss in how the state was computed, not a constants
+  mismatch: `x` is reproducible to the digit from `mu` truncated to
+  `0.0121505` (7 significant digits), worth 32.9 m, plus 2.2 m from
+  rounding the coordinate to 2 decimals. Choosing between the GMAT /
+  DE405 mu (`0.012150585609` = 1/(1 + 81.30056)) and the one the engine
+  resolves from `EARTH_MU` / `MOON_MU` (`0.0121505853505625`) accounts
+  for 10 cm of it.
+
+  Because `x = (1/2 - mu) * L`, `dx = L * dmu`: one dropped digit of
+  `mu` displaces L4 by 38 m. With the state written to 9 decimals the
+  deviation from L4 now stays below 1 &micro;m for the whole run
+  (measured max 2.7e-07 m, `|v| < 3e-16 km/s`), so the example is an
+  exact equilibrium test and any metre-scale drift is a regression. Its
+  output binary changes accordingly &mdash; runs archived before this
+  release are not comparable.
 
 ## v0.4.1-beta &mdash; 2026-08-05
 
