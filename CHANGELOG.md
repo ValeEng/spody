@@ -72,9 +72,13 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
   The bundled `cr3bp_em_l4` example carries the block, and its
   `[initial_state]` comment now names the mu the engine actually uses
-  (`0.0121505853505625`, from `EARTH_MU` / `MOON_MU`) alongside the
-  literature value the L4 coordinates were computed with, which sit
-  ~35 m from exact L4. The initial state itself is unchanged.
+  (`0.0121505853505625`, from `EARTH_MU` / `MOON_MU`) next to the
+  GMAT / DE405 value its L4 coordinates were computed with
+  (`0.012150585609` = 1/(1 + 81.30056)). The two agree to 8 digits, so
+  they place L4 within 10 cm of each other; the state in the file sits
+  35 m (x) and 5 m (y) from exact L4 under either mu, which is IC
+  quantisation and not a constants mismatch. The initial state itself
+  is unchanged.
 
 ### Changed
 

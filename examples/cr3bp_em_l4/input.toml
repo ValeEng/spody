@@ -31,12 +31,17 @@ primary_1 = "Earth"
 primary_2 = "Moon"
 
 [initial_state]
-# L4 in the synodic frame: ((1/2 - mu) * L, (sqrt(3)/2) * L, 0)
-# with the literature mu = 0.012150585609 and L = 384400 km. The mu
-# the engine resolves from the GM values above is 0.0121505853505625,
-# which puts exact L4 ~35 m away from the values below -- inside the
-# "IC quantisation" noise this smoke test tolerates (the residual
-# offset just adds a small bounded epicycle around the point).
+# L4 in the synodic frame: ((1/2 - mu) * L, (sqrt(3)/2) * L, 0) with
+# L = 384400 km. The values below were computed with GMAT's mu =
+# 0.012150585609 = 1/(1 + 81.30056), the DE405 Earth-Moon mass ratio;
+# the mu the engine resolves from the GM values above is
+# 0.0121505853505625. The two agree to 8 digits, so the choice of mu
+# moves L4 by 10 cm -- irrelevant here.
+#
+# Exact L4 under either mu is (187529.315, 332900.165) km, so the
+# state below sits 35 m off in x and 5 m off in y: that is the "IC
+# quantisation" the header mentions, not a constants mismatch. The
+# offset only adds a small bounded epicycle around the point.
 frame        = "synodic_rotating"
 position_km  = [187529.35, 332900.16, 0.0]
 velocity_kms = [0.0, 0.0, 0.0]
