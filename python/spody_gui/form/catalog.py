@@ -72,12 +72,10 @@ CR3BP_PAIRS: tuple[tuple[str, str], ...] = (
 # Primary-primary separation (km) for each curated pair. Needed by the
 # Keplerian <-> Cartesian swap in [initial_state] under CR3BP so the
 # GUI can call spopy.inertial_to_synodic without going back to the
-# engine. Read from EARTH_MOON_DISTANCE_KM in spody-core's
-# spody_const.h (via constants.py), the same #define behind the
-# lookup_cr3bp_pair table in src/toml_input.c.
-CR3BP_L_KM: dict[tuple[str, str], float] = {
-    ("Earth", "Moon"): constants.EARTH_MOON_DISTANCE_KM,
-}
+# engine. Single definition in constants.py (the reader of
+# spody_const.h), shared with the [cr3bp] parameter comment the TOML
+# emitter derives in toml_io.py.
+CR3BP_L_KM: dict[tuple[str, str], float] = constants.CR3BP_PAIR_L_KM
 INTEGRATORS      = ("rkdp45",)
 OUTPUT_MODES     = ("fixed", "step")
 THIRD_BODIES_ALL = ("Sun", "Mercury", "Venus", "Earth", "Moon",

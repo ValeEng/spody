@@ -77,6 +77,27 @@ static double now_seconds(void) {
 
 #define SPODY_APP_VERSION "0.4.1-beta"
 
+/* The parameters a CR3BP propagation actually integrates -- the
+ * primary separation L and the two GM values -- are resolved from the
+ * CR3BP_PAIRS / BODY_TABLE tables at load time, so the input TOML
+ * carries only the pair names. Printing them makes the run log (and
+ * the validate summary) the record of what was propagated; mu and the
+ * synodic omega are derived here because that is the form CR3BP
+ * results are quoted in.
+ *
+ * `pad` is the label field width of the caller's block, so the lines
+ * align with whatever banner they are printed inside. */
+static void print_cr3bp_params(const InputConfig *cfg, int pad) {
+    double mu_tot = cfg->cr3bp_mu1 + cfg->cr3bp_mu2;
+    double L3     = cfg->cr3bp_L_km * cfg->cr3bp_L_km * cfg->cr3bp_L_km;
+    spody_log_printf("  %-*s: %s + %s  (L = %.15g km)\n", pad, "cr3bp",
+           cfg->cr3bp_primary_1, cfg->cr3bp_primary_2, cfg->cr3bp_L_km);
+    spody_log_printf("  %-*s: mu1 = %.15g, mu2 = %.15g km^3/s^2\n", pad,
+           "cr3bp GM", cfg->cr3bp_mu1, cfg->cr3bp_mu2);
+    spody_log_printf("  %-*s: %.15g  (omega = %.15g rad/s)\n", pad,
+           "cr3bp mu", cfg->cr3bp_mu2 / mu_tot, sqrt(mu_tot / L3));
+}
+
 /* One-screen summary of a parsed config, printed after a successful validate.
  * Useful as a sanity check that the file says what the user thinks it says. */
 static void print_config_summary(const InputConfig *cfg) {
@@ -85,6 +106,9 @@ static void print_config_summary(const InputConfig *cfg) {
     spody_log_printf("  et_start         : %.6e s past J2000\n", cfg->et_start_s);
     spody_log_printf("  duration         : %.3e s  (%.3f days)\n",
            cfg->duration_s, cfg->duration_s / 86400.0);
+    spody_log_printf("  dynamics model   : %s\n",
+           spody_dynamics_model_name(cfg->dynamics_model));
+    if (cfg->dynamics_model == SPODY_DYN_CR3BP) print_cr3bp_params(cfg, 17);
     spody_log_printf("  central body     : %s\n",
            spody_central_body_name(cfg->central_body));
     spody_log_printf("  harmonics file   : %s  (N=%d%s)\n",
@@ -264,6 +288,7 @@ static int cmd_propagate(int argc, char **argv) {
         spody_log_printf("  (every %.3f s)", cfg.output_interval_s);
     }
     spody_log_printf("\n");
+    if (cfg.dynamics_model == SPODY_DYN_CR3BP) print_cr3bp_params(&cfg, 11);
     if (cfg.csv_file[0]) spody_log_printf("  -> CSV     : %s\n", cfg.csv_file);
     if (cfg.bin_file[0]) spody_log_printf("  -> binary  : %s\n", cfg.bin_file);
     if (cfg.accelerations_file[0])
@@ -441,6 +466,7 @@ static int cmd_batch(int argc, char **argv) {
 #else
     spody_log_printf("  threads   : 1   (no OpenMP)\n");
 #endif
+    if (cfg.dynamics_model == SPODY_DYN_CR3BP) print_cr3bp_params(&cfg, 10);
 
     /* SimulationShared is opened ONCE, reused across every case --
      * exactly what the two-phase setup was designed for. */

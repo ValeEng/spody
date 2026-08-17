@@ -104,6 +104,14 @@ EARTH_MU_KM3_S2  = const("EARTH_MU",      398600.4415)
 # src/toml_input.c, which reads the same #define).
 EARTH_MOON_DISTANCE_KM = const("EARTH_MOON_DISTANCE_KM", 384400.0)
 
+# Separation L [km] per curated CR3BP primary pair. Mirror of the
+# CR3BP_PAIRS table in src/toml_input.c: the engine resolves L from
+# the pair names at load time, so a pair added on one side only is a
+# validate error from the other. Keyed (primary_1, primary_2).
+CR3BP_PAIR_L_KM: dict[tuple[str, str], float] = {
+    ("Earth", "Moon"): EARTH_MOON_DISTANCE_KM,
+}
+
 # Mean radii [km] for every body the engine knows (SPICE pck00011 via
 # spody_const.h). Used for the third-body markers in the 3D scene and
 # any display feature that wants proportionally-scaled bodies.
@@ -118,4 +126,20 @@ BODY_RADIUS_KM: dict[str, float] = {
     "Uranus":  const("URANUS_RADIUS",  25559.0),
     "Neptune": const("NEPTUNE_RADIUS", 24764.0),
     "Sun":     const("SUN_RADIUS",     695700.0),
+}
+
+# GM [km^3/s^2] for the same set -- mirror of the mu column of
+# BODY_TABLE in src/toml_input.c, i.e. the exact values the engine
+# resolves a body name to (CR3BP primaries included).
+BODY_MU_KM3_S2: dict[str, float] = {
+    "Mercury": const("MERCURY_MU", 22032.080486418),
+    "Venus":   const("VENUS_MU",   324858.59882646),
+    "Earth":   EARTH_MU_KM3_S2,
+    "Moon":    MOON_MU_KM3_S2,
+    "Mars":    const("MARS_MU",    42828.314258067),
+    "Jupiter": const("JUPITER_MU", 126712767.85780),
+    "Saturn":  const("SATURN_MU",  37940626.061137),
+    "Uranus":  const("URANUS_MU",  5794549.0070719),
+    "Neptune": const("NEPTUNE_MU", 6836534.0638793),
+    "Sun":     const("SUN_MU",     132712440017.99),
 }

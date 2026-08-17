@@ -30,11 +30,17 @@ covers the value kinds spody uses:
 
 Anything else raises an explicit `ValueError` so a form bug surfaces
 loudly rather than silently producing garbage TOML.
+
+Two comment blocks are emitted on top of the pure key/value body: the
+`notes` round-trip block at the end of the document, and the
+per-section derived-parameter blocks declared in `_SECTION_COMMENTS`
+(today only `[cr3bp]`).
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import tomli
 
@@ -93,6 +99,57 @@ _KEY_ORDER: dict[str, tuple[str, ...]] = {
     # state and reserve the schema for a future engine-side RIC handler.
     "batch":         ("name", "output_dir", "thread_number",
                       "cases_file", "cases_frame", "cases_source_file"),
+}
+
+
+def _cr3bp_comment_lines(sub: dict[str, Any]) -> list[str]:
+    """Derived-parameter block for `[cr3bp]`.
+
+    The numbers a CR3BP run actually integrates -- the primary
+    separation L and the two GM values -- are NOT in the TOML: the
+    engine resolves them from the pair names (`CR3BP_PAIRS` /
+    `BODY_TABLE` in src/toml_input.c). Without this block a saved
+    scenario, and the per-run snapshot the engine copies next to the
+    output binaries, would carry no record of what was propagated.
+
+    Re-derived from `constants` (the single reader of spody_const.h)
+    at every emit, so the values can never drift from the engine's;
+    they are the same ones `spody propagate` prints in its banner.
+    Returns [] for an unknown body or an unregistered pair -- the
+    engine rejects those at load time anyway.
+    """
+    from .constants import BODY_MU_KM3_S2, CR3BP_PAIR_L_KM
+
+    p1, p2 = sub.get("primary_1"), sub.get("primary_2")
+    sep_km = CR3BP_PAIR_L_KM.get((p1, p2))
+    mu1 = BODY_MU_KM3_S2.get(p1)
+    mu2 = BODY_MU_KM3_S2.get(p2)
+    if sep_km is None or mu1 is None or mu2 is None:
+        return []
+    mu = mu2 / (mu1 + mu2)
+    omega = math.sqrt((mu1 + mu2) / sep_km ** 3)
+    return [
+        "# Engine-resolved parameters of the pair below (CR3BP_PAIRS /",
+        "# BODY_TABLE in src/toml_input.c); informational, re-derived on save.",
+        # 15 significant digits: enough to reproduce every value bit
+        # for bit at double precision, and the same `%.15g` the engine
+        # banner uses, so the two records read identically.
+        f"#   L   = {sep_km:.15g} km        (primary separation)",
+        f"#   mu1 = {mu1:.15g} km^3/s^2   ({p1})",
+        f"#   mu2 = {mu2:.15g} km^3/s^2   ({p2})",
+        f"#   mu  = mu2/(mu1+mu2)       = {mu:.15g}",
+        f"#   om  = sqrt((mu1+mu2)/L^3) = {omega:.15g} rad/s"
+        f"   (T = {2.0 * math.pi / omega / 86400.0:.6g} d)",
+    ]
+
+
+# Sections that get a derived-parameter comment block right under
+# their header. Each provider takes the section's own dict and returns
+# already-`#`-prefixed lines (or [] to emit nothing). Keyed by full
+# section name, so a `[parent.child]` sub-table can register its own
+# block without colliding with the parent's.
+_SECTION_COMMENTS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
+    "cr3bp": _cr3bp_comment_lines,
 }
 
 
@@ -206,8 +263,10 @@ def _format_document(data: dict[str, Any]) -> str:
 
 
 def _format_section(name: str, sub: dict[str, Any]) -> str:
-    """A `[section]` header followed by its scalar key lines, followed
-    by any `[section.child]` sub-tables emitted as separate sections."""
+    """A `[section]` header, its derived-parameter comment block (when
+    the section has a `_SECTION_COMMENTS` provider), its scalar key
+    lines, then any `[section.child]` sub-tables as separate
+    sections."""
     # Split scalar values from sub-table dicts so the latter are
     # emitted with their own header AFTER the scalar lines.
     scalars: dict[str, Any] = {}
@@ -219,6 +278,9 @@ def _format_section(name: str, sub: dict[str, Any]) -> str:
             scalars[k] = v
 
     out: list[str] = [f"[{name}]"]
+    provider = _SECTION_COMMENTS.get(name)
+    if provider is not None:
+        out.extend(provider(scalars))
     for k in _ordered_keys(name, scalars.keys()):
         out.append(f"{k} = {_format_value(scalars[k])}")
 
