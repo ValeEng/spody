@@ -79,6 +79,22 @@ primaries' GM values come from the same central-body registry the
 HF propagator uses, so the constants stay consistent across
 dynamics models.
 
+Because the pair names are all the file carries, the numbers a CR3BP
+run actually integrates would otherwise leave no trace in the
+scenario. They are recorded in two places:
+
+- the form writes a **comment block** under `[cr3bp]` whenever it
+  saves a TOML &mdash; `L`, the two GM values, the mass ratio `mu` and
+  the synodic `omega` (with its period), re-derived from the pair on
+  every save. It is a comment: the engine ignores it and re-resolves
+  the values from its own tables, so editing it changes nothing and it
+  can never go stale. The per-run snapshot the engine copies into
+  `output/<timestamp>/` is a byte-for-byte copy of the input, so the
+  block travels with the results;
+- `spody propagate`, `spody batch` and `spody validate` print the same
+  values in their opening block (manual ch. 12), which puts them in
+  the run log of hand-written TOMLs too.
+
 State is in **dimensional km / km/s** in the synodic rotating
 frame: x along the line from primary 1 to primary 2 (positive
 toward primary 2), z along the rotation axis, y completes the

@@ -181,7 +181,23 @@ backward-compatible.
   - `analysis_panel.py` (one level up) keeps only the widget + file
     plumbing.
 - `spody_gui/constants.py` — the **single reading point** for
-  `spody_const.h` (see §4.3/§4.4).
+  `spody_const.h` (see §4.3/§4.4). Also holds the name-keyed mirrors
+  of the engine's `BODY_TABLE` (`BODY_RADIUS_KM`, `BODY_MU_KM3_S2`)
+  and of `CR3BP_PAIRS` (`CR3BP_PAIR_L_KM`) — one definition each,
+  re-exported where the form needs them (`catalog.CR3BP_L_KM`).
+- `spody_gui/toml_io.py` — `tomli` reader + the canonical, schema-aware
+  emitter (`_SECTION_ORDER`, `_KEY_ORDER`). It writes two kinds of
+  comment on top of the key/value body: the marker-delimited `notes`
+  block at the end of the document (the only one that round-trips back
+  into the form), and the **derived-parameter blocks** declared in
+  `_SECTION_COMMENTS` — a provider per section name, taking the
+  section's own dict and returning `#`-prefixed lines. Use one when a
+  section's values are names the engine resolves into numbers that
+  would otherwise leave no trace in the file (`[cr3bp]` today: `L`,
+  `mu1`, `mu2`, `mu`, `omega`). Rules: derive from `constants` only, so
+  the block is recomputed at every save and cannot go stale; return
+  `[]` rather than guessing when anything is unresolvable; keep it
+  informational — nothing may read it back.
 - `spody_gui/runner.py` — spawns `spody.exe` with the scenario root
   as CWD (Windows MAX_PATH defence), streams output to the terminal
   pane.
@@ -918,7 +934,7 @@ this guide.
 
 ### 5.7 New CR3BP primary pair
 
-**Files:** `spody_const.h`, `src/toml_input.c`,
+**Files:** `spody_const.h`, `src/toml_input.c`, `constants.py`,
 `form/catalog.py`.
 
 1. Separation constant `<PAIR>_DISTANCE_KM` in `spody_const.h`
@@ -928,8 +944,9 @@ this guide.
    message that lists the known ones — your row updates that
    message for free).
 3. Mirror tuple in `CR3BP_PAIRS` in `form/catalog.py` for the combo,
-   plus its separation in `CR3BP_L_KM` right below (same constant as
-   step 1, read through `constants.py`).
+   plus its separation in `constants.CR3BP_PAIR_L_KM` (same constant
+   as step 1; `catalog.CR3BP_L_KM` is an alias of that dict, do not
+   re-declare the pair there).
 4. The two lists must stay in lockstep — grep both names whenever
    touching either.
 5. Free riders — check, don't code: the Keplerian↔Cartesian swap and
@@ -941,11 +958,19 @@ this guide.
    registered central bodies with `naif_id` + `mu_km3_s2`
    (recipe 5.6) and the ephemeris actually covers the pair
    (`spopy.Ephemeris.position` must resolve both NAIF ids).
+6. Also free riders, and these need no central-body registration —
+   the run-record blocks (`print_cr3bp_params` in `src/main.c`, the
+   `[cr3bp]` comment provider in `toml_io.py`, §1.3). They resolve
+   GM by name from `BODY_TABLE` / `constants.BODY_MU_KM3_S2`, so a
+   pair of ordinary third bodies works; check the emitted comment
+   actually appears (a missing GM entry silently drops the block).
 
 **Verify:** a CR3BP run with the new pair (`cr3bp_em_l4` is the
 template scenario); the synodic 3D view shows both primaries at the
 right separation; a From CR3BP... conversion round-trips a state of
-the new pair. **Document:** manual ch. 6; CHANGELOG.
+the new pair; the propagate banner and the saved TOML's `[cr3bp]`
+comment agree on `L` / `mu1` / `mu2`. **Document:** manual ch. 6;
+CHANGELOG.
 
 ### 5.8 New batch override target
 

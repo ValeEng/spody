@@ -216,7 +216,13 @@ Ordered roughly by what unlocks the most for users.
 - [x] **Two dynamics models**: `high_fidelity` (full force-model
       integrator) and `cr3bp` (Circular Restricted 3-Body Problem
       in synodic rotating frame, today's curated pair is Earth-Moon
-      via the `[cr3bp]` section)
+      via the `[cr3bp]` section). A CR3BP scenario names its primary
+      pair and nothing else, so the parameters it is actually
+      integrated with are recorded twice: the engine prints them
+      (`L`, `mu1`, `mu2`, `mu`, synodic `omega`) in the
+      propagate / batch / validate banner, and the GUI writes the
+      same block as a comment under `[cr3bp]`, re-derived at every
+      save so it cannot go stale
 - [x] **Two initial-state flavours**: Cartesian (the legacy
       `[initial_state].position_km` + `velocity_kms`) and Keplerian
       (six classical elements + `reference_body` selector;

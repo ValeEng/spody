@@ -54,6 +54,28 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   population rather than of a denominator that shrinks as a debris
   cloud dies.
 
+- **CR3BP runs now record the parameters they were integrated with.**
+  A CR3BP scenario names its primary pair and nothing else &mdash; the
+  separation `L` and the two GM values are resolved from the engine's
+  tables at load time &mdash; so neither a saved TOML nor a run folder
+  said which numbers produced the trajectory. `spody propagate`,
+  `spody batch` and `spody validate` now print `L`, `mu1`, `mu2`, the
+  mass ratio `mu` and the synodic `omega` in their opening block at 15
+  significant digits, and the form writes the same values as a comment
+  block under `[cr3bp]` in every TOML it saves.
+
+  The comment is re-derived from `spody_const.h` on every save and is
+  never read back, so it cannot drift from what the engine resolves;
+  since the per-run snapshot is a byte-for-byte copy of the input, the
+  block travels with the output binaries. The `validate` summary also
+  gained a `dynamics model` line, printed under either model.
+
+  The bundled `cr3bp_em_l4` example carries the block, and its
+  `[initial_state]` comment now names the mu the engine actually uses
+  (`0.0121505853505625`, from `EARTH_MU` / `MOON_MU`) alongside the
+  literature value the L4 coordinates were computed with, which sit
+  ~35 m from exact L4. The initial state itself is unchanged.
+
 ### Changed
 
 - Events `.bin` files are two records per object per body longer than

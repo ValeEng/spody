@@ -77,6 +77,25 @@ diagnostics to stdout, with errors on stderr. The GUI streams
 this into the terminal pane; on the command line you see it in
 your shell.
 
+**CR3BP parameter block.** Under `dynamics_model = "cr3bp"` the
+opening block gains the three lines below (`spody batch` and
+`spody validate` print them too). The input TOML names the primary
+pair and nothing else &mdash; separation and GM values come from the
+engine's tables &mdash; so this is what pins down the model a given
+log belongs to:
+
+```
+  cr3bp      : Earth + Moon  (L = 384400 km)
+  cr3bp GM   : mu1 = 398600.4415, mu2 = 4902.8005821478 km^3/s^2
+  cr3bp mu   : 0.0121505853505625  (omega = 2.66531440062302e-06 rad/s)
+```
+
+`mu = mu2 / (mu1 + mu2)` and `omega = sqrt((mu1 + mu2) / L^3)` are
+derived from the three resolved values, printed at 15 significant
+digits. Enable `output.log_file` to keep them next to the results;
+the form additionally writes the same values as a comment under
+`[cr3bp]` in the TOML it saves (ch. 6).
+
 **Cost report.** The run ends with two lines: the time it took, and
 what the integrator actually did.
 
