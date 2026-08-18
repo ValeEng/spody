@@ -36,6 +36,7 @@ Run from this directory:
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -49,10 +50,21 @@ STYLE    = HERE / "style.css"
 HTML_OUT = HERE / "spody-user-manual.html"
 PDF_OUT  = HERE / "spody-user-manual.pdf"
 
-# Hardcoded version label shown on the cover. Kept in sync with
-# spody_gui/__init__.py:__version__ by convention; touched once per
-# release.
-APP_VERSION = "0.4.1-beta"
+# Version label shown on the cover, READ from the GUI package instead
+# of kept as a second copy here. It used to be a hand-synced constant
+# and went stale for two releases -- the cover claimed v0.2.0-beta
+# while the app was at 0.4.1-beta -- so the duplicate is gone and
+# `spody_gui.__version__` is the only place a release bumps it.
+#
+# Parsed, not imported: this script runs from a bare interpreter (and
+# from any working directory) during the release bundle build, long
+# before spody_gui is importable.
+VERSION_FILE = HERE.parent.parent / "python" / "spody_gui" / "__init__.py"
+version_match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']',
+                          VERSION_FILE.read_text(encoding="utf-8"), re.M)
+if not version_match:
+    sys.exit("build_pdf: no __version__ found in %s" % VERSION_FILE)
+APP_VERSION = version_match.group(1)
 
 # Candidates for a Chromium-class browser, queried in order. The
 # print-to-PDF flag (`--print-to-pdf`) is identical across Edge,

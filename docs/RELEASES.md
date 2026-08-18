@@ -21,7 +21,7 @@ pipeline. Tags whose suffix is `-alpha` / `-beta` / `-rc` are
 automatically marked as **pre-release** in GitHub's UI so they do
 not promote past the "Latest" badge.
 
-The runtime version label lives in **four code files** that must be
+The runtime version label lives in **three code files** that must be
 touched in lockstep before tagging:
 
 | File                                           | Constant            |
@@ -29,10 +29,16 @@ touched in lockstep before tagging:
 | `src/main.c`                                   | `SPODY_APP_VERSION` |
 | `python/spody_gui/__init__.py`                 | `__version__`       |
 | `python/pyproject.toml`                        | `version`           |
-| `docs/user-manual/build_pdf.py`                | `APP_VERSION`       |
 
 `pyproject.toml` follows PEP 440 syntax (`0.1.1b0`, `0.1.1rc1`),
 the others follow plain semver (`0.1.1-beta`, `0.1.1-rc1`).
+
+`docs/user-manual/build_pdf.py` used to be a fourth entry here and is
+not one any more: it reads `spody_gui.__version__` for the manual
+cover. It held a hand-synced copy that nobody bumped for two releases,
+so the manual published on GitHub announced v0.2.0-beta while the app
+was at 0.4.1-beta. Anything else that needs the version at build time
+should read it the same way rather than join this table.
 
 Two further docs carry the version as cosmetic text and should be
 refreshed in the same commit so the published artifacts agree:
@@ -47,7 +53,7 @@ docstring is for code-reading humans only.
 
 ## Cutting a release
 
-1. **Update the version constants** in the four files above; commit:
+1. **Update the version constants** in the three files above; commit:
 
    ```sh
    git commit -am "release: bump to v0.1.3-beta"
