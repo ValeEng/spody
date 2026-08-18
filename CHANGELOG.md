@@ -169,6 +169,16 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   output binary changes accordingly &mdash; runs archived before this
   release are not comparable.
 
+- **The user-manual cover announced a two-release-old version.**
+  `build_pdf.py` holds the version as its own hardcoded `APP_VERSION`,
+  kept in step with the others "by convention", and it had been left
+  at `0.2.0-beta` while every constant `docs/RELEASES.md` lists moved
+  on to `0.4.1-beta`. The cover of the tracked PDF &mdash; the copy
+  read from GitHub, and the one no automated step regenerates &mdash;
+  therefore claimed v0.2.0-beta. Only the label was affected: the
+  chapters were current as of the last rebuild, and the PDF is back at
+  110 pages with the right version on the cover.
+
 ## v0.4.1-beta &mdash; 2026-08-05
 
 ### Added
