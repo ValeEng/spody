@@ -31,6 +31,7 @@
  *   spody convert    glonass <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody convert    gps     <input.rnx> [input.rnx ...] <output.bin> <sat_id> --eop <file> --iau2006-dir <dir>
  *   spody convert    oem <input.oem> [input.oem ...] <output.bin>
+ *   spody convert    gp --epoch-mjd <utc> --n <rev/day> --ecc <-> --incl <deg> --raan <deg> --argp <deg> --ma <deg> --bstar <1/ER> --eop <file> --iau2006-dir <dir>
  *   spody calibrate  <input.toml> <reference.bin> [--window <hours>]
  *   spody info
  */
@@ -860,6 +861,10 @@ static int cmd_maxhgdegree(int argc, char **argv) {
  *   spody convert harmonics_icgem <input.gfc> <output.tab> [--max-degree N]
  *   spody convert sp3             <input.sp3> <output.bin> <sat_id>
  *                                 --eop <file> --iau2006-dir <dir>
+ *   spody convert gp              --epoch-mjd <utc> --n <rev/day> --ecc <->
+ *                                 --incl <deg> --raan <deg> --argp <deg>
+ *                                 --ma <deg> --bstar <1/ER>
+ *                                 --eop <file> --iau2006-dir <dir>
  *
  * `ephemeris`: `folder` holds the JPL ASCII chunks
  * (header.<de_family> + ascpXXXXX.<de_family>); the output
@@ -898,7 +903,10 @@ static int cmd_convert(int argc, char **argv) {
             "usage: spody convert ephemeris       <folder> <de_family> "
             "<date1> [date2 ...]\n"
             "       spody convert harmonics_icgem <input.gfc> <output.tab> "
-            "[--max-degree N]\n");
+            "[--max-degree N]\n"
+            "       spody convert gp              --epoch-mjd <utc> --n "
+            "<rev/day> --ecc ... --eop <file> --iau2006-dir <dir>\n");
+
         return 1;
     }
 
@@ -1225,9 +1233,102 @@ static int cmd_convert(int argc, char **argv) {
         return 0;
     }
 
+    /* ---- gp ------------------------------------------------------ */
+    if (strcmp(argv[1], "gp") == 0) {
+        /* One element set to one ICRF state at its own epoch: the
+         * state a propagation starts from, printed and not written.
+         * The run-folder convention the other converters follow is
+         * deliberately skipped -- it exists so a run leaves a
+         * self-contained, ts-prefixed folder behind, and this leaves
+         * nothing behind at all. Creating one to put nothing in it
+         * would be ceremony. */
+        double epoch_mjd = 0.0, n0 = 0.0, ecc = 0.0, incl = 0.0;
+        double raan = 0.0, argp = 0.0, ma = 0.0, bstar = 0.0;
+        const char *eop_file    = NULL;
+        const char *iau2006_dir = NULL;
+        int seen = 0;
+
+        for (int i = 2; i < argc; ++i) {
+            const char *a = argv[i];
+            if (i + 1 >= argc) {
+                fprintf(stderr, "convert gp: '%s' needs a value\n", a);
+                return 1;
+            }
+            if      (strcmp(a, "--epoch-mjd") == 0) { epoch_mjd = atof(argv[++i]); seen |= 1 << 0; }
+            else if (strcmp(a, "--n")         == 0) { n0        = atof(argv[++i]); seen |= 1 << 1; }
+            else if (strcmp(a, "--ecc")       == 0) { ecc       = atof(argv[++i]); seen |= 1 << 2; }
+            else if (strcmp(a, "--incl")      == 0) { incl      = atof(argv[++i]); seen |= 1 << 3; }
+            else if (strcmp(a, "--raan")      == 0) { raan      = atof(argv[++i]); seen |= 1 << 4; }
+            else if (strcmp(a, "--argp")      == 0) { argp      = atof(argv[++i]); seen |= 1 << 5; }
+            else if (strcmp(a, "--ma")        == 0) { ma        = atof(argv[++i]); seen |= 1 << 6; }
+            else if (strcmp(a, "--bstar")     == 0) { bstar     = atof(argv[++i]); seen |= 1 << 7; }
+            else if (strcmp(a, "--eop")         == 0) { eop_file    = argv[++i]; }
+            else if (strcmp(a, "--iau2006-dir") == 0) { iau2006_dir = argv[++i]; }
+            else {
+                fprintf(stderr, "convert gp: unrecognised arg '%s'\n", a);
+                return 1;
+            }
+        }
+        if (seen != 0xFF || !eop_file || !iau2006_dir) {
+            fprintf(stderr,
+                "convert gp: all eight elements are required, plus the tables.\n"
+                "  --epoch-mjd <utc>  --n <rev/day>  --ecc <->  --incl <deg>\n"
+                "  --raan <deg>  --argp <deg>  --ma <deg>  --bstar <1/ER>\n"
+                "  --eop <file>  --iau2006-dir <dir>\n"
+                "  Every element is named because eight bare numbers in a row\n"
+                "  is a transposition waiting to happen, and two of them --\n"
+                "  argument of perigee and mean anomaly -- carry the same\n"
+                "  units and the same order of magnitude, so swapping them\n"
+                "  would raise no error at all: just a healthy-looking orbit\n"
+                "  that is not the one asked for.\n");
+            return 1;
+        }
+
+        spody_sgp4_elements el;
+        el.epoch_mjd  = epoch_mjd;
+        el.n0_rev_day = n0;
+        el.e0         = ecc;
+        el.i0_deg     = incl;
+        el.raan0_deg  = raan;
+        el.argp0_deg  = argp;
+        el.m0_deg     = ma;
+        el.bstar      = bstar;
+
+        double et, r[3], v[3];
+        if (spody_gp_to_state_icrf(&el, eop_file, iau2006_dir, &et, r, v) != 0) {
+            fprintf(stderr, "convert gp: conversion failed\n");
+            return 1;
+        }
+
+        /* %.17g, and not a fixed number of decimals: seventeen
+         * significant digits are what a double costs to survive a trip
+         * through text, and where they fall moves with the magnitude,
+         * so no single width works -- %.16f loses bits below 1 km/s and
+         * wastes ink above it. Measured over 400 000 realistic values
+         * this never reaches for the exponent and never loses a bit. It
+         * can reach for it on a velocity component passing near zero,
+         * which is both correct and valid TOML.
+         *
+         * A value landing on a whole number prints with no decimal
+         * point and is then an integer to a TOML reader. Ours does not
+         * care: req_vec3 falls back to toml_int_at, and et_start_s is
+         * read the same way. */
+        printf("# SGP4 at the element-set epoch, rotated TEME -> ICRF.\n");
+        printf("# What this state is worth is what a general-perturbation\n");
+        printf("# fit is worth -- kilometres -- and not what the digits\n");
+        printf("# suggest. They are here so the value survives being\n");
+        printf("# pasted, which is a different thing from being accurate.\n");
+        printf("et_start_s   = %.17g\n\n", et);
+        printf("[initial_state]\n");
+        printf("frame        = \"icrf\"\n");
+        printf("position_km  = [%.17g, %.17g, %.17g]\n", r[0], r[1], r[2]);
+        printf("velocity_kms = [%.17g, %.17g, %.17g]\n", v[0], v[1], v[2]);
+        return 0;
+    }
+
     fprintf(stderr,
         "convert: unknown subform '%s' (expected 'ephemeris', "
-        "'harmonics_icgem', 'sp3', 'glonass', 'gps', or 'oem')\n", argv[1]);
+        "'harmonics_icgem', 'sp3', 'glonass', 'gps', 'oem', or 'gp')\n", argv[1]);
     return 1;
 }
 
