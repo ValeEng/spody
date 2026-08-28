@@ -165,7 +165,7 @@ Commands:
   validate    <input.toml>                check input file (no run)
   convert     <kind> <args...>            convert external formats
                                           (ephemeris | harmonics_icgem |
-                                          sp3 | glonass | gps | oem)
+                                          sp3 | glonass | gps | oem | gp)
   calibrate   <input.toml> <ref.bin> [--window <hours>]
                                           fit the drag density-scale k(t)
   info                                    print version + capabilities
@@ -242,7 +242,10 @@ Ordered roughly by what unlocks the most for users.
       reference binary, multi-file concat), `glonass` /
       `gps` (RINEX-NAV broadcast → SpOdy reference binary, multi-
       file), `oem` (CCSDS OEM text → SpOdy reference binary,
-      multi-file, overlap-deduplicated)
+      multi-file, overlap-deduplicated),
+      `gp` (general-perturbation mean elements &rarr; the ICRF state
+      a propagation starts from, printed as a pasteable
+      `[initial_state]` block)
 - [x] `spody calibrate` — engine-side fit of the drag
       density-scale `k(t)` node table against a full-state
       reference (sliding windows, drag on/off arc pairs, in-track

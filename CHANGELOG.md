@@ -8,6 +8,30 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **`spody convert gp` &mdash; general-perturbation elements to the
+  ICRF state a propagation starts from.** Eight mean elements in, the
+  six numbers of an `[initial_state]` block out, printed rather than
+  written: it is the only `convert` sub-command that leaves no file
+  behind, and it behaves like `help`.
+
+  The elements in a TLE or an OMM are *mean* elements of the SGP4
+  theory, so handing them to a numerical integrator is a physical
+  error and not an approximation. The theory has to be run first, and
+  it answers in TEME &mdash; a frame nothing else in SpOdy speaks.
+  This runs it and rotates the answer.
+
+  What comes out is exact where it can be and honest about where it
+  cannot: the rotation agrees with three independent implementations
+  to centimetres and the propagator is bit-identical to the published
+  reference vectors, while the state itself carries the kilometre-level
+  accuracy of the fit it came from. The output says so in its own
+  comment header, because seventeen printed digits invite the opposite
+  conclusion.
+
+  Requires the engine to be built with the SGP4 module (spody-core
+  `e129d60` or later) and the IERS EOP plus IAU 2006 tables the other
+  frame-aware converters already need.
+
 - **Per-object life markers in the events log
   (`INITIAL_STATE` / `FINAL_STATE`).** Every propagated object now
   writes one record at `t = 0` and one at whatever ended its run

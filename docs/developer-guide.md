@@ -1111,6 +1111,15 @@ Checklist, in order:
    convention: `spody_io_make_run_subdir` +
    `spody_io_run_subdir_filepath` + TOML snapshot, so every run is
    self-contained and ts-prefixed.
+4b. **A converter that prints instead of writing skips the
+    run-folder convention.** `convert gp` is the first: it emits an
+    `[initial_state]` block on stdout and leaves nothing behind, so
+    `spody_io_make_run_subdir` would create a directory to put
+    nothing in it. It behaves like `help`. The convention exists so a
+    run is reproducible from the folder it left; where there is no
+    artefact there is nothing to reproduce, and the ceremony is only
+    ceremony. Say so in the file, or the next reader will file it as
+    an oversight.
 5. **Verify** with an independent oracle, not self-consistency: the
    OEM converter was cross-checked field-by-field (bitwise states,
    0.0 time axis) against a separate Python parse via

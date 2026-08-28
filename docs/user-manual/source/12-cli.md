@@ -158,14 +158,16 @@ CPU count.
 
 ## `spody convert`
 
-The umbrella command for data-file conversions. Five sub-commands
+The umbrella command for data-file conversions. Seven sub-commands
 are implemented today: planetary ephemeris (`ephemeris`), ICGEM
 spherical-harmonic gravity coefficients (`harmonics_icgem`), IGS
 SP3 precise orbits (`sp3`), RINEX-NAV GLONASS broadcast (`glonass`),
-and RINEX-NAV GPS broadcast (`gps`). The first two are the
-conversions the setup wizard triggers automatically; the last
-three produce reference binaries used in the diff-validation
-workflow (chapter 11).
+RINEX-NAV GPS broadcast (`gps`), CCSDS OEM text ephemerides (`oem`),
+and general-perturbation mean elements (`gp`). The first two are the
+conversions the setup wizard triggers automatically; the four after
+them produce reference binaries used in the diff-validation workflow
+(chapter 11); `gp` is the odd one out and writes no file at all &mdash;
+it prints the initial state a propagation starts from.
 
 ### `spody convert ephemeris`
 
@@ -469,6 +471,75 @@ and the number of skipped overlapping records.
   inputs).
 - `1` &mdash; missing file, parse error, frame-rotation setup
   failure, or write failure.
+
+### `spody convert gp`
+
+```
+spody.exe convert gp --epoch-mjd <utc> --n <rev/day> --ecc <-> --incl <deg>
+                     --raan <deg> --argp <deg> --ma <deg> --bstar <1/ER>
+                     --eop <file> --iau2006-dir <dir>
+```
+
+Takes one general-perturbation element set &mdash; the eight mean
+elements a TLE or an OMM carries &mdash; and prints the ICRF state at
+its epoch, in the shape of the `[initial_state]` block it is about to
+become.
+
+This is the only `convert` sub-command that writes no file. It behaves
+like `help`: everything goes to stdout, so it can be redirected,
+piped, or read and pasted.
+
+**Why it is needed at all.** The elements in a TLE are *mean* elements
+of the SGP4 theory, not a state. Handing them to a numerical
+integrator is a physical error rather than an approximation: the
+theory has to be run first, and it answers in TEME, which nothing else
+in SpOdy speaks. This command runs it and rotates the answer.
+
+**What the answer is worth.** The rotation is exact to centimetres and
+the propagator matches the published reference vectors bit for bit,
+and neither of those is the accuracy of the state. A GP element set is
+a fit, worth kilometres, and no amount of arithmetic downstream makes
+it better. The seventeen digits printed are what it costs to move a
+number through a text file unchanged, not a claim about how well the
+satellite is known. The output says so in a comment header, on
+purpose.
+
+**Why every element is a named flag.** Eight bare numbers in a row is
+a transposition waiting to happen, and two of them &mdash; argument of
+perigee and mean anomaly &mdash; carry the same units and the same
+order of magnitude. Swapping those two raises no error anywhere: it
+produces a healthy-looking orbit that is not the one asked for.
+
+**Example.**
+
+```powershell
+spody.exe convert gp --epoch-mjd 53841.745032470 --n 15.72125391 `
+                    --ecc 0.0006703 --incl 51.6416 --raan 247.4627 `
+                    --argp 130.5360 --ma 325.0288 --bstar 1.0e-4 `
+                    --eop .\data\eop\finals2000A.all `
+                    --iau2006-dir .\data\iau2006
+```
+
+```
+# SGP4 at the element-set epoch, rotated TEME -> ICRF.
+# What this state is worth is what a general-perturbation
+# fit is worth -- kilometres -- and not what the digits
+# suggest. They are here so the value survives being
+# pasted, which is a different thing from being accurate.
+et_start_s   = 198482035.99104285
+
+[initial_state]
+frame        = "icrf"
+position_km  = [4085.6826275667108, -999.13905635608523, 5241.1698975079889]
+velocity_kms = [2.5226906524348545, 7.2563208512806634, -0.58563608337435047]
+```
+
+**Exit codes.**
+
+- `0` &mdash; conversion succeeded.
+- `1` &mdash; an element or a table path is missing, an unknown flag
+  was given, the element set was rejected by SGP4, or the EOP / IAU
+  2006 tables could not be read.
 
 ## `spody calibrate`
 
