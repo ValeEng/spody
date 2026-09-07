@@ -198,6 +198,20 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Fixed
 
+- **No trajectory sample past an impact.** The driver drained the
+  fixed output grid up to the end of the accepted step and checked the
+  events afterwards, so a step that contained the impact could leave
+  one grid sample inside the body &mdash; up to 2 km below the surface
+  in `debris_impact_demo` &mdash; followed by the impact record at an
+  earlier time, and the file's time axis ran backwards on its last two
+  records. In `step` mode the file simply ended on the step-end state
+  inside the body, with no impact record at all. Events are now
+  checked before the grid is drained, the drain stops strictly before
+  the trigger, and both modes close on the trigger state at its own
+  time: time is strictly increasing in every file, and the last record
+  is always the physical end of the run. Runs that do not end on an
+  event are byte-identical.
+
 - **Event localisation ran as a bisection.** `spody_solver_brent`, the
   root finder behind every refined IMPACT / ECLIPSE / ALT_CROSSING
   trigger, found the right instant every time and took 42 residual

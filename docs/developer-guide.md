@@ -1705,6 +1705,18 @@ Each entry: the rule, and the symptom you'll see if you break it.
   duration_s)` has to extend or repeat that check. *Symptom of
   breakage: `spody.exe` exits with `0xC0000005` and an empty output
   file instead of an error message.*
+- **Nothing later than the trigger goes into the output.** Both
+  stepping loops in `sim_run.c` check the events *before* they write
+  anything for the step: a stop-class trigger caps the fixed-grid
+  drain strictly below `t_trigger`, and in step mode replaces the
+  step-end record. The last record of a run that ended on an event is
+  that event's state at its own time, off the grid, and time is
+  strictly increasing in every trajectory and accelerations file. A
+  new emit path (another writer, another output mode) has to keep
+  that order. *Symptom of breakage: a sample inside the body just
+  before the impact record, or a file whose last two records run
+  backwards in time — invisible to every accuracy check, visible to
+  anyone who sorts by `t`.*
 - **Wire formats are append-only** (§1.2): readers in the wild parse
   old files. *Symptom: `spody_io` exceptions on historical runs.*
 

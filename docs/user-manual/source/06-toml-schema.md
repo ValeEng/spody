@@ -489,7 +489,7 @@ cadence. Required.
 
 | Key                    | Type          | Default | Range   | Description |
 |------------------------|---------------|---------|---------|-------------|
-| `mode`                 | string        | &mdash; | `fixed` or `step` | Output cadence. `fixed` writes records on a uniform grid (`interval_s`); `step` writes one record per accepted RKDP step. |
+| `mode`                 | string        | &mdash; | `fixed` or `step` | Output cadence. `fixed` writes records on a uniform grid (`interval_s`); `step` writes one record per accepted RKDP step. In both modes a run that ends on an impact (or a stop-class altitude crossing) closes on the trigger state at its own time, off the grid, and writes nothing later than it: time is strictly increasing in every file. |
 | `interval_s`           | float         | &mdash; | `> 0`   | Sampling interval in seconds when `mode = "fixed"`. Ignored otherwise. |
 | `csv_file`             | string (path) | none    | &ndash; | CSV trajectory output. Empty/absent = no CSV produced. |
 | `bin_file`             | string (path) | none    | &ndash; | Binary (`SPDYOUT_`) trajectory output. Recommended for analysis: the GUI's reader path uses this format. |
