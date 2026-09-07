@@ -26,6 +26,12 @@
  *     spody_dense_eval.
  *   - SPODY_OUT_STEP : emit one record per accepted integrator step
  *     plus the initial state at t = 0.
+ *   - Either mode, when a stop-class event (impact, stop altitude
+ *     crossing) ends the run: the last record is the trigger state at
+ *     its own time, off the grid, and nothing later than it is
+ *     written -- no grid sample past the trigger in fixed mode, no
+ *     step-end state inside the body in step mode. Time is therefore
+ *     strictly increasing in every file.
  *
  * Output formats
  *   CSV : a header line followed by `%.15e`-formatted comma-separated

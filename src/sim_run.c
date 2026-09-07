@@ -24,17 +24,26 @@
  *   while (integ.t < t_end):
  *       clip integ.h to land on t_end if it would overshoot
  *       onestep
- *       while t_next <= integ.t:
+ *       event_check(refined) on every configured event
+ *       while t_next <= integ.t (and t_next < t_trigger if one fired):
  *           y_q = hermite(integ, t_next)
  *           emit_traj  (t_next, y_q)
  *           emit_accel (t_next, y_q)      -- if accelerations enabled
  *           t_next += dt
- *       impact_check(refined) on central + every third body
- *       if any event triggered -> log + STOP
+ *       if a stop-class event fired -> emit_traj (t_trigger, y_trigger)
+ *                                      + STOP
+ *
+ * The events are checked BEFORE the grid is drained: a stop-class
+ * trigger inside the step caps the drain, so the file never carries a
+ * grid sample past the impact -- a state inside the body, later than
+ * the trigger record that closes the file. The last record of a run
+ * that ended on an event is that event's state, at its own time, off
+ * the grid.
  *
  * Step mode skips the dense-output drain: emit_traj / emit_accel run
- * once per accepted step on integ.y, the impact check runs on the same
- * state.
+ * once per accepted step on integ.y, after the event check, and a step
+ * that contained a stop-class trigger is closed on the trigger state
+ * instead of its own end, which lies inside the body.
  *
  * IMPACT predicate uses the per-thread ephemeris cache built into
  * spody_get_ephposition: the integrator's last RHS stage (FSAL, c=1.0)
@@ -621,9 +630,27 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 rc = SPODY_ERR_INTERNAL; goto cleanup;
             }
 
+            /* Events first: a stop-class trigger inside this step caps
+             * the grid drain below, so no sample past the impact -- a
+             * state inside the body, later than the record that closes
+             * the file -- is ever written. */
+            int first = -1;
+            int ev_rc = check_events(events, n_events, &w->ctx, &w->integ,
+                                      evt, batch_sink, &first);
+            if (ev_rc < 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "events_log write failed at t=%.6g s", w->integ.t);
+                rc = SPODY_ERR_IO; goto cleanup;
+            }
+            const double t_stop = (ev_rc > 0) ? events[first].t_trigger
+                                              : t_end;
+
             /* Drain every grid sample that fell into the just-completed
-             * interval [t_old, t]. Hermite C^1 dense output on (r, v). */
-            while (t_next <= w->integ.t + eps && t_next <= t_end + eps) {
+             * interval [t_old, t]. Hermite C^1 dense output on (r, v).
+             * Strictly before the trigger: a sample landing on it would
+             * duplicate the record that closes the file. */
+            while (t_next <= w->integ.t + eps && t_next <= t_end + eps
+                   && (ev_rc <= 0 || t_next < t_stop - eps)) {
                 double y_q[6];
                 spody_hermite_dense_rv6(t_next,
                                         w->integ.t_old, w->integ.y_old,
@@ -643,25 +670,15 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 t_next += dt;
             }
 
-            /* IMPACT check on the just-completed step. Triggers stop the
-             * propagation immediately (after logging). */
-            int first = -1;
-            int ev_rc = check_events(events, n_events, &w->ctx, &w->integ,
-                                      evt, batch_sink, &first);
-            if (ev_rc < 0) {
-                spody_error_set(err, SPODY_ERR_IO,
-                        "events_log write failed at t=%.6g s", w->integ.t);
-                rc = SPODY_ERR_IO; goto cleanup;
-            }
+            /* A stop-class event ended the propagation inside this
+             * step: close the output on the trigger state, the physical
+             * end of the run, and leave. */
             if (ev_rc > 0) {
                 stop_ev = &events[first];
                 spody_log_printf(
                     "  IMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
                     events[first].naif_id, events[first].t_trigger,
                     events[first].distance_at_trigger, events[first].radius_km);
-                /* Emit the trigger state as the trajectory endpoint so
-                 * the output always closes at the physical end of the
-                 * propagation. */
                 if (emit_trajectory(csv, bin,
                                     events[first].t_trigger,
                                     events[first].y_trigger) < 0) {
@@ -716,18 +733,10 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                         s, w->integ.t, w->integ.h_old);
                 rc = SPODY_ERR_INTERNAL; goto cleanup;
             }
-            if (emit_trajectory(csv, bin, w->integ.t, w->integ.y) < 0) {
-                spody_error_set(err, SPODY_ERR_IO,
-                        "trajectory write failed at t=%.6g s", w->integ.t);
-                rc = SPODY_ERR_IO; goto cleanup;
-            }
-            if (acc && emit_breakdown(acc, &w->ctx,
-                                      w->integ.t, w->integ.y) < 0) {
-                spody_error_set(err, SPODY_ERR_IO,
-                        "accelerations write failed at t=%.6g s", w->integ.t);
-                rc = SPODY_ERR_IO; goto cleanup;
-            }
-
+            /* Events first, for the same reason as in fixed mode: the
+             * accepted step that contains a stop-class trigger ends
+             * inside the body, and that state must not be the record
+             * that closes the file. */
             int first = -1;
             int ev_rc = check_events(events, n_events, &w->ctx, &w->integ,
                                       evt, batch_sink, &first);
@@ -742,7 +751,32 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                     "  IMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
                     events[first].naif_id, events[first].t_trigger,
                     events[first].distance_at_trigger, events[first].radius_km);
-                goto cleanup;
+                if (emit_trajectory(csv, bin,
+                                    events[first].t_trigger,
+                                    events[first].y_trigger) < 0) {
+                    spody_error_set(err, SPODY_ERR_IO,
+                            "trajectory write failed on impact record");
+                    rc = SPODY_ERR_IO; goto cleanup;
+                }
+                if (acc && emit_breakdown(acc, &w->ctx,
+                                          events[first].t_trigger,
+                                          events[first].y_trigger) < 0) {
+                    spody_error_set(err, SPODY_ERR_IO,
+                            "accelerations write failed on impact record");
+                    rc = SPODY_ERR_IO; goto cleanup;
+                }
+                goto cleanup;   /* normal termination via impact */
+            }
+            if (emit_trajectory(csv, bin, w->integ.t, w->integ.y) < 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "trajectory write failed at t=%.6g s", w->integ.t);
+                rc = SPODY_ERR_IO; goto cleanup;
+            }
+            if (acc && emit_breakdown(acc, &w->ctx,
+                                      w->integ.t, w->integ.y) < 0) {
+                spody_error_set(err, SPODY_ERR_IO,
+                        "accelerations write failed at t=%.6g s", w->integ.t);
+                rc = SPODY_ERR_IO; goto cleanup;
             }
         }
     }
