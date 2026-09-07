@@ -1476,6 +1476,19 @@ Rebuild **both** repos (core clone + app), then:
   then restore and compare against *that*. ULP-level noise against
   a stale reference is not your bug — but prove it this way instead
   of assuming it.
+
+  **Toolchain trap:** it is only a valid reference if it was produced
+  by the *same compiler with the same options*. MSVC and GCC disagree
+  by 1–3 ULP on the `_hpc` harmonics acceleration, because GCC
+  vectorises the reduction and MSVC does not, and a different
+  summation order is a different rounding; `SPODY_ARCH_AVX2` moves it
+  again, by 1–4 ULP, for the same reason. Everyone develops and
+  regresses on MSVC while `release.yml` ships GCC, so the two never
+  meet — keep it that way. A stored run compared against a
+  differently-built binary shows a µm-level trajectory difference that
+  is the compiler, not the change you are testing. (The reference
+  kernel `spody_get_hgaccbodyfixed` *is* bit-identical everywhere,
+  which is what makes it the audit baseline.)
 - Run the other example families your change could plausibly touch
   (`batch_demo`, `cr3bp_em_l4`, `debris_impact_demo`,
   `glonass_r03_validation`).
