@@ -1392,6 +1392,30 @@ was removed. Every stepping loop already sits one line above
 integrator stays ignorant of force models. Add machinery only if a
 loop appears that genuinely cannot.
 
+**Rule 1b — tell the integrator when the field moved.** RKDP45
+carries the derivative it evaluated at the end of one step into the
+first stage of the next (first-same-as-last: six RHS calls per step
+instead of seven). That derivative belongs to the field it was
+evaluated on. If your retuning function changed the model, the
+carried stage is stale by exactly the amount the model moved, and the
+step would sample two fields — the very thing Rule 1 exists to
+prevent. So a retuning function **returns whether it changed
+anything**, and the loop feeds that to
+`spody_integrator_invalidate_fsal`:
+
+```c
+if (adapt_hg
+    && spody_adapt_hgdegree(w->integ.t, w->integ.y, w->integ.h, &w->ctx)) {
+    spody_integrator_invalidate_fsal(&w->integ);
+}
+```
+
+That is the whole cost: one extra RHS on the steps where the knob
+actually moved (237 out of 3637 on an eccentric lunar orbit), none on
+the others. Forgetting it does not crash and does not fail a test that
+checks accuracy; it shows up as the knob-on run no longer matching the
+knob-off run bit for bit, which is check (b) below.
+
 **Rule 2 — tunable state goes in the per-thread handle.** The
 harmonics split is the template: `HarmonicGravityData` (coefficients)
 is shared read-only across workers and lives in `SimulationShared`,
@@ -1654,6 +1678,33 @@ Each entry: the rule, and the symptom you'll see if you break it.
   regenerate from the NRL source or don't touch it. (The model
   itself is fully re-entrant: all state is stack-local.) *Symptom:
   the 17 reference cases drift from the published outputs.*
+- **RK45 carries a derivative across steps (FSAL).** The step keeps
+  `f(t, y)` from its own last stage and uses it as the next step's
+  first stage, so it assumes the RHS is the same function of `(t, y)`
+  at the start of a step as at the end of the previous one. Anything
+  that breaks that between two `spody_propagate_onestep` calls — a
+  retuned force model (§5.15), a spacecraft parameter edited mid-run,
+  a state written into `integ->y` by hand instead of through
+  `spody_set_integrator_state` — must call
+  `spody_integrator_invalidate_fsal`. The adaptive harmonics degree
+  already does, through the return value of `spody_adapt_hgdegree`.
+  RK4 has no such stage; a future method opts in where the two
+  buffers are allocated in `spody_setup_integrator`. *Symptom of
+  breakage: a run with the knob on stops matching the run with it off
+  bit for bit, while every accuracy check still passes — the carried
+  stage is off by the size of the model change, far below any
+  tolerance.*
+- **A run window is checked against the ephemeris before it starts.**
+  `spody_get_ephposition` has no range check of its own: an epoch
+  outside the mapped records indexes past the record array, and the
+  process dies with an access violation (or worse, reads garbage).
+  `check_ephemeris_window` in `sim_setup.c` refuses the window right
+  after the load and again per worker, because batch columns and
+  calibrate windows move `et_start_s` / `duration_s`. Any new code
+  path that queries the ephemeris outside `[et_start_s, et_start_s +
+  duration_s)` has to extend or repeat that check. *Symptom of
+  breakage: `spody.exe` exits with `0xC0000005` and an empty output
+  file instead of an error message.*
 - **Wire formats are append-only** (§1.2): readers in the wild parse
   old files. *Symptom: `spody_io` exceptions on historical runs.*
 

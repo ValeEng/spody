@@ -135,6 +135,15 @@ diagnostic before exit. Common cases:
   resolve. Remember the path is relative to the TOML's directory.
 - **`error: ephemeris.file: ENOENT`** &mdash; same for the
   ephemeris path.
+- **`error: run window ET ... is outside the ephemeris coverage of
+  '...'`** &mdash; `simulation.et_start_s` plus `duration_s` falls
+  outside the epochs the `.spody` file holds. The message prints
+  both ranges in ET and in UTC MJD: if the file's range is short,
+  you converted a subset of the DE chunks (run the wizard's *Full
+  pack* profile, or `spody convert ephemeris` with more chunks); if
+  it is the full 1550&ndash;2650 span, the epoch itself is wrong.
+  In a batch the check runs per case, so a case column that moves
+  `et_start_s` can trip it even when the base window is fine.
 - **`error: integrator step h dropped below h_min_s`** &mdash;
   the adaptive controller could not maintain `rel_tol` and gave
   up. Try a smaller `rel_tol` (so the controller is happier with

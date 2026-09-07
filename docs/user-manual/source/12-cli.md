@@ -101,7 +101,7 @@ what the integrator actually did.
 
 ```
   done in 6.394 s (final state at t=603900 s)
-  integrator: 11232 accepted steps, 0 rejected, 78624 RHS evaluations
+  integrator: 11232 accepted steps, 0 rejected, 67393 RHS evaluations
 ```
 
 The timing brackets the integration only &mdash; parsing, ephemeris
@@ -112,7 +112,11 @@ The three counters measure the work rather than the machine, which is
 what makes them comparable between runs on different hardware, and
 between a build with and without optimisations. `RHS evaluations`
 counts every evaluation of the dynamics, including those spent on
-trial steps that were later rejected: that work was really done.
+trial steps that were later rejected: that work was really done. The
+count is six per attempted step plus one, not seven: the last stage
+of the Dormand&ndash;Prince pair sits exactly where the next step
+starts, so the integrator carries it over instead of computing it
+again.
 `rejected` climbing into the same order of magnitude as `accepted` is
 the signature of a step-size controller fighting the problem &mdash;
 usually too tight a `rel_tol`, an `h_max_s` that lets the step grow

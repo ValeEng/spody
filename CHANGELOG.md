@@ -97,7 +97,32 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   The bundled `cr3bp_em_l4` example carries the block, and writing it
   out is what exposed the bug below.
 
+- **Run window checked against the ephemeris coverage.** A
+  `simulation.et_start_s` / `duration_s` pair the `.spody` file does
+  not cover is refused at setup, with the coverage printed in ET and
+  UTC MJD, instead of reading past the mapped records: the engine had
+  no range check there and died with an access violation
+  (`0xC0000005`) leaving an empty output file. Checked on the base
+  window right after the load and again per batch case and calibrate
+  window, since both move the epoch. Chapter 13 lists the message.
+
 ### Changed
+
+- **Six RHS evaluations per RK45 step instead of seven.** The
+  Dormand&ndash;Prince 7S tableau evaluates its last stage exactly
+  where the next step starts, and the engine now keeps that
+  derivative instead of computing it again &mdash; also after a
+  rejected attempt, where the state had not moved. Output is
+  byte-identical on every bundled example (`gps_g11_validation`,
+  `lro_6day`, `debris_impact_demo` events included) and on an
+  eccentric lunar orbit under the adaptive degree; `n_rhs` drops by
+  one seventh (78624 &rarr; 67393 on `gps_g11_validation`,
+  322756 &rarr; 276649 on `lro_6day`) and wall time by 13&ndash;14 %.
+  RK45 only: RK4 is untouched. A stepping loop that retunes the
+  force model between steps tells the integrator through the new
+  `spody_integrator_invalidate_fsal`; the adaptive harmonics degree
+  does so on its own, through the return value `spody_adapt_hgdegree`
+  now carries. Requires spody-core `1899ca6` or later.
 
 - Events `.bin` files are two records per object per body longer than
   before, so a fresh events log is **not byte-comparable** with one
@@ -172,6 +197,20 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   identical numbers.
 
 ### Fixed
+
+- **Event localisation ran as a bisection.** `spody_solver_brent`, the
+  root finder behind every refined IMPACT / ECLIPSE / ALT_CROSSING
+  trigger, found the right instant every time and took 42 residual
+  evaluations to do it: its fallback guard was an XOR that was true
+  exactly when the interpolated step was *good*, on top of a
+  formulation that closes the bracket by bisection once the iterates
+  approach the root from one side. It is now Brent's zeroin, the
+  formulation `spody_solver.h` always cited, converging in 3&ndash;15
+  evaluations. Event times move by at most the solver tolerance times
+  the step (1e-12 &times; h) on altitude crossings and by less than the
+  ULP of the ephemeris epoch (6e-8 s) on eclipses; trajectories are
+  unchanged byte for byte except an impact endpoint, which moves by
+  tens of nanometres. Requires spody-core `8e217bb` or later.
 
 - **`cr3bp_em_l4` now actually starts at L4.** Its initial state was
   35 m off in x and 5 m off in y, and the dynamics amplified that into
