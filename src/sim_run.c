@@ -605,9 +605,13 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             double h_remain = t_end - w->integ.t;
             if (w->integ.h > h_remain) w->integ.h = h_remain;
 
-            if (adapt_hg) {
-                spody_adapt_hgdegree(w->integ.t, w->integ.y,
-                                     w->integ.h, &w->ctx);
+            /* A changed degree is a changed vector field: the FSAL
+             * derivative the integrator kept from the previous step was
+             * evaluated on the old one and must not seed this step. */
+            if (adapt_hg
+                && spody_adapt_hgdegree(w->integ.t, w->integ.y,
+                                        w->integ.h, &w->ctx)) {
+                spody_integrator_invalidate_fsal(&w->integ);
             }
             int s = spody_propagate_onestep(&w->integ);
             if (s != SPODY_INTEG_OK) {
@@ -697,9 +701,13 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             double h_remain = t_end - w->integ.t;
             if (w->integ.h > h_remain) w->integ.h = h_remain;
 
-            if (adapt_hg) {
-                spody_adapt_hgdegree(w->integ.t, w->integ.y,
-                                     w->integ.h, &w->ctx);
+            /* A changed degree is a changed vector field: the FSAL
+             * derivative the integrator kept from the previous step was
+             * evaluated on the old one and must not seed this step. */
+            if (adapt_hg
+                && spody_adapt_hgdegree(w->integ.t, w->integ.y,
+                                        w->integ.h, &w->ctx)) {
+                spody_integrator_invalidate_fsal(&w->integ);
             }
             int s = spody_propagate_onestep(&w->integ);
             if (s != SPODY_INTEG_OK) {

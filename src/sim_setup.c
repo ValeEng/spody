@@ -34,6 +34,37 @@
  * Shared (read-only, file-mapped) resources
  * ================================================================== */
 
+/* Refuse a run window the ephemeris does not cover. The query has no
+ * range check of its own -- an epoch outside the mapped records
+ * indexes past the record array -- so the refusal has to happen here,
+ * where the window and the file are both known and the message can
+ * spell out the coverage in ET and in UTC, which is what tells a
+ * short subset conversion from a wrong epoch. The end is exclusive:
+ * the record arithmetic maps the last epoch itself to one record past
+ * the end. Run on the base window right after the load, and again per
+ * worker because batch cases and calibrate windows move et_start_s
+ * and duration_s. */
+static int check_ephemeris_window(const InputConfig *cfg,
+                                  const MappedEphemerisData *med,
+                                  SpodyError *err) {
+    double et0 = cfg->et_start_s;
+    double et1 = cfg->et_start_s + cfg->duration_s;
+    double lo  = med->header->start_epoch;
+    double hi  = med->header->end_epoch;
+    if (et0 >= lo && et1 < hi) return SPODY_OK;
+
+    spody_error_set(err, SPODY_ERR_BAD_VALUE,
+            "run window ET %.3f .. %.3f s (UTC MJD %.5f .. %.5f) is outside "
+            "the ephemeris coverage of '%s': ET %.3f .. %.3f s (UTC MJD "
+            "%.5f .. %.5f). Convert more DE chunks with `spody convert "
+            "ephemeris`, or move simulation.et_start_s / duration_s inside "
+            "the file.",
+            et0, et1, spody_et_to_mjd_utc(et0), spody_et_to_mjd_utc(et1),
+            cfg->ephemeris_file,
+            lo, hi, spody_et_to_mjd_utc(lo), spody_et_to_mjd_utc(hi));
+    return SPODY_ERR_BAD_VALUE;
+}
+
 int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
                        SpodyError *err) {
     spody_error_clear(err);
@@ -69,6 +100,7 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
         goto fail;
     }
     shared->init_med = 1;
+    if (check_ephemeris_window(cfg, &shared->med, err) != SPODY_OK) goto fail;
 
     /* Harmonics (shared). spody-core itself rejects degree > file_N.
      *
@@ -424,6 +456,9 @@ int spody_build_worker(const InputConfig *cfg,
     /* Per-thread handles bound to the shared, read-only data. */
     spody_setup_MappedEphemeris(&w->eph, &shared->med);
     w->init_eph = 1;
+    /* Per case: a batch column or a calibrate window may have moved
+     * et_start_s / duration_s off the base window checked at load. */
+    if (check_ephemeris_window(cfg, &shared->med, err) != SPODY_OK) goto fail;
 
     if (shared->init_hgd) {
         spody_setup_HarmonicGravity(&w->hg, &shared->hgd);
