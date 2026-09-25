@@ -46,7 +46,12 @@ A SpOdy batch cases file is a plain CSV. The conventions are:
   for ten cases).
 - Every other column is a **parameter override** whose name is
   arbitrary; the mapping to a TOML field is decided by the
-  `[batch.columns]` section, not by the column name itself.
+  `[batch.columns]` section, not by the column name itself. A name
+  that is not a TOML bare key (anything beyond letters, digits, `_`
+  and `-`, e.g. `mass kg` or `srp.Cr`) must be written in quotes
+  there: `"srp.Cr" = "spacecraft.srp.Cr"`. Unquoted, `srp.Cr` would
+  mean a table `srp` holding a key `Cr`. The GUI adds the quotes by
+  itself when it saves the file.
 - All non-`id` cells are parsed as floats.
 
 An example three-case CSV for a mass + Cr sweep:

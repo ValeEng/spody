@@ -220,6 +220,18 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **The GUI writes CSV column names that are not TOML bare keys.**
+  The `[batch.columns]` keys are the user's CSV column names, and the
+  GUI wrote every key unquoted. A column such as `mass kg` produced a
+  file that no longer parsed; `srp.Cr` parsed as a table `srp` with a
+  key `Cr`, so the engine refused the batch with no entry for column
+  `srp.Cr`. Keys that are not bare (letters, digits, `_`, `-`) are
+  now written in quotes, in key lines, inline tables and sub-table
+  headers. A batch with columns `mass kg` and `srp.Cr` saved by the
+  GUI now validates and runs, with results byte-identical to the
+  same batch with bare names; every bundled example input is saved
+  to exactly the same text as before.
+
 - **UT1 no longer drifts by up to 1 s on a leap-second day.** IERS
   publishes UT1&minus;UTC, which jumps by +1 s between a leap day and
   the next (&minus;0.407 s &rarr; +0.591 s on 2016-12-31). The daily
