@@ -451,6 +451,23 @@ time. Follow them for new/touched code; don't mass-rename old code.
 8. **Comments state constraints**, not narration: why a tolerance,
    which spec section, what invariant — not what the next line does.
 9. **Docs cite SPICE** as the only validation ground truth.
+10. **App messages go through the log functions.** Anything the app
+    prints while a run is being set up or executed — progress, warnings,
+    errors — uses `spody_log_printf` (stdout) or `spody_log_eprintf`
+    (stderr), declared in `app_diagnostics.h`. Both write the terminal
+    *and* the `[output].log_file` mirror when it is open; a bare
+    `printf` / `fprintf(stderr, ...)` reaches the terminal only, so the
+    saved log silently misses it (this happened to the EOP-prediction
+    and density-scale warnings). Checklist for a new message:
+    - warning or error → `spody_log_eprintf`, prefixed `spody:
+      warning:` (or `<subcommand>: WARNING --` in a subcommand);
+    - progress / summary → `spody_log_printf`;
+    - check it with a TOML that sets `log_file` and `grep` the log.
+    Exempt: usage lines and argument errors printed before any TOML
+    is read, and the `convert` / `maxhgdegree` / `info` subcommands,
+    which never open a mirror. Messages printed *inside spody-core*
+    (converters, loaders) do not reach the mirror either — the library
+    has no log callback yet.
 
 ## 5. Extension recipes — growing the software without breaking it
 

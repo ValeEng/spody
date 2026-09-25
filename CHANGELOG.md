@@ -220,6 +220,15 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **Run warnings now reach the log file.** `[output].log_file` is
+  documented as a copy of everything the engine prints, but three
+  warnings were written straight to stderr and never reached it: the
+  run window reaching into the IERS EOP prediction, the window
+  extending past the density-scale nodes, and `calibrate` dropping a
+  configured density scale. They go through the same log function as
+  every other message now, in single runs and in the batch log alike.
+  Terminal output and every result file are unchanged.
+
 - **No trajectory sample past an impact.** The driver drained the
   fixed output grid up to the end of the accepted step and checked the
   events afterwards, so a step that contained the impact could leave
