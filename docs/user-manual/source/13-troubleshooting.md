@@ -139,6 +139,12 @@ diagnostic before exit. Common cases:
   resolve. Remember the path is relative to the TOML's directory.
 - **`error: ephemeris.file: ENOENT`** &mdash; same for the
   ephemeris path.
+- **`harmonics: line N: expected 'n, m, C, S'`** or **`harmonics:
+  line N: degree/order n=... m=... outside 0 <= m <= n`** &mdash; row
+  N of the harmonics `.tab` file is damaged (a truncated download, a
+  hand edit). Every data row must hold the degree `n`, the order `m`
+  with `0 <= m <= n`, then `C` and `S`. Re-download or re-convert the
+  file.
 - **`error: run window ET ... is outside the ephemeris coverage of
   '...'`** &mdash; `simulation.et_start_s` plus `duration_s` falls
   outside the epochs the `.spody` file holds. The message prints

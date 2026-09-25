@@ -220,6 +220,21 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **Malformed rows in a harmonics file are refused, not misread.**
+  The `.tab` loader trusted every data row. A row missing its
+  coefficients crashed the MSVC build without a message
+  (`0xC0000409`) and silently wrote a zero or garbage coefficient in
+  the gcc one; an order `m < 0` wrote before the coefficient array;
+  an order `m > n` stored the coefficient in another degree's slot
+  and the run finished with a different trajectory and no warning.
+  Such rows now stop the load with the line number and the reason
+  (`harmonics: line 46: degree/order n=2 m=3 outside 0 <= m <= n`);
+  blank lines, such as a trailing empty line, are skipped. Every
+  bundled model loads to byte-identical coefficients at full degree
+  (EIGEN-6C4 to 2190, GRGM1200A and GRGM1200B to 1200), and every
+  propagation, conversion and batch in the regression set is
+  byte-identical.
+
 - **A full disk no longer ends a run or a conversion with success.**
   Output is written through stdio buffers (1 MiB for trajectory,
   CSV and accelerations), and the final flush happens in `fclose`,
