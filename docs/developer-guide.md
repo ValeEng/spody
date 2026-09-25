@@ -1756,6 +1756,21 @@ Each entry: the rule, and the symptom you'll see if you break it.
   the end of `finals2000A.all` finishes with exit 0 and drifts by
   kilometres within hours of the boundary (47.9 km after 8 days in
   LEO); a converted reference is off by the whole ICRF–ITRF angle.*
+- **UT1 is interpolated on the TAI scale, not the UTC scale.**
+  `UT1 - UTC` in `finals2000A.all` jumps by +1 s across every leap
+  second; `UT1 - TAI` does not. `spody_interpolate_eop` (and its twin
+  `MappedEOP.interpolate` in `python/spopy/eop.py`) subtracts the
+  jump `TAI-UTC(hi) - TAI-UTC(lo)` from the upper node before the
+  linear step. On days without a leap the jump is exactly `0.0`, so
+  the result is bit-identical to a plain lerp; keep it that way (no
+  algebraic rewrite such as "subtract TAI-UTC from both nodes, add it
+  back", which changes the last bit everywhere). Leap values come
+  only from `spody_tai_minus_utc` / `spopy.time.tai_minus_utc` —
+  never a table here. Change the C and the Python together and check
+  them bit-for-bit across the leap days. *Symptom of breakage: on a
+  leap day UT1 is wrong by up to 1 s (0.5 km of frame rotation at
+  LEO radius, 1.9 km at GPS radius by midnight); a 72-hour LEO run
+  starting 2016-12-30 moves by about 5 m.*
 - **Every rule on a run's configuration lives in one per-case gate.**
   A batch case (base + overrides + deltas) or a calibrate arc is not
   the configuration `spody_validate_input` saw at load. So

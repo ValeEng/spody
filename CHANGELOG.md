@@ -220,6 +220,23 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **UT1 no longer drifts by up to 1 s on a leap-second day.** IERS
+  publishes UT1&minus;UTC, which jumps by +1 s between a leap day and
+  the next (&minus;0.407 s &rarr; +0.591 s on 2016-12-31). The daily
+  rows were interpolated as published, so the jump was spread over
+  the whole leap day: UT1, and with it the Earth rotation angle, was
+  wrong by half a second at noon and by almost a second at midnight
+  &mdash; up to 0.5 km of frame rotation at LEO radius and 1.9 km at
+  GPS radius, in every ICRF&harr;ITRF conversion that day. A LEO run
+  with a degree-20 field starting 2016-12-30 12:00 moved by 0.08 m
+  at 24 h, 1.8 m at 48 h and 4.9 m at 72 h. UT1&minus;TAI, which is
+  continuous, is now what gets interpolated (the IERS convention),
+  in the engine and in `spopy.MappedEOP`, which still match bit for
+  bit. The 25 leap days since 1973 are the only ones affected:
+  every other day is byte-identical, including the GNSS
+  conversions, `gp`, the GPS 7-day and ISS 15-day propagations and a
+  64-case Earth batch.
+
 - **Drag no longer vanishes past the daily space weather.** CelesTrak's
   `SW-All.csv` is daily for about 45 days past the download and then
   monthly for some 15 years, with the 3-hour Ap left blank. The run

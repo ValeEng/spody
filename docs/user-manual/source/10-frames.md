@@ -96,6 +96,11 @@ assembled from the IAU 2006 X, Y, s+XY/2 series (the
 Earth Rotation Angle driven by UT1 (which IERS publishes as
 `UT1 - UTC` in `finals2000A.all`), and `W(t)` is the polar-motion
 matrix built from the (`xp`, `yp`) angles in the same EOP file.
+The daily EOP rows are interpolated linearly. On a leap-second day,
+`UT1 - UTC` jumps by +1 s between that row and the next while UT1
+itself is continuous, so SpOdy interpolates `UT1 - TAI` (the IERS
+convention) and the jump happens at 23:59:60 UTC, where it belongs,
+instead of being spread over the whole day.
 The chain is exact at the SOFA / ERFA precision floor (sub-mas).
 
 The wizard manages the two raw data sets (`finals2000A.all` plus
