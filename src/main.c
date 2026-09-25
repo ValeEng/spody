@@ -545,6 +545,32 @@ static int cmd_batch(int argc, char **argv) {
         return 1;
     }
 
+    /* Pre-check: every case's final values and window, before any
+     * case runs. A case that would fail its setup is known now, not
+     * somewhere in the interleaved output of a long parallel run, so
+     * the list goes out first and the case is skipped (state 2 in
+     * case_failed; 1 is a case that failed while running). The rest
+     * of the batch runs. spody_build_worker repeats the check, so
+     * nothing depends on this loop for correctness. */
+    int n_skipped = 0;
+    for (int c = 0; c < n_cases; ++c) {
+        InputConfig cfg_c;
+        SpodyError  err_c = {0};
+        spody_apply_batch_case(&cfg, cfg.batch, c, &cfg_c);
+        if (spody_check_case(&cfg_c, &shared, &err_c) == SPODY_OK) continue;
+        case_failed[c] = 2;
+        snprintf(&case_errmsg[c * CASE_MSG_MAX], CASE_MSG_MAX,
+                 "skipped by the pre-check: %s", err_c.msg);
+        spody_log_printf("  [%d/%d] %s: SKIPPED -- %s\n",
+                         c + 1, n_cases, cfg.batch->case_ids[c], err_c.msg);
+        ++n_skipped;
+    }
+    if (n_skipped > 0) {
+        spody_log_printf("  pre-check : %d of %d cases skipped, "
+                         "running the other %d\n",
+                         n_skipped, n_cases, n_cases - n_skipped);
+    }
+
     /* Semantics with parallel execution: every case is run to
      * completion, even if earlier cases fail. This is more useful
      * than the sequential "break on first failure" -- in a 100-case
@@ -573,6 +599,7 @@ static int cmd_batch(int argc, char **argv) {
     #pragma omp parallel for schedule(dynamic, 1) num_threads(n_threads)
 #endif
     for (i = 0; i < n_cases; ++i) {
+        if (case_failed[i] == 2) continue;   /* skipped by the pre-check */
         const char *id = cfg.batch->case_ids[i];
         InputConfig  cfg_i;
         SpodyError   err_i = {0};
@@ -641,8 +668,10 @@ static int cmd_batch(int argc, char **argv) {
 
     if (n_failed > 0) {
         spody_log_printf("\nbatch finished: %d/%d OK, %d failed "
+                         "(%d of them skipped by the pre-check) "
                          "in %.2f s total (wall).\n",
-                         n_cases - n_failed, n_cases, n_failed, wall_s);
+                         n_cases - n_failed, n_cases, n_failed, n_skipped,
+                         wall_s);
         spody_log_printf("failed cases:\n");
         for (int i = 0; i < n_cases; ++i) {
             if (!case_failed[i]) continue;

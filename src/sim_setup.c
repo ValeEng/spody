@@ -106,6 +106,35 @@ static int check_eop_window(const InputConfig *cfg,
     return SPODY_OK;
 }
 
+/* Refuse a drag run window the space weather table does not cover.
+ * The density callback fails soft -- zero density, so zero drag --
+ * outside the usable range, and the run would carry on without drag
+ * and without a word. The NRLMSISE Ap history reaches 57 h back,
+ * hence the 3 days required before the start; the end is the last
+ * DAILY row, usable to its end: the file's monthly long-range tail
+ * (years past it) has no 3-hour Ap and cannot drive the model. */
+static int check_space_weather_window(const InputConfig *cfg,
+                                      const MappedSpaceWeatherData *sw,
+                                      SpodyError *err) {
+    double mjd_start = spody_et_to_mjd_utc(cfg->et_start_s);
+    double mjd_end   = spody_et_to_mjd_utc(cfg->et_start_s + cfg->duration_s);
+    double first_ok  = sw->mjd_first + 3.0;
+    double last_ok   = sw->mjd_last_daily + 1.0;
+    if (mjd_start < first_ok || mjd_end >= last_ok) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "run window (UTC MJD %.2f .. %.2f) is outside the "
+                "space weather usable for drag (UTC MJD %.2f .. %.2f: "
+                "observed up to %.2f, then daily CelesTrak prediction; "
+                "the monthly tail after it cannot drive NRLMSISE-00). "
+                "Update '%s' from https://celestrak.org/SpaceData/SW-All.csv "
+                "or shorten the run.",
+                mjd_start, mjd_end, first_ok, last_ok,
+                sw->mjd_last_observed, cfg->space_weather_file);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    return SPODY_OK;
+}
+
 int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
                        SpodyError *err) {
     spody_error_clear(err);
@@ -188,13 +217,8 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
         shared->init_iau = 1;
     }
 
-    /* Drag-only: space weather table + run-window horizon check. The
-     * density callback fails soft (zero drag) outside the table, so
-     * the hard refusal has to happen here, where we can still tell
-     * the user to update the file. The NRLMSISE Ap history needs 3
-     * days of records BEFORE the epoch too. Batch cases that override
-     * et_start_s / duration_s beyond the base window are not
-     * re-checked -- the base TOML window is the contract. */
+    /* Drag-only: space weather table + run-window horizon check (see
+     * check_space_weather_window; per case in spody_check_case). */
     if (cfg->enable_drag) {
         if (spody_setup_MappedSpaceWeatherData(&shared->sw_data,
                                                cfg->space_weather_file) != 0) {
@@ -204,27 +228,8 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
             goto fail;
         }
         shared->init_sw = 1;
-
-        {
-            double mjd_start = spody_et_to_mjd_utc(cfg->et_start_s);
-            double mjd_end   = spody_et_to_mjd_utc(cfg->et_start_s +
-                                                   cfg->duration_s);
-            double first_ok  = shared->sw_data.mjd_first + 3.0;
-            double last_ok   = shared->sw_data.mjd_last_predicted + 1.0;
-            if (mjd_start < first_ok || mjd_end >= last_ok) {
-                spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                        "run window (UTC MJD %.2f .. %.2f) is outside the "
-                        "space weather table coverage (usable: %.2f .. %.2f; "
-                        "observed data end at %.2f, the tail is CelesTrak "
-                        "prediction). Update '%s' from "
-                        "https://celestrak.org/SpaceData/SW-All.csv or "
-                        "shorten the run.",
-                        mjd_start, mjd_end, first_ok, last_ok,
-                        shared->sw_data.mjd_last_observed,
-                        cfg->space_weather_file);
-                goto fail;
-            }
-        }
+        if (check_space_weather_window(cfg, &shared->sw_data, err) != SPODY_OK)
+            goto fail;
 
         /* Optional density calibration k(t): node file, or one node
          * synthesised from the scalar key (same evaluation path in
@@ -436,12 +441,36 @@ static int initial_state_to_icrf(const InputConfig *cfg,
     return SPODY_OK;
 }
 
+int spody_check_case(const InputConfig *cfg,
+                     const SimulationShared *shared, SpodyError *err) {
+    int rc = spody_validate_input(cfg, err);
+    if (rc != SPODY_OK) return rc;
+    if (shared->init_med &&
+        (rc = check_ephemeris_window(cfg, &shared->med, err)) != SPODY_OK)
+        return rc;
+    if (shared->init_eop &&
+        (rc = check_eop_window(cfg, &shared->eop_data, 0, err)) != SPODY_OK)
+        return rc;
+    if (shared->init_sw && cfg->enable_drag &&
+        (rc = check_space_weather_window(cfg, &shared->sw_data, err)) != SPODY_OK)
+        return rc;
+    return SPODY_OK;
+}
+
 int spody_build_worker(const InputConfig *cfg,
                        const SimulationShared *shared,
                        SimulationWorker *w, SpodyError *err) {
     spody_error_clear(err);
     memset(w, 0, sizeof *w);
     w->shared = shared;
+
+    /* Every rule on this config's final values and its window, first:
+     * a batch case or a calibrate arc is not the config that was
+     * validated at load. */
+    {
+        int rc = spody_check_case(cfg, shared, err);
+        if (rc != SPODY_OK) return rc;
+    }
 
     /* Reject unimplemented dynamics models defensively. */
     {
@@ -499,9 +528,6 @@ int spody_build_worker(const InputConfig *cfg,
     /* Per-thread handles bound to the shared, read-only data. */
     spody_setup_MappedEphemeris(&w->eph, &shared->med);
     w->init_eph = 1;
-    /* Per case: a batch column or a calibrate window may have moved
-     * et_start_s / duration_s off the base window checked at load. */
-    if (check_ephemeris_window(cfg, &shared->med, err) != SPODY_OK) goto fail;
 
     if (shared->init_hgd) {
         spody_setup_HarmonicGravity(&w->hg, &shared->hgd);
@@ -516,9 +542,6 @@ int spody_build_worker(const InputConfig *cfg,
     if (shared->init_eop) {
         spody_setup_MappedEOP(&w->eop, &shared->eop_data);
         w->init_eop_w = 1;
-        /* Per case, like the ephemeris check above. */
-        if (check_eop_window(cfg, &shared->eop_data, 0, err) != SPODY_OK)
-            goto fail;
     }
     if (shared->init_iau) {
         spody_setup_MappedIAU2006(&w->iau2006, &shared->iau2006_data);

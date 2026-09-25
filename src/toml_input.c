@@ -1202,6 +1202,19 @@ static int csv_split_line(char *line, char **tokens, int max_tokens) {
     return n;
 }
 
+/* Characters allowed in a case id (it is embedded in file names). */
+#define CASE_ID_CHARS "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" \
+                      "0123456789_-."
+
+typedef struct { const char *id; int row; } CaseIdRow;
+
+static int cmp_case_id_row(const void *a, const void *b) {
+    const CaseIdRow *x = (const CaseIdRow *)a;
+    const CaseIdRow *y = (const CaseIdRow *)b;
+    int c = strcmp(x->id, y->id);
+    return c ? c : x->row - y->row;
+}
+
 /* Load a CSV cases file. On success populates batch->{n_cases, n_columns,
  * column_names, case_ids, values}. On failure returns an error code with
  * *err filled in; the four pointer fields are left unmodified (NULL). */
@@ -1318,10 +1331,47 @@ static int load_cases_csv(const char *path, BatchConfig *batch,
         }
 
         if (id_idx >= 0) {
-            case_ids[n_cases] = xstrdup(rtokens[id_idx]);
+            /* The id becomes part of every output file name of the
+             * case: no path separators, nothing a file system may
+             * reject, nothing empty. */
+            const char *rid = rtokens[id_idx];
+            if (rid[0] == '\0' || strspn(rid, CASE_ID_CHARS) != strlen(rid)) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "cases_file '%s' line %d: id '%s' is not valid "
+                        "(non-empty, letters, digits, '_', '-', '.' only: "
+                        "it becomes part of the case's file names)",
+                        path, line_no, rid);
+                rc = SPODY_ERR_BAD_VALUE; goto cleanup;
+            }
+            case_ids[n_cases] = xstrdup(rid);
             if (!case_ids[n_cases]) goto oom;
         }
         n_cases++;
+    }
+
+    /* Two cases with one id would write the same files -- at the same
+     * time in a parallel batch. Sorted copy, so a large sweep does not
+     * pay a quadratic scan. */
+    if (id_idx >= 0 && n_cases > 1) {
+        CaseIdRow *rows = (CaseIdRow *)malloc((size_t)n_cases * sizeof *rows);
+        if (!rows) goto oom;
+        for (int i = 0; i < n_cases; ++i) {
+            rows[i].id  = case_ids[i];
+            rows[i].row = i + 1;
+        }
+        qsort(rows, (size_t)n_cases, sizeof *rows, cmp_case_id_row);
+        for (int i = 1; i < n_cases; ++i) {
+            if (strcmp(rows[i - 1].id, rows[i].id) != 0) continue;
+            int r1 = rows[i - 1].row < rows[i].row ? rows[i - 1].row : rows[i].row;
+            int r2 = rows[i - 1].row < rows[i].row ? rows[i].row : rows[i - 1].row;
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "cases_file '%s': id '%s' is used by data rows %d and "
+                    "%d; each case needs its own id (its output files are "
+                    "named after it)", path, rows[i].id, r1, r2);
+            free(rows);
+            rc = SPODY_ERR_BAD_VALUE; goto cleanup;
+        }
+        free(rows);
     }
 
     if (n_cases == 0) {

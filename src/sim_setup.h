@@ -157,6 +157,21 @@ int  spody_build_shared(const InputConfig *cfg,
  * struct. */
 void spody_free_shared (SimulationShared *shared);
 
+/* Everything that must hold for ONE run configuration before a worker
+ * is built on it: the full spody_validate_input rule set on the
+ * config's final values (a batch case is the base plus its overrides
+ * and deltas, so a valid base does not make a valid case), then the
+ * run window against every data table `shared` opened -- ephemeris,
+ * EOP, space weather. Pure check: builds nothing, touches nothing,
+ * cheap enough to run on every case of a batch up front.
+ *
+ * spody_build_worker calls it first, so every worker (single run,
+ * batch case, calibrate arc) is covered; cmd_batch also calls it on
+ * every case before the parallel loop, to report the cases it will
+ * skip before any of them runs. */
+int  spody_check_case(const InputConfig *cfg,
+                      const SimulationShared *shared, SpodyError *err);
+
 /* Build a worker against an already-built shared. Sets up the
  * per-thread eph/hg handles, spacecraft, force-model context,
  * third-body arrays, integrator workspace and initial state.
