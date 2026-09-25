@@ -95,7 +95,7 @@ static int check_eop_window(const InputConfig *cfg,
         return SPODY_ERR_BAD_VALUE;
     }
     if (warn_predicted && mjd1 > eop->mjd_last_measured) {
-        fprintf(stderr,
+        spody_log_eprintf(
                 "spody: warning: run window (UTC MJD %.2f .. %.2f) "
                 "extends past the last measured EOP record (%.2f); from "
                 "there the Earth orientation comes from the IERS "
@@ -247,7 +247,7 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
                 double node_lo = shared->ds_data.mjd[0];
                 double node_hi = shared->ds_data.mjd[shared->ds_data.n - 1];
                 if (mjd_start < node_lo || mjd_end > node_hi) {
-                    fprintf(stderr,
+                    spody_log_eprintf(
                             "spody: warning: run window (UTC MJD %.2f .. "
                             "%.2f) extends past the density-scale nodes "
                             "(%.2f .. %.2f); the end values are held "

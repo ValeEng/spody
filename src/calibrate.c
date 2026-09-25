@@ -195,7 +195,7 @@ int spody_calibrate_run(const char *toml_path,
      * arcs must run at the raw k = 1 for the fit to price the
      * uncalibrated model bias. */
     if (cfg.has_density_scale || cfg.density_scale_file[0]) {
-        fprintf(stderr,
+        spody_log_eprintf(
             "calibrate: WARNING -- [force_model] density_scale%s in '%s' "
             "is ignored while calibrating\n",
             cfg.density_scale_file[0] ? "_file" : "", toml_path);
