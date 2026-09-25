@@ -20,16 +20,18 @@ records; the Info rows and half a dozen plots all want the same
 handful of derivations from it (per-kind splits, the crossed-altitude
 clusters, the eclipse pairing, the body-fixed impact projection).
 Recomputing those per tab switch and per plot click is what made the
-Analysis tab scale badly, so they live here behind a content-keyed
+Analysis tab scale badly, so they live here behind an identity-keyed
 cache: the FIRST touch of a file pays, every later one is a dict hit.
 
 Three things live in this module:
 
-- `cache_key` / `cached` -- the generic content-keyed memo (also used
+- `cache_key` / `cached` -- the generic identity-keyed memo (also used
   by `altitude_bands.py` for the band reconstruction). Keyed on the
   array's buffer identity + the analysis parameters, so distinct files
   land on distinct keys and a re-analysis of the same file with the
-  same parameters reuses the result.
+  same parameters reuses the result. An array's entries are dropped
+  the moment the array is freed, so a later file that numpy places at
+  the same address can never inherit them.
 - `events_digest` -- the per-file `EventsDigest` (see its docstring):
   everything the Info rows and the timeline views need, in flat numpy.
 - `impact_latlon` -- the ICRF -> body-fixed projection of the IMPACT
@@ -48,6 +50,7 @@ caching sound.
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass
 
 import numpy as np
@@ -62,10 +65,16 @@ from spody_io import (
 
 
 # ----------------------------------------------------------------------
-# Content-keyed cache
+# Identity-keyed cache
 # ----------------------------------------------------------------------
-# Keyed by the array's buffer address + byte size + first/last timestamps
-# + the analysis params. `None` results are cached too (a file with no
+# Keyed by the array's owner + buffer address + byte size + first/last
+# timestamps + the analysis params. An address is only an identity while
+# the array lives: numpy hands a freed buffer to the next array of the
+# same size, so a regenerated file reloaded after another one could land
+# on the old address with the same size and end times. A weakref
+# finalizer on the owning array therefore drops its entries when it is
+# freed -- before the memory can be reused (CPython clears weakrefs
+# first in the array's dealloc). `None` results are cached too (a file with no
 # crossings must not re-scan on every click just because the answer was
 # "nothing here"). FIFO eviction: entries hold arrays proportional to the
 # loaded file, so the cap is a memory bound, not a hit-rate knob.
@@ -73,16 +82,31 @@ _MISS = object()
 _CACHE: "dict[tuple, object]" = {}
 _CACHE_ORDER: "list[tuple]" = []
 _CACHE_MAX = 6
+_OWNERS: "dict[int, weakref.finalize]" = {}
 
 
 def cache_key(tag: str, events: np.ndarray, *params):
-    """Content key for `events` under `tag`, or None when the array is
+    """Identity key for `events` under `tag`, or None when the array is
     empty (nothing worth caching, and `ctypes.data` is not a stable
     identity for a zero-length array)."""
     if len(events) == 0:
         return None
-    return (tag, events.ctypes.data, int(events.nbytes),
+    owner = events
+    while isinstance(owner.base, np.ndarray):
+        owner = owner.base
+    oid = id(owner)
+    if oid not in _OWNERS:
+        _OWNERS[oid] = weakref.finalize(owner, _forget_owner, oid)
+    return (tag, oid, events.ctypes.data, int(events.nbytes),
             float(events["t"][0]), float(events["t"][-1]), params)
+
+
+def _forget_owner(oid: int) -> None:
+    """Finalizer of a keyed array: drop every entry keyed on it."""
+    _OWNERS.pop(oid, None)
+    for key in [k for k in _CACHE_ORDER if k[1] == oid]:
+        _CACHE_ORDER.remove(key)
+        _CACHE.pop(key, None)
 
 
 def cached(key, compute):

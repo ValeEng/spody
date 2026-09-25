@@ -132,7 +132,7 @@ class BandAnalysis:
 
 # The band reconstruction is the one O(N) step, and the Info tab re-runs
 # it on every switch to the Info tab while the four plots each call it
-# too. The shared content-keyed cache in `derived.py` makes all of them
+# too. The shared identity-keyed cache in `derived.py` makes all of them
 # share one reconstruction (and one pooled analysis) per loaded file, so
 # only the first touch pays and later tab switches / plot clicks are
 # instant. `None` results (no crossings) are cached too.
@@ -412,7 +412,7 @@ def _reconstruct(events: np.ndarray, central_naif: int,
 
 def _recon_cached(events, central_naif, thresholds_km,
                   stop_thresholds_km, duration_s) -> "_Recon | None":
-    """Content-keyed memo around `_reconstruct` so the Info tab, the
+    """Identity-keyed memo around `_reconstruct` so the Info tab, the
     plots and the CSV exports share one reconstruction per file."""
     key = _cache_key("recon", events, central_naif,
                      thresholds_km, stop_thresholds_km, duration_s)
