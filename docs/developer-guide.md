@@ -1718,6 +1718,27 @@ Each entry: the rule, and the symptom you'll see if you break it.
   duration_s)` has to extend or repeat that check. *Symptom of
   breakage: `spody.exe` exits with `0xC0000005` and an empty output
   file instead of an error message.*
+- **Nothing rotates to or from ITRF outside the EOP table.** The
+  Earth rotation providers (`spody_bf_rotation_earth`,
+  `spody_teme2icrf_rotation`) return `void`: when
+  `spody_interpolate_eop` fails they fall back to the identity and
+  nobody hears about it. So the check lives with the callers, all on
+  the one predicate `spody_eop_covers_mjd` (the same rule
+  `spody_interpolate_eop` applies):
+  - `check_eop_window` in `sim_setup.c` — base window after the EOP
+    load (it also prints the "past the last measured record" warning),
+    then per worker, like the ephemeris check;
+  - every converter that rotates (`spody_sp3.c`, `spody_gps.c`,
+    `spody_glonass.c`, `spody_gp.c`) — per epoch, before the rotation,
+    failing the conversion.
+  A new caller of either provider (a converter, an output frame, a
+  diagnostic) has to test the predicate first. The warning boundary
+  is `mjd_last_measured` (Bulletin B or a Bulletin A UT1 flagged
+  `I`), **not** `mjd_last_observed`, which is Bulletin B only and lags
+  real time by about a month. *Symptom of breakage: an Earth run past
+  the end of `finals2000A.all` finishes with exit 0 and drifts by
+  kilometres within hours of the boundary (47.9 km after 8 days in
+  LEO); a converted reference is off by the whole ICRF–ITRF angle.*
 - **Nothing later than the trigger goes into the output.** Both
   stepping loops in `sim_run.c` check the events *before* they write
   anything for the step: a stop-class trigger caps the fixed-grid

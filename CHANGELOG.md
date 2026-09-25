@@ -198,6 +198,28 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Fixed
 
+- **Earth runs and conversions refused outside the EOP table.** Past
+  the last row of `finals2000A.all` (or before its first, 1973-01-02)
+  the ICRF&harr;ITRF rotation has no data, and the engine silently
+  replaced it with the identity: the gravity field, the drag geometry
+  and a body-fixed initial state stopped turning with the Earth, the
+  run finished normally and nothing was printed. A 14-day LEO run
+  crossing the end of the bundled table drifted 2.4 km within hours
+  of the boundary and 47.9 km after eight days, against the same run
+  with the last EOP row held. The run window is now checked against
+  the table like it is against the ephemeris &mdash; on the base
+  window at load, and again per batch case and calibrate window
+  &mdash; and refused with the coverage in UTC MJD. The four
+  frame-aware converters (`sp3`, `gps`, `glonass`, `gp`) refuse any
+  epoch outside the table instead of writing ECEF or TEME labelled
+  ICRF. A window that reaches past the last *measured* row, into the
+  IERS prediction, runs with a warning. Measured means Bulletin B or
+  a Bulletin A UT1&minus;UTC flagged `I`: Bulletin B alone lags real
+  time by about a month and would have warned on measured data.
+  Everything inside the table is byte-identical: GPS and GLONASS
+  conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
+  64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
+
 - **No trajectory sample past an impact.** The driver drained the
   fixed output grid up to the end of the accepted step and checked the
   events afterwards, so a step that contained the impact could leave

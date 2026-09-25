@@ -144,6 +144,23 @@ diagnostic before exit. Common cases:
   it is the full 1550&ndash;2650 span, the epoch itself is wrong.
   In a batch the check runs per case, so a case column that moves
   `et_start_s` can trip it even when the base window is fine.
+- **`error: run window (UTC MJD ...) is outside the EOP table
+  '...'`** &mdash; Earth runs only. The Earth's orientation comes
+  from the IERS `finals2000A.all` table, which starts on 1973-01-02
+  and ends about one year after the date you downloaded it; outside
+  it there is no orientation at all, so the run is refused rather
+  than computed wrong. Re-download the file (the wizard does it, or
+  take it from `https://datacenter.iers.org/data/9/finals2000A.all`)
+  or move the window. As for the ephemeris, a batch checks every
+  case. The `sp3`, `gps`, `glonass` and `gp` conversions refuse the
+  same way, naming the first epoch that falls outside.
+- **`spody: warning: run window ... extends past the last measured
+  EOP record`** &mdash; not an error: the run goes on. The last part
+  of the EOP table is the IERS *prediction* of the Earth's
+  orientation, not a measurement, and its error grows with the
+  distance from the last measured day. For a run in the near future
+  that is the best available; for a run in the past, a fresh
+  `finals2000A.all` replaces the prediction with measured values.
 - **`error: integrator step h dropped below h_min_s`** &mdash;
   the adaptive controller could not maintain `rel_tol` and gave
   up. Try a smaller `rel_tol` (so the controller is happier with
