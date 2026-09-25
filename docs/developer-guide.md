@@ -159,7 +159,7 @@ backward-compatible.
   - `registry.py` — assembles `PLOTS` per file kind, owns
     `KIND_LABEL`, `READERS`, `detect_kind`.
   - `derived.py` — per-file derived data, computed once and shared by
-    the Info rows and every event plot: the content-keyed cache
+    the Info rows and every event plot: the identity-keyed cache
     (`cache_key`/`cached`, also used by `altitude_bands.py`), the
     `EventsDigest` (`events_digest`), the cached body-fixed impact
     projection (`impact_latlon`), the rendering-budget helper
@@ -744,10 +744,18 @@ turned a full pass over the event views into 335 s.
   the hand-computed + e2e cross-checks in `tests/analysis/`
   (local-only) before trusting a run.
 - *Cache once per file.* Everything derived from a loaded array goes
-  behind the content-keyed memo in `analysis/derived.py` (`cache_key`
-  / `cached`: keyed by the array buffer address + size + first/last
-  timestamps + params), so the Info tab, the plots and the exports
-  share one computation per loaded file and repeat touches are free.
+  behind the identity-keyed memo in `analysis/derived.py` (`cache_key`
+  / `cached`: keyed by the owning array + buffer address + size +
+  first/last timestamps + params), so the Info tab, the plots and the
+  exports share one computation per loaded file and repeat touches are
+  free. The key is an identity, not a content hash: it stays sound
+  only because `cache_key` puts a `weakref.finalize` on the owning
+  array that drops its entries when the array is freed (numpy reuses
+  the address for the next array of the same size). Never key on
+  `ctypes.data` or `id()` without that tie; never hash the content
+  either (a gigabyte events file would pay a full pass per click).
+  Pass the loaded array (or a view of it), not a fresh copy: a copy
+  is a new owner and always misses.
   For event files the shared product already exists: `events_digest`
   returns an `EventsDigest` with the per-kind split, the crossed-
   altitude clusters (direction split included), the eclipse pairing

@@ -220,6 +220,19 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **The Analysis tab could show results of a previously loaded file.**
+  Derived event results (the digest behind the Info rows and event
+  timelines, the impact latitude/longitude projection, the
+  altitude-band reconstruction) are cached per loaded array, keyed by
+  the array's memory address, size and first/last times. numpy gives
+  a freed buffer to the next array of the same size, so loading a
+  file, then another, then a regenerated version of the first (same
+  record count, same start and end times) could reuse the stale
+  entries: reproduced in 50 of 50 trials on the `debris_impact_demo`
+  events file. An array's entries are now dropped the moment it is
+  freed, before its address can be reused: 0 of 50, while repeated
+  views of the same loaded file still hit the cache.
+
 - **The GUI writes CSV column names that are not TOML bare keys.**
   The `[batch.columns]` keys are the user's CSV column names, and the
   GUI wrote every key unquoted. A column such as `mass kg` produced a
