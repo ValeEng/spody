@@ -65,6 +65,47 @@ static int check_ephemeris_window(const InputConfig *cfg,
     return SPODY_ERR_BAD_VALUE;
 }
 
+/* Refuse a run window the EOP table does not cover. Outside the table
+ * spody_bf_rotation_earth has no error channel and falls back to the
+ * identity, so the gravity field, the drag geometry and the
+ * body-fixed initial state would silently stop rotating with the
+ * Earth (tens of km within a week in LEO). Both ends inclusive,
+ * matching spody_interpolate_eop. Same two call sites as the
+ * ephemeris check, for the same reason.
+ *
+ * `warn_predicted` is set on the base window only: past the last
+ * measured record the table is IERS prediction -- usable, but the
+ * user should know, and a batch would otherwise repeat the line for
+ * every case. */
+static int check_eop_window(const InputConfig *cfg,
+                            const MappedEOPData *eop,
+                            int warn_predicted, SpodyError *err) {
+    double mjd0 = spody_et_to_mjd_utc(cfg->et_start_s);
+    double mjd1 = spody_et_to_mjd_utc(cfg->et_start_s + cfg->duration_s);
+    if (!spody_eop_covers_mjd(eop, mjd0) || !spody_eop_covers_mjd(eop, mjd1)) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "run window (UTC MJD %.5f .. %.5f) is outside the EOP "
+                "table '%s' (UTC MJD %.2f .. %.2f; measured up to %.2f, "
+                "IERS prediction after). Outside the table the Earth "
+                "orientation is undefined: update finals2000A.all from "
+                "https://datacenter.iers.org/data/9/finals2000A.all or "
+                "move simulation.et_start_s / duration_s inside it.",
+                mjd0, mjd1, cfg->eop_file, eop->mjd_first,
+                eop->mjd_last_predicted, eop->mjd_last_measured);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (warn_predicted && mjd1 > eop->mjd_last_measured) {
+        fprintf(stderr,
+                "spody: warning: run window (UTC MJD %.2f .. %.2f) "
+                "extends past the last measured EOP record (%.2f); from "
+                "there the Earth orientation comes from the IERS "
+                "prediction, whose error grows with the distance from "
+                "that date.\n",
+                mjd0, mjd1, eop->mjd_last_measured);
+    }
+    return SPODY_OK;
+}
+
 int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
                        SpodyError *err) {
     spody_error_clear(err);
@@ -133,6 +174,8 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
             goto fail;
         }
         shared->init_eop = 1;
+        if (check_eop_window(cfg, &shared->eop_data, 1, err) != SPODY_OK)
+            goto fail;
 
         if (spody_setup_MappedIAU2006Data(&shared->iau2006_data,
                                           cfg->iau2006_dir) != 0) {
@@ -473,6 +516,9 @@ int spody_build_worker(const InputConfig *cfg,
     if (shared->init_eop) {
         spody_setup_MappedEOP(&w->eop, &shared->eop_data);
         w->init_eop_w = 1;
+        /* Per case, like the ephemeris check above. */
+        if (check_eop_window(cfg, &shared->eop_data, 0, err) != SPODY_OK)
+            goto fail;
     }
     if (shared->init_iau) {
         spody_setup_MappedIAU2006(&w->iau2006, &shared->iau2006_data);

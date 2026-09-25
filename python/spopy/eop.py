@@ -98,11 +98,12 @@ class MappedEOP:
     daily; linear interpolation between consecutive rows."""
 
     __slots__ = ("_records", "mjd_first", "mjd_last_predicted",
-                 "mjd_last_observed", "_cached_idx")
+                 "mjd_last_observed", "mjd_last_measured", "_cached_idx")
 
     def __init__(self, filename: str | Path) -> None:
         records: list[tuple[float, float, float, float, float, float]] = []
         mjd_last_b: float = -float("inf")
+        mjd_last_i: float = -float("inf")
         with open(filename, encoding="ascii") as f:
             for line in f:
                 rec = _parse_line(line)
@@ -111,9 +112,15 @@ class MappedEOP:
                 records.append(rec)
                 # Bulletin-B presence = the dut1 column was read from
                 # the Bulletin B slot (which is blank in pred-rows).
-                if _read_field(line, 155, 165) is not None:
+                has_b = _read_field(line, 155, 165) is not None
+                if has_b:
                     if rec[0] > mjd_last_b:
                         mjd_last_b = rec[0]
+                # Measured = Bulletin B, or Bulletin A UT1-UTC flagged
+                # 'I' in column 58 (the C loader's rule).
+                if has_b or line[57] == "I":
+                    if rec[0] > mjd_last_i:
+                        mjd_last_i = rec[0]
         if not records:
             raise ValueError(f"no usable EOP records in {filename}")
         # Columns: mjd, xp_arcsec, yp_arcsec, dut1_sec, dx_mas, dy_mas
@@ -121,6 +128,10 @@ class MappedEOP:
         self.mjd_first = float(self._records[0, 0])
         self.mjd_last_predicted = float(self._records[-1, 0])
         self.mjd_last_observed = (mjd_last_b if mjd_last_b > -float("inf")
+                                  else self.mjd_first)
+        # Last measured record; predictions start after it. Bulletin B
+        # (mjd_last_observed) lags it by about a month.
+        self.mjd_last_measured = (mjd_last_i if mjd_last_i > -float("inf")
                                   else self.mjd_first)
         self._cached_idx = 0
 
