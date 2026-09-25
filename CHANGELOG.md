@@ -220,6 +220,26 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **A full disk no longer ends a run or a conversion with success.**
+  Output is written through stdio buffers (1 MiB for trajectory,
+  CSV and accelerations), and the final flush happens in `fclose`,
+  whose result nobody checked: on a full disk up to the last
+  megabyte of a file was lost (about 18,700 trajectory samples)
+  while the run printed "done" and exited 0. Every file SpOdy writes
+  is now checked at close, in the app and in spody-core: run outputs,
+  the aggregated batch events file, the copy of the input TOML, the
+  `calibrate` nodes file, and the `sp3`, `gps`, `glonass`, `oem`,
+  `harmonics_icgem` and `ephemeris` converters. A failure names the
+  file and exits non-zero; a batch whose cases all ran but whose
+  events file was cut short says so and exits 1. The log file is a
+  copy of the terminal, so a failure there is a warning and the exit
+  code is kept. Verified by forcing the final flush to fail on each
+  file: every one went from exit 0 to a named error, and the log
+  from silence to a warning. Output is byte-identical when nothing
+  fails: GNSS, OEM, ICGEM and DE440 conversions, `gp`, the GPS 7-day
+  and ISS 15-day propagations, a 64-case Earth batch and the
+  `calibrate` nodes.
+
 - **The Analysis tab could show results of a previously loaded file.**
   Derived event results (the digest behind the Info rows and event
   timelines, the impact latitude/longitude projection, the

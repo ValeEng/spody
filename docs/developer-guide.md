@@ -468,6 +468,24 @@ time. Follow them for new/touched code; don't mass-rename old code.
     which never open a mirror. Messages printed *inside spody-core*
     (converters, loaders) do not reach the mirror either — the library
     has no log callback yet.
+11. **Every file written is checked at close.** Output goes through
+    stdio buffers (1 MiB for the run outputs), so on a full disk the
+    `fwrite` / `fprintf` calls keep succeeding and the loss shows up
+    only as the stream error flag or as the final flush inside
+    `fclose`. Checking the writes alone is not enough. Every file
+    opened for writing, in the app and in spody-core, ends with:
+    ```c
+    int write_failed = ferror(fp);
+    if (fclose(fp) != 0 || write_failed) { /* error naming the file */ }
+    ```
+    The failure becomes the command's error (exit ≠ 0), never a
+    warning, unless the file is only a copy of something already
+    delivered: the `[output].log_file` mirror prints a stderr
+    warning and keeps the exit code. In `sim_run.c` use
+    `close_output`, which keeps the first error. A new writer (output
+    file, converter, export) follows the same pattern. *Symptom of
+    breakage: a run or conversion on a full disk prints "done", exits
+    0, and leaves a file missing up to its last megabyte.*
 
 ## 5. Extension recipes — growing the software without breaking it
 

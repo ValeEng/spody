@@ -46,6 +46,10 @@ the hood. The two common failures:
   invalid the conversion cannot run. Open **Settings &rsaquo;
   Paths**, set the path to `spody.exe` (it lives next to
   `spody-gui.exe` in the bundle), and reopen the wizard.
+- **`ephemeris: write failed on '...de440.spody': No space left on
+  device`**: the disk filled up while the binary was being written.
+  The file is incomplete; free some space and run the conversion
+  again.
 
 ### Wizard reopens at every launch
 
@@ -176,6 +180,14 @@ diagnostic before exit. Common cases:
   distance from the last measured day. For a run in the near future
   that is the best available; for a run in the past, a fresh
   `finals2000A.all` replaces the prediction with measured values.
+- **`error: ... write failed on '...' (No space left on device): the
+  file is incomplete`** &mdash; the disk filled up while an output
+  file was being written. The run stops with an error; free some
+  space and run it again. In a batch the same message about the
+  aggregated events file ends with *"the aggregated events file is
+  incomplete"*: the cases ran, but that file is cut short. A
+  `warning: write failed on the log file` only means the saved log
+  is incomplete; the results are fine.
 - **`error: integrator step h dropped below h_min_s`** &mdash;
   the adaptive controller could not maintain `rel_tol` and gave
   up. Try a smaller `rel_tol` (so the controller is happier with
