@@ -1756,6 +1756,38 @@ Each entry: the rule, and the symptom you'll see if you break it.
   the end of `finals2000A.all` finishes with exit 0 and drifts by
   kilometres within hours of the boundary (47.9 km after 8 days in
   LEO); a converted reference is off by the whole ICRF–ITRF angle.*
+- **Every rule on a run's configuration lives in one per-case gate.**
+  A batch case (base + overrides + deltas) or a calibrate arc is not
+  the configuration `spody_validate_input` saw at load. So
+  `spody_check_case` (`sim_setup.c`) re-runs the whole validator on
+  the final values, then the window checks against every table
+  `SimulationShared` opened: `check_ephemeris_window`,
+  `check_eop_window`, `check_space_weather_window`. It is called
+  (a) by `spody_build_worker`, first thing, so no worker is ever built
+  on an unchecked config, and (b) by `cmd_batch` on every case before
+  the parallel loop, so skipped cases are listed up front
+  (`case_failed[i] == 2`). Checklist for a new rule:
+  - depends only on the TOML text → `spody_validate_input`; it then
+    runs at load *and* per case for free;
+  - depends on a data table → a `check_*_window` next to the others,
+    called from `spody_build_shared` (base window) and from
+    `spody_check_case`;
+  - never add a per-case check inside the `cmd_batch` loop body.
+  Case ids are checked where the CSV is read (`load_cases_csv`):
+  non-empty, unique, `[A-Za-z0-9_.-]` — they are file-name parts.
+  *Symptom of breakage: a batch case runs with a value the single-run
+  validator would refuse (mass ≤ 0 → A/m = 0 → no drag, no SRP), or
+  two cases write the same files.*
+- **Drag needs the DAILY space weather, not the whole file.**
+  CelesTrak's `SW-All.csv` is daily up to ~45 days past the download
+  and monthly for ~15 years after that, with the 3-hour Ap blank.
+  `spody_space_weather_msis_inputs` indexes days as `mjd_first + i`,
+  so it works only up to `MappedSpaceWeatherData.mjd_last_daily`;
+  past it the density callback fails and the drag force is zero.
+  `check_space_weather_window` therefore ends at `mjd_last_daily + 1`,
+  not at `mjd_last_predicted`. *Symptom of breakage: a drag run past
+  the daily horizon is bit-identical to the same run with drag off
+  (measured: 0.0 m against 7.6 km per day for the ISS).*
 - **Nothing later than the trigger goes into the output.** Both
   stepping loops in `sim_run.c` check the events *before* they write
   anything for the step: a stop-class trigger caps the fixed-grid

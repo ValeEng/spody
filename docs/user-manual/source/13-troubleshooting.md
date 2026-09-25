@@ -154,6 +154,21 @@ diagnostic before exit. Common cases:
   or move the window. As for the ephemeris, a batch checks every
   case. The `sp3`, `gps`, `glonass` and `gp` conversions refuse the
   same way, naming the first epoch that falls outside.
+- **`error: run window (UTC MJD ...) is outside the space weather
+  usable for drag`** &mdash; drag runs only. NRLMSISE-00 needs daily
+  solar and geomagnetic indices; `SW-All.csv` has them up to about
+  45 days after you downloaded it, then switches to one row per
+  month for years, which the model cannot use. Re-download the file
+  or end the run earlier. (Before this check existed such a run
+  finished normally with the drag force silently at zero.)
+- **`[i/n] <id>: SKIPPED -- ...`** in a batch &mdash; that case's
+  final values (base plus its overrides and deltas) or its time
+  window failed the checks; the rest of the batch runs. Chapter 7,
+  *Checks before the batch runs*.
+- **`error: cases_file '...': id '...' is used by data rows ...`** or
+  **`... id '...' is not valid`** &mdash; case ids name the output
+  files, so they must be unique and use only letters, digits, `_`,
+  `-`, `.`.
 - **`spody: warning: run window ... extends past the last measured
   EOP record`** &mdash; not an error: the run goes on. The last part
   of the EOP table is the IERS *prediction* of the Earth's

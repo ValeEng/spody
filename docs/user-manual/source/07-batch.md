@@ -38,8 +38,12 @@ A SpOdy batch cases file is a plain CSV. The conventions are:
   name is trimmed.
 - One special header value is reserved: `id`. When present, the
   column's value is used as the per-case name (for the output
-  file basenames). When absent, the engine auto-generates names
-  like `case_0001`, `case_0002`, &hellip;
+  file basenames), so every id must be **non-empty, unique, and
+  made only of letters, digits, `_`, `-` and `.`**; the batch is
+  refused at load, naming the line or the two rows involved,
+  otherwise. When absent, the engine numbers the rows `1`, `2`,
+  &hellip; zero-padded to the widest number (`01` &hellip; `10`
+  for ten cases).
 - Every other column is a **parameter override** whose name is
   arbitrary; the mapping to a TOML field is decided by the
   `[batch.columns]` section, not by the column name itself.
@@ -391,6 +395,41 @@ informational, but two things make it worth glancing at:
   next to the preview tells you how many total cases the engine
   will see, useful for catching truncated files.
 
+## Checks before the batch runs
+
+A valid base TOML does not make every case valid: a case is the
+base *plus* its overrides and deltas. So before any case runs,
+`spody batch` builds each case's final configuration and checks it
+with the **same rules** `spody validate` applies to a single run
+&mdash; positive mass and duration, `h_min_s < h_init_s < h_max_s`,
+SRP and drag parameters, a non-degenerate initial state, and so on
+&mdash; plus the case's own time window against every data table
+the run uses (ephemeris, EOP, space weather for drag).
+
+A case that fails is **skipped**, and the list comes first, before
+any case starts:
+
+```
+  [2/3] B: SKIPPED -- spacecraft.mass_kg must be positive (got -3084)
+  pre-check : 1 of 3 cases skipped, running the other 2
+  [1/3] A: done in 0.00 s
+  [3/3] C: done in 0.00 s
+
+batch finished: 2/3 OK, 1 failed (1 of them skipped by the pre-check) ...
+failed cases:
+  [2/3] B: skipped by the pre-check: spacecraft.mass_kg must be positive (got -3084)
+```
+
+The other cases run normally and their results are unaffected. A
+batch with any skipped or failed case exits with status 1, and
+everything above lands in the batch log when `log_file` is set.
+
+The typical ways a case gets skipped are a delta that pushes a
+field out of range (a `mass_kg` delta larger than the base mass)
+and an `et_start_s` / `duration_s` column that moves the window
+outside a data file &mdash; past the end of `finals2000A.all`, or,
+with drag, past the last *daily* row of the space-weather table.
+
 ## Threading
 
 The `batch.thread_number` field caps automatically at the host's
@@ -410,9 +449,12 @@ A few additional points:
   enabled engine. The standard SpOdy bundle ships with one such
   build. The engine rejects the run with a clean message if the
   build does not support parallel execution.
-- **Determinism**: the engine processes cases in a fixed order
-  regardless of thread count, so the per-case output is bit-
-  identical across thread counts.
+- **Determinism**: each case's own output is bit-identical across
+  thread counts. The one thing that is not is the *row order* of
+  the aggregated events file: with more than one thread, cases
+  append their events as they finish, so the same set of records
+  can come out in a different order from run to run. Sort by
+  `case_idx` and `t` before comparing two runs.
 
 ## Output layout
 
@@ -432,8 +474,7 @@ per case alongside it:
 ```
 
 The `<name>` part comes from `batch.name`; the `<case_id>` part is
-the value of the `id` column or the auto-generated `case_NNNN`
-name. Each invocation goes in its own timestamp folder, so the
+the value of the `id` column or the auto-generated row number. Each invocation goes in its own timestamp folder, so the
 results of any prior run are never overwritten silently &mdash; the
 listing under `<batch.output_dir>/` is the chronological history
 of every batch run executed from that scenario.

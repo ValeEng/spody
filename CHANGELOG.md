@@ -220,6 +220,36 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **Drag no longer vanishes past the daily space weather.** CelesTrak's
+  `SW-All.csv` is daily for about 45 days past the download and then
+  monthly for some 15 years, with the 3-hour Ap left blank. The run
+  window was checked against the last row of the file, but the
+  NRLMSISE-00 inputs need the daily rows: past the last one the
+  density lookup failed and the drag force was silently zero. An ISS
+  day in September 2026 on the bundled file came out bit-identical
+  with drag on and off, where the same day in July 2024 differs by
+  7.6 km. The window now ends at the last daily row (spody-core
+  `mjd_last_daily`), and such a run is refused with the dates. Runs
+  inside the daily part are byte-identical.
+
+- **Every batch case is checked before any runs.** A case is the base
+  TOML plus its overrides and deltas, but only the base and the raw
+  cells were validated: a `mass_kg` delta larger than the base mass
+  ran with A/m forced to zero (no drag, no SRP), a negative
+  `duration_s` finished at once, and a case moved outside the space
+  weather table ran without drag. `spody batch` now builds every
+  case's final configuration first and checks it with the full
+  single-run validator plus its window against the ephemeris, EOP and
+  space-weather tables. Failing cases are listed before anything runs
+  and skipped; the rest of the batch runs and the summary counts them.
+  The same gate runs for every worker, so `calibrate` arcs are covered
+  too. Case ids must now be unique, non-empty and made of letters,
+  digits, `_`, `-`, `.`: two rows with one id wrote the same files,
+  concurrently in a parallel batch, and an id is part of every file
+  name. Every per-case output of the bundled batch examples, a 64-case Earth batch,
+  `calibrate` on the ISS example (30 arcs + `k_nodes.csv`), the GPS
+  and ISS propagations are byte-identical.
+
 - **Run warnings now reach the log file.** `[output].log_file` is
   documented as a copy of everything the engine prints, but three
   warnings were written straight to stderr and never reached it: the
