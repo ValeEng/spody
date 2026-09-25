@@ -32,7 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .time import et_to_mjd_utc
+from .time import et_to_mjd_utc, tai_minus_utc
 
 
 # ----------------------------------------------------------------------
@@ -162,6 +162,11 @@ class MappedEOP:
         hi = self._records[i + 1]
         dmjd = hi[0] - lo[0]
         frac = (mjd - lo[0]) / dmjd if dmjd > 0.0 else 0.0
-        out = lo[1:] + frac * (hi[1:] - lo[1:])
+        # UT1-UTC jumps by +1 s across a leap second; put hi's value on
+        # lo's UTC scale first (= interpolating UT1-TAI). The jump is
+        # exactly 0.0 on every other day, so the lerp is unchanged.
+        hi_vals = hi[1:].copy()
+        hi_vals[2] = hi_vals[2] - (tai_minus_utc(hi[0]) - tai_minus_utc(lo[0]))
+        out = lo[1:] + frac * (hi_vals - lo[1:])
         return (float(out[0]), float(out[1]), float(out[2]),
                 float(out[3]), float(out[4]))
