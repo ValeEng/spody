@@ -39,6 +39,7 @@ per-section derived-parameter blocks declared in `_SECTION_COMMENTS`
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -49,6 +50,9 @@ import tomli
 # the emitted TOML. Distinctive enough not to collide with anything
 # the user is likely to write by hand; the reader bails silently when
 # either marker is missing so a TOML edited externally still parses.
+# TOML bare keys: anything else must be quoted, and a bare `.` would
+# split the key into nested tables (`r.x = 1` means `[r] x = 1`).
+_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 _NOTES_BEGIN = "# ---NOTES BEGIN---"
 _NOTES_END   = "# ---NOTES END---"
 
@@ -282,12 +286,13 @@ def _format_section(name: str, sub: dict[str, Any]) -> str:
     if provider is not None:
         out.extend(provider(scalars))
     for k in _ordered_keys(name, scalars.keys()):
-        out.append(f"{k} = {_format_value(scalars[k])}")
+        out.append(f"{_format_key(k)} = {_format_value(scalars[k])}")
 
     if subtables:
         for child_name in sorted(subtables.keys()):
             out.append("")
-            out.append(_format_section(f"{name}.{child_name}", subtables[child_name]))
+            out.append(_format_section(f"{name}.{_format_key(child_name)}",
+                                       subtables[child_name]))
 
     return "\n".join(out) + "\n"
 
@@ -333,11 +338,20 @@ def _format_value(v: Any) -> str:
         return "[" + ", ".join(_format_value(x) for x in v) + "]"
     if isinstance(v, dict):
         # Inline table (e.g. batch.columns delta descriptor).
-        body = ", ".join(f"{k} = {_format_value(val)}" for k, val in v.items())
+        body = ", ".join(f"{_format_key(k)} = {_format_value(val)}"
+                         for k, val in v.items())
         return "{ " + body + " }"
     raise ValueError(
         f"unsupported TOML value type: {type(v).__name__} ({v!r})"
     )
+
+
+def _format_key(k: str) -> str:
+    """A key as written left of `=` or in a table header: bare when
+    TOML allows it (every schema key), quoted otherwise. Only the
+    `[batch.columns]` keys, which are the user's CSV column names,
+    can need the quotes (`dv x`, `r.x`)."""
+    return k if _BARE_KEY_RE.fullmatch(k) else _format_string(k)
 
 
 def _format_string(s: str) -> str:
