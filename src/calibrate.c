@@ -21,6 +21,7 @@
  * arc pair replacing the single propagation.
  */
 #include <math.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -428,7 +429,15 @@ int spody_calibrate_run(const char *toml_path,
     for (size_t i = 0; i < n_nodes; ++i) {
         fprintf(fk, "%.8f,%.6f\n", node_mjd[i], node_k[i]);
     }
-    fclose(fk);
+    /* fprintf is buffered: a full disk surfaces only as the error flag
+     * or in fclose's final flush. */
+    int nodes_write_failed = ferror(fk);
+    if (fclose(fk) != 0 || nodes_write_failed) {
+        spody_error_set(&err, SPODY_ERR_IO,
+                "write failed on nodes file '%s' (%s): the file is incomplete",
+                nodes_path, strerror(errno));
+        goto fail;
+    }
 
     double wall_s = (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
     spody_log_printf("\n  nodes      : %s  (%zu node%s)\n",

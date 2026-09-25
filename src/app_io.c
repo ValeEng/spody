@@ -109,7 +109,14 @@ int spody_io_copy_file(const char *src, const char *dst, SpodyError *err) {
                 "read failed during copy of '%s' (errno %d)", src, errno);
         rc = SPODY_ERR_IO;
     }
-    fclose(fout);
+    /* The last chunk may still sit in the stdio buffer: a full disk
+     * surfaces only as the error flag or in fclose's final flush. */
+    int write_failed = ferror(fout);
+    if ((fclose(fout) != 0 || write_failed) && rc == SPODY_OK) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "write failed during copy to '%s' (errno %d)", dst, errno);
+        rc = SPODY_ERR_IO;
+    }
     fclose(fin);
     return rc;
 }

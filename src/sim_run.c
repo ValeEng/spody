@@ -56,6 +56,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 
 #include "central_body.h"        /* spody_central_body_get (alt crossings) */
@@ -71,6 +72,22 @@
 #define SPODY_BIN_MAGIC   "SPDYOUT_"   /* 8 bytes, no NUL */
 #define SPODY_BIN_VERSION 1u
 #define SPODY_BIN_STATE_DIM 6u
+
+/* Close one run output. The writes above go through a 1 MiB stdio
+ * buffer, so a full disk can surface only here: as the stream error
+ * flag or as the final flush inside fclose. The first failure becomes
+ * the run's error (an earlier one wins), so a truncated file never
+ * reports success. */
+static void close_output(FILE *fp, const char *path, int *rc, SpodyError *err) {
+    if (!fp) return;
+    int write_failed = ferror(fp);
+    if ((fclose(fp) != 0 || write_failed) && *rc == SPODY_OK) {
+        spody_error_set(err, SPODY_ERR_IO,
+                "write failed on '%s' (%s): the file is incomplete",
+                path, strerror(errno));
+        *rc = SPODY_ERR_IO;
+    }
+}
 
 static int write_csv_header(FILE *fp) {
     return fprintf(fp,
@@ -798,10 +815,10 @@ cleanup:
                 "events_log write failed on final-state record");
         rc = SPODY_ERR_IO;
     }
-    if (csv) fclose(csv);
-    if (bin) fclose(bin);
-    if (acc) fclose(acc);
-    if (evt) fclose(evt);
+    close_output(csv, cfg->csv_file,           &rc, err);
+    close_output(bin, cfg->bin_file,           &rc, err);
+    close_output(acc, cfg->accelerations_file, &rc, err);
+    close_output(evt, cfg->events_log,         &rc, err);
     free(events);
     return rc;
 }

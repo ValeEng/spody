@@ -35,6 +35,7 @@
  *   spody calibrate  <input.toml> <reference.bin> [--window <hours>]
  *   spody info
  */
+#include <errno.h>
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
@@ -651,8 +652,17 @@ static int cmd_batch(int argc, char **argv) {
     /* Close the aggregated events file before tearing down anything
      * else; both success and failure paths below need to flush the
      * trailing records, so do it in one place. */
+    int events_lost = 0;
     if (batch_events_fp) {
-        fclose(batch_events_fp);
+        /* Buffered writes: a full disk shows up only as the error flag
+         * or at the final flush in fclose. The cases themselves may all
+         * be fine, but the aggregated file is truncated. */
+        events_lost = ferror(batch_events_fp);
+        if (fclose(batch_events_fp) != 0) events_lost = 1;
+        if (events_lost)
+            spody_log_eprintf("error: write failed on '%s' (%s): the "
+                              "aggregated events file is incomplete\n",
+                              batch_events_path, strerror(errno));
         batch_events_fp = NULL;
     }
 
@@ -680,6 +690,14 @@ static int cmd_batch(int argc, char **argv) {
                              cfg.batch->case_ids[i],
                              &case_errmsg[i * CASE_MSG_MAX]);
         }
+        free(case_failed); free(case_errmsg);
+        spody_log_close_mirror(); spody_free_input(&cfg);
+        return 1;
+    }
+    if (events_lost) {
+        spody_log_printf("\nbatch finished: %d/%d cases ran in %.2f s total "
+                         "(wall), but the aggregated events file is "
+                         "incomplete.\n", n_cases, n_cases, wall_s);
         free(case_failed); free(case_errmsg);
         spody_log_close_mirror(); spody_free_input(&cfg);
         return 1;

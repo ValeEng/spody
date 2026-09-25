@@ -18,8 +18,10 @@
  */
 #include "app_diagnostics.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 void spody_error_clear(SpodyError *err) {
     if (!err) return;
@@ -53,8 +55,13 @@ int spody_log_open_mirror(const char *path) {
 
 void spody_log_close_mirror(void) {
     if (!g_log_mirror) return;
-    fflush(g_log_mirror);
-    fclose(g_log_mirror);
+    /* The log is a copy of what was already printed: a failed final
+     * flush (full disk) truncates the file but loses no result, so it
+     * is reported on stderr and does not change the exit code. */
+    int write_failed = ferror(g_log_mirror);
+    if (fclose(g_log_mirror) != 0 || write_failed)
+        fprintf(stderr, "warning: write failed on the log file (%s): "
+                        "the log is incomplete\n", strerror(errno));
     g_log_mirror = NULL;
 }
 
