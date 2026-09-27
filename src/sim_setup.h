@@ -133,6 +133,12 @@ typedef struct {
     double *third_mu;
     int     n_third;
 
+    /* Prepended to the lines the run prints while it propagates (the
+     * IMPACT notice). Empty for a single run; a batch sets it to
+     * "[i/n] <case id>: " so lines from parallel cases can be told
+     * apart in the terminal and the log. */
+    char    log_prefix[128];
+
     /* Init flags drive cleanup -- each handle's free() is only called
      * when the corresponding setup actually succeeded. */
     unsigned init_eph     : 1;

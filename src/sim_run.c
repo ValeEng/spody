@@ -693,8 +693,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             if (ev_rc > 0) {
                 stop_ev = &events[first];
                 spody_log_printf(
-                    "  IMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
-                    events[first].naif_id, events[first].t_trigger,
+                    "  %sIMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
+                    w->log_prefix, events[first].naif_id, events[first].t_trigger,
                     events[first].distance_at_trigger, events[first].radius_km);
                 if (emit_trajectory(csv, bin,
                                     events[first].t_trigger,
@@ -765,8 +765,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             if (ev_rc > 0) {
                 stop_ev = &events[first];
                 spody_log_printf(
-                    "  IMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
-                    events[first].naif_id, events[first].t_trigger,
+                    "  %sIMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
+                    w->log_prefix, events[first].naif_id, events[first].t_trigger,
                     events[first].distance_at_trigger, events[first].radius_km);
                 if (emit_trajectory(csv, bin,
                                     events[first].t_trigger,

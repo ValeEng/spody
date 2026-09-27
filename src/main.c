@@ -622,6 +622,9 @@ static int cmd_batch(int argc, char **argv) {
             continue;
         }
 
+        snprintf(w.log_prefix, sizeof w.log_prefix, "[%d/%d] %s: ",
+                 i + 1, n_cases, id);
+
         /* Per-thread sink: the FILE* is shared, the case_idx is
          * per-iteration. Declaring local_sink inside the loop body
          * gives every iteration (and so every thread executing it)
