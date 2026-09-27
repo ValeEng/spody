@@ -108,6 +108,25 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **The run log now holds the engine's own diagnoses.** `log_file`
+  copied everything the app printed but nothing printed inside
+  spody-core, so a run that stopped on a damaged ephemeris saved
+  only `error: ... spody_setup_MappedEphemerisData failed` and not
+  the reason (`... the file looks truncated, regenerate it`), which
+  reached the terminal alone. The log mirror moved from the app into
+  spody-core (`spody_io`: `spody_log_open_mirror`,
+  `spody_log_printf`, `spody_log_eprintf`), the app now only uses
+  it, and every message the library prints goes through it: loaders
+  (ephemeris, harmonics, EOP, IAU 2006 series, space weather,
+  density scale), the integrator, and the converters (123 call
+  sites; debug-build traces are untouched). Terminal output is
+  unchanged: stdout and stderr compared line by line on eleven
+  commands, successful and failing. Output files are byte-identical.
+  Library errors and warnings that went to stdout (bad ephemeris
+  magic or version, unsupported body, degree above the file's
+  maximum, integrator iteration limit, ASCII coefficient-count
+  mismatch) now go to stderr like every other error.
+
 - **Six RHS evaluations per RK45 step instead of seven.** The
   Dormand&ndash;Prince 7S tableau evaluates its last stage exactly
   where the next step starts, and the engine now keeps that
@@ -195,6 +214,14 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   initial states within 5e-12 km and 3e-14 m/s of the intended
   offsets; the `high_fidelity` path still writes `_wrt_icrf.csv` with
   identical numbers.
+
+### Deprecated
+
+- **spody-core's `mission` module** (`spody_mission.h`). The app
+  never used it: it drives the integrator, the force models and its
+  own writers directly. It still builds, but it is not maintained with
+  the rest of the library (its messages do not go through the log
+  mirror) and will be removed in a future release.
 
 ### Fixed
 

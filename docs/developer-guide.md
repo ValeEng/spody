@@ -451,23 +451,35 @@ time. Follow them for new/touched code; don't mass-rename old code.
 8. **Comments state constraints**, not narration: why a tolerance,
    which spec section, what invariant — not what the next line does.
 9. **Docs cite SPICE** as the only validation ground truth.
-10. **App messages go through the log functions.** Anything the app
-    prints while a run is being set up or executed — progress, warnings,
-    errors — uses `spody_log_printf` (stdout) or `spody_log_eprintf`
-    (stderr), declared in `app_diagnostics.h`. Both write the terminal
-    *and* the `[output].log_file` mirror when it is open; a bare
-    `printf` / `fprintf(stderr, ...)` reaches the terminal only, so the
-    saved log silently misses it (this happened to the EOP-prediction
-    and density-scale warnings). Checklist for a new message:
+10. **Every message goes through the log functions — app and core.**
+    The log mirror lives in spody-core (`spody_io.h`:
+    `spody_log_open_mirror` / `spody_log_close_mirror` /
+    `spody_log_printf` / `spody_log_eprintf`); the app only uses it
+    (`app_diagnostics.h` includes `spody_io.h`). Anything printed while
+    a run is set up or executed — progress, warnings, errors, and every
+    diagnosis inside the library (loaders, integrator, converters) —
+    uses `spody_log_printf` (stdout) or `spody_log_eprintf` (stderr).
+    Both write the terminal *and* the `[output].log_file` mirror when
+    it is open; a bare `printf` / `fprintf(stderr, ...)` / `perror`
+    reaches the terminal only, so the saved log silently misses it
+    (this happened to the EOP-prediction and density-scale warnings,
+    and to every core diagnosis until the mirror moved into the
+    library). Both functions carry a printf format attribute: gcc
+    checks every call's arguments (`-Wformat`). They are safe from
+    OpenMP worker threads (one `vfprintf` per stream per call, locked
+    by the C runtime: 8 threads x 20 000 lines, no line split); open
+    and close the mirror outside parallel regions. Checklist for a new
+    message:
     - warning or error → `spody_log_eprintf`, prefixed `spody:
       warning:` (or `<subcommand>: WARNING --` in a subcommand);
     - progress / summary → `spody_log_printf`;
     - check it with a TOML that sets `log_file` and `grep` the log.
     Exempt: usage lines and argument errors printed before any TOML
-    is read, and the `convert` / `maxhgdegree` / `info` subcommands,
-    which never open a mirror. Messages printed *inside spody-core*
-    (converters, loaders) do not reach the mirror either — the library
-    has no log callback yet.
+    is read; debug-build traces inside `#if DEBUG_*` blocks (they stay
+    bare `printf` on purpose); the deprecated `spody_mission.c`. The
+    `convert` / `maxhgdegree` / `info` subcommands never open a mirror,
+    so there the functions behave like plain printf — use them anyway,
+    so a future conversion log gets the lines for free.
 11. **Every file written is checked at close.** Output goes through
     stdio buffers (1 MiB for the run outputs), so on a full disk the
     `fwrite` / `fprintf` calls keep succeeding and the loss shows up

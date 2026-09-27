@@ -493,7 +493,7 @@ cadence. Required.
 | `interval_s`           | float         | &mdash; | `> 0`   | Sampling interval in seconds when `mode = "fixed"`. Ignored otherwise. |
 | `csv_file`             | string (path) | none    | &ndash; | CSV trajectory output. Empty/absent = no CSV produced. |
 | `bin_file`             | string (path) | none    | &ndash; | Binary (`SPDYOUT_`) trajectory output. Recommended for analysis: the GUI's reader path uses this format. |
-| `log_file`             | string (path) | none    | &ndash; | Path that the engine tees its stdout/stderr into. |
+| `log_file`             | string (path) | none    | &ndash; | Path that the engine tees its stdout/stderr into: the app's own lines and every diagnosis printed by the engine library (a damaged ephemeris, a malformed harmonics row, a missing data file). |
 | `accelerations_file`   | string (path) | none    | &ndash; | Per-force acceleration breakdown (`SPDYACC_` format). Empty = no breakdown produced. |
 | `events_log`           | string (path) | none    | &ndash; | Event records (`SPDYEVT_` format) for impacts and (if `[events]` is enabled) eclipses. |
 

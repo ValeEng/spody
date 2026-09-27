@@ -422,7 +422,7 @@ spody/
 │   └── tomlc99/              # vendored TOML parser (cktan/tomlc99, MIT)
 ├── src/
 │   ├── main.c                # CLI entry point + subcommand dispatch
-│   ├── app_diagnostics.{c,h} # SpodyError + tee log mirror
+│   ├── app_diagnostics.{c,h} # SpodyError (log mirror: spody-core spody_io)
 │   ├── app_io.{c,h}          # filesystem / timestamp / path helpers, run-folder layout (ts-prefixed)
 │   ├── toml_input.{c,h}      # TOML parser, validator, batch matrix loader, [cr3bp] schema branch
 │   ├── central_body.{c,h}    # app-side central-body registry (Moon, Earth, ...)
