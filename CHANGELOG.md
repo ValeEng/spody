@@ -557,6 +557,23 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   other output are byte-identical; no example's accelerations file
   changes.
 
+- **Fixed-mode output grid wandered off its epochs with a non-integer
+  interval.** Each sample time was the previous one plus
+  `interval_s`, one rounding per record. With an interval that is not
+  a whole number of seconds the error accumulates: 6.3 &micro;s after
+  seven days at 1.1 s, and in the simulation 0.1 ms after a month at
+  1.1 s and 0.5 ms after a year at 33.3 s. Worse, the last grid sample
+  could land a few microseconds short of `duration_s`, and the final
+  state was then appended as well: the GPS 7-day example run at 1.1 s
+  closed on two records 6 &micro;s apart (549 002 records instead of
+  549 001). Sample *k* is now *k* &times; `interval_s`, one rounding
+  from the exact product: every record of that run and of
+  `cr3bp_closure_test` (interval 1049.446 s) sits exactly on its
+  nominal epoch and the duplicate is gone. The states move only with
+  their epochs (at most 2.4 cm at the same index on the 1.1 s run).
+  Integer intervals give the same times as before; every other
+  example and output is byte-identical.
+
 ## v0.4.1-beta &mdash; 2026-08-05
 
 ### Added
