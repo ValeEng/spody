@@ -25,6 +25,8 @@
 #ifndef SPODY_APP_DIAGNOSTICS_H
 #define SPODY_APP_DIAGNOSTICS_H
 
+#include "spody_io.h"   /* spody_log_* text mirror (spody-core) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,27 +66,10 @@ void spody_error_set(SpodyError *err, int code, const char *fmt, ...);
  * open (see spody_log_open_mirror), the same line is also written to it. */
 void spody_error_print(const SpodyError *err);
 
-/* ----------------------------------------------------------------------
- * Log mirror: tee stdout / stderr to a file.
- *
- * After spody_log_open_mirror, every spody_log_printf goes to BOTH stdout
- * and the file; every spody_log_eprintf goes to BOTH stderr and the file;
- * spody_error_print also mirrors. Output to the terminal is unchanged in
- * absence of a mirror, so calling these helpers is always safe.
- * ---------------------------------------------------------------------- */
-
-/* Open `path` for write (truncate). Closes any previous mirror first.
- * Returns 0 on success, -1 on fopen failure. */
-int  spody_log_open_mirror(const char *path);
-
-/* Flush and close the current mirror, if any. Idempotent. */
-void spody_log_close_mirror(void);
-
-/* printf-style write to stdout (and to the mirror, if open). */
-void spody_log_printf (const char *fmt, ...);
-
-/* printf-style write to stderr (and to the mirror, if open). */
-void spody_log_eprintf(const char *fmt, ...);
+/* The log mirror (spody_log_open_mirror, spody_log_close_mirror,
+ * spody_log_printf, spody_log_eprintf) is part of spody-core: see
+ * spody_io.h. Included here so every app module that reports through
+ * this header keeps reaching it. */
 
 #ifdef __cplusplus
 }
