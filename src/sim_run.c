@@ -20,7 +20,7 @@
  *
  *   emit_traj  (t = 0, y0)
  *   emit_accel (t = 0, y0)               -- if accelerations enabled
- *   t_next = dt
+ *   k = 1, t_next = dt
  *   while (integ.t < t_end):
  *       clip integ.h to land on t_end if it would overshoot
  *       onestep
@@ -29,7 +29,7 @@
  *           y_q = hermite(integ, t_next)
  *           emit_traj  (t_next, y_q)
  *           emit_accel (t_next, y_q)      -- if accelerations enabled
- *           t_next += dt
+ *           t_next = ++k * dt
  *       if a stop-class event fired -> emit_traj (t_trigger, y_trigger)
  *                                      + STOP
  *
@@ -624,6 +624,13 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
 
     if (cfg->output_mode == SPODY_OUT_FIXED) {
         const double dt = cfg->output_interval_s;
+        /* Grid sample k sits at k * dt, one rounding away from the
+         * exact product. Accumulating t_next += dt instead adds one
+         * rounding per sample: with a dt that is not a whole number
+         * of seconds the grid wanders off its nominal epochs (0.1 ms
+         * after a month at dt = 1.1 s) and the sample on the last
+         * epoch can be lost to the endpoint record. */
+        long long k_next = 1;
         double t_next   = dt;
         double t_last_emitted = w->integ.t;
 
@@ -684,7 +691,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                     rc = SPODY_ERR_IO; goto cleanup;
                 }
                 t_last_emitted = t_next;
-                t_next += dt;
+                t_next = (double)++k_next * dt;
             }
 
             /* A stop-class event ended the propagation inside this
