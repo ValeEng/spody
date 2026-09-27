@@ -20,6 +20,7 @@ ones, even when the C process writes in arbitrary-sized chunks.
 """
 from __future__ import annotations
 
+import codecs
 import sys
 import time
 from pathlib import Path
@@ -37,6 +38,10 @@ class SpodyRunner(QObject):
         super().__init__(parent)
         self._proc: QProcess | None = None
         self._buffer = ""
+        # Incremental: a multi-byte UTF-8 character cut between two
+        # reads is held back until its last byte arrives, instead of
+        # decoding each half to U+FFFD.
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._start_time: float = 0.0
         self._end_time: float = 0.0
         # Most-recent non-empty line emitted to line_received -- exposed
@@ -68,6 +73,7 @@ class SpodyRunner(QObject):
             return
 
         self._buffer = ""
+        self._decoder.reset()
         self._last_line = ""
         self._start_time = time.monotonic()
         self._end_time = 0.0
@@ -85,6 +91,7 @@ class SpodyRunner(QObject):
                          [subcommand, str(toml_path), *(extra_args or [])])
         if not self._proc.waitForStarted(3000):
             self.error.emit(f"failed to start: {spody_bin}")
+            self._proc.deleteLater()
             self._proc = None
             return
         self.started.emit()
@@ -130,18 +137,22 @@ class SpodyRunner(QObject):
     # ------------------------------------------------------------------
     def _on_ready_read(self) -> None:
         assert self._proc is not None
-        # readAllStandardOutput returns a QByteArray; decode permissively.
-        chunk = bytes(self._proc.readAllStandardOutput()).decode("utf-8", errors="replace")
-        self._buffer += chunk
-        # Emit complete lines; keep any trailing partial line for next call.
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
+        self._buffer += self._decoder.decode(
+            bytes(self._proc.readAllStandardOutput()))
+        # Emit complete lines; keep any trailing partial line for next
+        # call. One split per read: splitting off a line at a time
+        # copied the rest of the buffer each time, quadratic in the
+        # number of lines a read delivers.
+        *lines, self._buffer = self._buffer.split("\n")
+        for line in lines:
             if line.strip():
                 self._last_line = line
             self.line_received.emit(line)
 
     def _on_finished(self, exit_code: int, _exit_status) -> None:
-        # Flush any trailing partial line that did not end with newline.
+        # Flush any trailing partial line that did not end with newline
+        # (and the bytes of a character the process never finished).
+        self._buffer += self._decoder.decode(b"", final=True)
         if self._buffer:
             if self._buffer.strip():
                 self._last_line = self._buffer
@@ -149,6 +160,9 @@ class SpodyRunner(QObject):
             self._buffer = ""
         self._end_time = time.monotonic()
         self.finished.emit(exit_code)
+        # The process is a child of this runner: dropping the reference
+        # alone kept one QProcess alive per run for the whole session.
+        self._proc.deleteLater()
         self._proc = None
 
     def _on_error(self, err: QProcess.ProcessError) -> None:
