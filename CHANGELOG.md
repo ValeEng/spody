@@ -612,6 +612,18 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   were garbled, now none. On ASCII output the lines shown are
   unchanged.
 
+- **A click during a slow Analysis-tab render could re-enter it.**
+  Tiling many plots, building a 3D scene with third bodies or the Sun,
+  and every other operation behind the wait cursor pumped the event
+  loop to keep the window painting, and the pump let user input
+  through: a click on another file in the tree while a tile was being
+  drawn replaced the loaded data under the subplots still to come, so
+  one figure could mix two files without a word. The pumps now paint
+  only: clicks and keys wait in the queue and are handled once the
+  operation finishes, as with any busy window. Checked with a real
+  Windows click during a pumped loop: handled inside the loop before,
+  after it now.
+
 ## v0.4.1-beta &mdash; 2026-08-05
 
 ### Added
