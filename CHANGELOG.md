@@ -8,6 +8,30 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **`frame = "central_body_fixed_rotating"` &mdash; initial states in
+  a rotating body-fixed frame (ECEF-style).** `central_body_fixed`
+  takes the velocity as the inertial one written on the body-fixed
+  axes and only rotates it; that convention is kept, and now said
+  everywhere (manual, the form's hint, the startup summary line
+  `initial frame`). A state from a GNSS receiver, an SP3 file read by
+  hand or another tool's ECEF / ITRF output carries a velocity
+  relative to the rotating Earth instead, and entered that way it
+  started the run on another orbit, off by |&omega;&times;r|: 1.93 km/s at
+  GPS altitude, 0.49 km/s in LEO, 4.4 m/s in low lunar orbit. The new
+  frame applies the transport theorem v = R v<sub>rot</sub> +
+  &omega;&times;r. For the Earth &omega; is the nominal rotation about
+  the ITRS z axis, as in the GNSS converters: an ECEF state entered
+  here gives the converter's ICRF state bit for bit, and the round trip
+  ICRF &rarr; ECEF &rarr; engine closes to 5e-6 mm and 5e-10 mm/s. For
+  the Moon &omega; comes from the DE440 libration (2.6615e-6 rad/s,
+  0.03&deg; from the PA z axis on the LRO epoch). Cartesian input only
+  &mdash; Keplerian elements are inertial and are refused with a pointer
+  to `central_body_fixed`. The GUI offers the frame for Cartesian
+  input and converts on a frame flip through the inertial state; the
+  spopy twin is `bf_angular_velocity_icrf`. Existing inputs and every
+  bundled example are unchanged (spody-core adds
+  `spody_bf_angular_velocity_icrf`).
+
 - **`spody convert gp` &mdash; general-perturbation elements to the
   ICRF state a propagation starts from.** Eight mean elements in, the
   six numbers of an `[initial_state]` block out, printed rather than

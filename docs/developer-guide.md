@@ -1838,6 +1838,20 @@ Each entry: the rule, and the symptom you'll see if you break it.
   leap day UT1 is wrong by up to 1 s (0.5 km of frame rotation at
   LEO radius, 1.9 km at GPS radius by midnight); a 72-hour LEO run
   starting 2016-12-30 moves by about 5 m.*
+- **Two body-fixed frames, one set of axes.** `central_body_fixed`
+  reads the velocity as inertial on the body-fixed axes (pure rotation;
+  the GUI's BF plots and frame flip share this convention);
+  `central_body_fixed_rotating` reads it as relative to the rotating
+  body and adds omega x r in `initial_state_to_icrf`. omega comes from
+  `spody_bf_angular_velocity_icrf` (Earth: EARTH_ROT_RATE_RADPS about
+  ITRS z, like the GNSS converters, same `(v + a) - b` association so
+  the two agree bit for bit; other bodies: central difference of the
+  rotation provider over SPODY_BF_OMEGA_FD_STEP_S), twin
+  `spopy.bf_angular_velocity_icrf` used by the form. Never let one
+  frame silently take the other's meaning, and keep Keplerian input
+  off the rotating frame. *Symptom of breakage: an ECEF state starts
+  on the wrong orbit, off by |omega x r| (1.9 km/s at GPS, 0.5 km/s in
+  LEO).*
 - **Dense output reads the FSAL derivatives, and their names are
   swapped after a step.** The fixed output grid and the event
   localisation both call `spody_dense_state_rv6`: a quintic Hermite

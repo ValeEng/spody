@@ -54,7 +54,7 @@ The schema branches on `simulation.dynamics_model`:
 
 | `dynamics_model` | Required sections | Forbidden sections |
 |------------------|-------------------|--------------------|
-| `high_fidelity` (default) | `[simulation]`, exactly one of `[spacecraft]` / `[debris]`, `[initial_state]` with `frame = "central_inertial"`, `"central_body_fixed"` or `"orbit_plane"` (Moon only), `[force_model]`, `[ephemeris]`, `[integrator]`, `[output]` | `[cr3bp]` |
+| `high_fidelity` (default) | `[simulation]`, exactly one of `[spacecraft]` / `[debris]`, `[initial_state]` with `frame = "central_inertial"`, `"central_body_fixed"`, `"central_body_fixed_rotating"` or `"orbit_plane"` (Moon only), `[force_model]`, `[ephemeris]`, `[integrator]`, `[output]` | `[cr3bp]` |
 | `cr3bp` | `[simulation]`, `[cr3bp]`, `[initial_state]` with `frame = "synodic_rotating"`, `[integrator]`, `[output]` | `[spacecraft]`, `[debris]`, `[force_model]`, `[ephemeris]`, `[events]` with `eclipse_threshold`, `[output].accelerations_file` |
 
 The validator rejects mismatches up front (HF without `et_start_s`,
@@ -190,7 +190,7 @@ snapshot TOML on disk) is identical for both.
 
 | Key            | Type            | Default       | Range | Description |
 |----------------|-----------------|---------------|-------|-------------|
-| `frame`        | string          | &mdash;       | `central_inertial`, `central_body_fixed` or `orbit_plane` (HF), `synodic_rotating` (CR3BP) | Reference frame. Model-exclusive: only the listed values are valid under each `dynamics_model`. `central_inertial` (HF) leaves the parsed `(position, velocity)` in the integrator's working basis; `central_body_fixed` (HF) interprets the values in the central body's body-fixed basis at `et_start_s` (Earth ITRS, Moon PA) and the engine rotates them to ICRF via the same `bf_rotation` callback the force-model uses on every step, before the run begins &mdash; the downstream integrator still sees a `central_inertial` state. `orbit_plane` (HF, Moon only) is Ely's OP frame, described below. `synodic_rotating` (CR3BP) places the elements in the reference primary's local inertial frame; the engine then rotates / translates them into the synodic frame at `t = 0`. The value of `frame` still has to match the model. |
+| `frame`        | string          | &mdash;       | `central_inertial`, `central_body_fixed`, `central_body_fixed_rotating` or `orbit_plane` (HF), `synodic_rotating` (CR3BP) | Reference frame. Model-exclusive: only the listed values are valid under each `dynamics_model`. `central_inertial` (HF) leaves the parsed `(position, velocity)` in the integrator's working basis; `central_body_fixed` (HF) interprets the values in the central body's body-fixed basis at `et_start_s` (Earth ITRS, Moon PA) and the engine rotates them to ICRF via the same `bf_rotation` callback the force-model uses on every step, before the run begins &mdash; the downstream integrator still sees a `central_inertial` state. **Its velocity is the inertial one written on the body-fixed axes** (rotated, no &omega;&times;r). `central_body_fixed_rotating` (HF, Cartesian only) uses the same axes but takes the velocity **measured in the rotating frame**, as ECEF data gives it, and adds &omega;&times;r; see *Two body-fixed frames* below. `orbit_plane` (HF, Moon only) is Ely's OP frame, described below. `synodic_rotating` (CR3BP) places the elements in the reference primary's local inertial frame; the engine then rotates / translates them into the synodic frame at `t = 0`. The value of `frame` still has to match the model. |
 | `kind`         | string          | `"cartesian"` | `"cartesian"`, `"keplerian"` | Which set of keys below is consumed. Omit for the legacy Cartesian path. |
 
 ### `kind = "cartesian"` (default)
@@ -237,6 +237,35 @@ the point of running a CR3BP scenario. The Keplerian input form is
 just a convenient way to specify the *initial* state; once the
 integration starts it is identical to a Cartesian IC carrying the
 same `(r, v)`.
+
+### Two body-fixed frames: `central_body_fixed` and `central_body_fixed_rotating`
+
+Both place position and velocity on the central body's body-fixed
+axes at `et_start_s` (Earth ITRS, Moon PA). They differ in what the
+**velocity** means, and mixing them up is not a small error:
+
+| `frame` | the velocity you write is | the engine does | typical source |
+|---|---|---|---|
+| `central_body_fixed` | the **inertial** velocity, expressed on the body-fixed axes | rotates it: v = R v | the GUI's body-fixed plots and frame flip, which use this convention; Keplerian elements on the body-fixed axes |
+| `central_body_fixed_rotating` | the velocity **relative to the rotating body** (ECEF-style) | rotates it and adds the transport term: v = R v + &omega;&times;r | GNSS receivers, SP3 read by hand, other tools' ECEF / ITRF / Moon-fixed states |
+
+The two readings of the same three numbers differ by |&omega;&times;r|:
+about 0.49 km/s in LEO, 1.93 km/s at GPS altitude, 4.4 m/s in low
+lunar orbit. Entering ECEF data as `central_body_fixed` therefore
+starts the run on a completely different orbit, without any error.
+
+&omega; is the angular velocity of the body-fixed frame. For the Earth
+it is the nominal rotation rate about the ITRS z axis, the same the
+`spody convert sp3 | gps | glonass` converters apply, so an ECEF state
+entered here and the same state converted give the same ICRF state bit
+for bit. For the Moon it is derived from the DE440 libration that
+defines the PA frame (|&omega;| &asymp; 2.66&times;10<sup>-6</sup> rad/s, its
+axis within a few arcminutes of the PA z axis).
+
+`central_body_fixed_rotating` accepts Cartesian input only: Keplerian
+elements describe inertial motion, so their body-fixed reading is
+`central_body_fixed`. The run's startup summary states which reading
+it applied (`initial frame : ...`).
 
 ### `frame = "orbit_plane"` &mdash; Ely's OP frame
 

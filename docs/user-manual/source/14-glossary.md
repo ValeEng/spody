@@ -118,6 +118,12 @@ chapter 13.]
 spherical-harmonic gravity expansion. Higher = more accurate but
 O(N&sup2;) more expensive. [Chapter 6.]
 
+**central_body_fixed / central_body_fixed_rotating.** &mdash; The two
+body-fixed readings of an initial state: the same axes (Earth ITRS,
+Moon PA), with the velocity taken as inertial in the first and as
+relative to the rotating body (ECEF-style, &omega;&times;r added) in
+the second. [Chapter 6.]
+
 **ICRF.** &mdash; International Celestial Reference Frame, the
 modern realisation of the J2000 inertial axes. SpOdy's
 central-inertial frame is ICRF-aligned. [Chapter 10.]
