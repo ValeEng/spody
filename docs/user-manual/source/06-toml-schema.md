@@ -509,7 +509,10 @@ strings so the engine sees no schema change.
 
 On every invocation the engine creates a **per-run folder** named
 `<output_dir>/<UTC-ISO8601>/` (compact format, e.g.
-`2026-06-09T120000Z`) and rewrites every enabled output path so it
+`2026-06-09T120000Z`; a run started in the same second as another
+one in the same `output_dir` gets `2026-06-09T120000Z-1`, then `-2`,
+..., so it never writes into the other run's folder) and rewrites
+every enabled output path so it
 lives inside that folder. The TOML used to start the run is also
 copied into the run folder as `input.toml`, so a run is fully
 self-contained: zip the folder and you have the inputs + outputs

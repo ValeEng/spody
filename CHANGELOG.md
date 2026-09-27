@@ -108,6 +108,18 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Two runs started in the same second keep separate folders.**
+  The run folder is named after the start time to the second, and a
+  second run in the same `output_dir` within that second reused the
+  first one's folder: same file names, so one run's results were
+  overwritten while both reported success and pointed at the folder.
+  Two propagations launched together (3600 s and 7200 s) left one
+  folder holding only the 7200 s results, 6 tries out of 6. A clash
+  now gets its own folder, `<ts>-1`, `<ts>-2`, ...; creating a folder
+  is atomic, so each run owns the name it created. The Analysis tab
+  groups `<ts>-N` folders as runs like any other. Runs that do not
+  clash keep exactly the same folder name as before.
+
 - **Batch impact notices name their case.** The `IMPACT: body ...`
   line a case prints when it hits the central body carried no case
   id, so in a batch running several threads the notices interleaved
