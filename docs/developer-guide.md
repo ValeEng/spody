@@ -1049,7 +1049,10 @@ ch. 7; CHANGELOG.
    `ForceModelContext`, add into the state derivative, **and write
    the per-force contribution into the breakdown slots** — a force
    missing from `SPDYACC_` is invisible to the Analysis tab and to
-   future debugging.
+   future debugging. Add it into `acc_total` at the same position
+   and with the same grouping as in `spody_force_rhs_default`: the
+   total is promised bit-identical to the right-hand side, and
+   regrouping a sum changes its rounding.
 2. Add the context fields it needs to `ForceModelContext` (set up in
    `sim_setup.c` from config; remember flat-copy rules if anything
    lands in `InputConfig`).

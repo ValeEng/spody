@@ -541,6 +541,22 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   and a `__version__` it cannot find is a hard error, not a silent
   fallback to a stale default.
 
+- **`acc_total` in the accelerations file could differ from what the
+  integrator used.** The breakdown promises a total bit-identical to
+  the right-hand side at the same state, but it added the third bodies
+  as one pre-summed pair while the right-hand side adds them one at a
+  time after SRP and drag: with two or more third bodies next to a
+  non-zero SRP or drag, the last bits could round differently. The
+  difference hides under the two-body term in low orbits and grows
+  with distance: on an SRP + Moon + Sun configuration, 0 of 2000
+  directions differed at 26 600 km, 1 at GEO, 17 at 200 000 km and 67
+  (3.4 %) at lunar distance, by one to eight units in the last place
+  of a component. The total is now accumulated in the right-hand
+  side's order and matches it in every sample, at every radius and in
+  every example. The per-force columns, the trajectories and every
+  other output are byte-identical; no example's accelerations file
+  changes.
+
 ## v0.4.1-beta &mdash; 2026-08-05
 
 ### Added
