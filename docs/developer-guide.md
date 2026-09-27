@@ -969,10 +969,15 @@ The registry is designed so this is three local edits on the C side
    per-body file selection the way Moon/Earth do it.
 5. **GUI mirror**: one `CentralBodySpec` in
    `spody_gui/central_bodies.py` (name, `naif_id`, `radius_km`,
-   `mu_km3_s2`, `bf_frame_name`, `bf_orientation`). The orientation
-   provider is the spopy twin of the C rotation (see
-   `_moon_orientation` for the pattern) — if you wrote a C provider,
-   write the spopy sibling and keep them in lockstep (§4.5 spirit).
+   `mu_km3_s2`, `bf_frame_name`, `bf_orientation`,
+   `bf_orientation_many`). The orientation provider is the spopy twin
+   of the C rotation (see `_moon_orientation` for the pattern) — if
+   you wrote a C provider, write the spopy sibling and keep them in
+   lockstep (§4.5 spirit). `bf_orientation_many` is the same rotation
+   over an array of epochs, `(et[n], eph) -> R[n, 3, 3]`: every
+   per-sample use (body-fixed plots, impact lat/lon, animated triads,
+   spoviz `orientation_for`) calls it once for the whole grid, so any
+   per-call setup (file lookup, series nodes) is paid once.
    Texture in `assets.py` if you want a textured 3D body.
 6. The form's combo, the validator error text ("known: …") and the
    impact/3D views all auto-track the registries — no further edits.
@@ -1243,7 +1248,8 @@ Checklist for a new 3D capability:
 2. **New ephemeris-driven decoration** → a function in
    `spoviz/decoration.py` that takes `scene` plus explicit inputs
    only: `ephemeris` (duck-typed on `spopy.Ephemeris.position`),
-   `orientation_for` / `texture_for` callables,
+   `orientation_for` (array providers, `(et[n], eph) -> R[n]`) /
+   `texture_for` callables,
    `radius_km_by_name` mapping, optional `pump` (the GUI passes
    `QApplication.processEvents`). Then add a same-name wrapper in
    `analysis/scene3d.py` with the historical `(canvas, ctx,
@@ -1889,6 +1895,17 @@ Each entry: the rule, and the symptom you'll see if you break it.
   verification vectors are its output. *Symptom of breakage: GNSS
   conversions move by a few cm with no input change; the GUI rotation
   and the engine disagree by more than a few mm at GNSS radius.*
+- **The GUI's Earth rotation is the engine's chain.**
+  `spopy.icrf_to_itrs(_many)` mirrors `spody_bf_rotation_earth` step
+  for step: EOP interpolated linearly (UT1-TAI across leap seconds)
+  with dX/dY added to X/Y, X/Y/s on the SPODY_XYS_NODE_S grid with
+  the same Lagrange cubic, two-part UT1 for the ERA, SOFA composition.
+  The only difference left is the series source (IERS tables in C,
+  `erfa.xys06a` in Python): 2.5 mm rms at GNSS radius against `spody
+  convert sp3`. Dropping a step (dX/dY is 1-2 cm at the surface) makes
+  the body-fixed states the form writes disagree with how the engine
+  reads them. *Symptom of breakage: a body-fixed initial state written
+  by the form lands cm away from the state it came from.*
 - **Every external table a run loads appears in the data sources
   block.** `print_data_sources` in `sim_setup.c`, called once at the
   end of `spody_build_shared`, lists each loaded table (path, size in

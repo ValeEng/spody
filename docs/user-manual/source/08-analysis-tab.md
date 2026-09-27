@@ -230,7 +230,7 @@ vectors and Keplerian angles in:
 - **ICRF (inertial)** &mdash; the integrator's native frame; the
   default, leaves every plot exactly as before.
 - **Body-fixed** &mdash; the central body's body-fixed basis at
-  the corresponding ET (Earth ITRS via `spopy.icrf_to_itrs`, Moon
+  the corresponding ET (Earth ITRS via `spopy.icrf_to_itrs_many`, Moon
   PA via the DE-series libration angles). The radio's label
   tracks the body name (`Body-fixed (ITRS)` / `Body-fixed (PA)`).
   Disabled (greyed back to ICRF) for CR3BP runs and for central

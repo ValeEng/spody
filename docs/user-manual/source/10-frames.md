@@ -92,7 +92,9 @@ conventions plus the IERS Earth-Orientation Parameters (EOP):
 
 where `Q(t)` is the celestial-to-intermediate frame matrix
 assembled from the IAU 2006 X, Y, s+XY/2 series (the
-`tab5.2{a,b,d}.txt` files the wizard downloads), `ERA(t)` is the
+`tab5.2{a,b,d}.txt` files the wizard downloads; evaluated on an
+hourly grid and interpolated with a cubic, 3&times;10<sup>-7</sup> mas)
+plus the IERS celestial-pole offsets dX, dY, `ERA(t)` is the
 Earth Rotation Angle driven by UT1 (which IERS publishes as
 `UT1 - UTC` in `finals2000A.all`), and `W(t)` is the polar-motion
 matrix built from the (`xp`, `yp`) angles in the same EOP file.
@@ -110,9 +112,13 @@ startup-freshness check that nudges you to refresh
 
 The same rotation pipeline is exposed in pure Python through the
 bundled `spopy` package (`spopy.MappedEOP` for the IERS table
-reader plus `spopy.icrf_to_itrs(et, eop)` for the rotation
-itself). The Python implementation wraps `pyerfa` and matches the
-C engine at machine epsilon.
+reader, `spopy.icrf_to_itrs(et, eop)` for the rotation at one epoch
+and `spopy.icrf_to_itrs_many(et_array, eop)` for many at once). It
+follows the engine's chain step for step, building on `pyerfa`: the
+two agree to about 3 mm at GNSS radius (0.02 mas; the series come
+from the IERS tables in the engine and from SOFA in Python), which
+is what the GUI uses for body-fixed plots and for the body-fixed
+initial states the Run form writes.
 
 ### Common to both bodies
 

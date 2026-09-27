@@ -132,6 +132,21 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **The GUI's Earth rotation follows the engine's chain, 20&times;
+  faster.** Body-fixed (ITRS) plots, the impact latitude/longitude
+  views and the animated ITRF triad rotated every sample with a
+  separate call that looked up the data folder and the EOP file each
+  time: 223&nbsp;&micro;s a sample, 4.8 s for a 15-day run at 60 s. One
+  call now rotates the whole time grid (`spopy.icrf_to_itrs_many`):
+  **10&nbsp;&micro;s a sample, 0.23 s**. The rotation is now the engine's
+  own chain: it applies the IERS celestial-pole offsets dX, dY that
+  the GUI left out (0.1&ndash;0.4 mas, 1&ndash;2 cm on the surface, 5 cm at
+  GNSS radius) and interpolates X, Y, s on the engine's hourly grid.
+  Against `spody convert sp3` on the G11 week the GUI rotation went
+  from 57 mm rms (91 mm max) to **2.5 mm rms (3.2 mm max)**, so the
+  body-fixed states the Run form writes are read back by the engine
+  as the same state. Moon rotation values are unchanged.
+
 - **Earth rotation angle from a two-part UT1 date.** The engine
   formed UT1 as one Julian Date in a double (`MJD + 2400000.5`),
   which resolves only 40&nbsp;&micro;s of UT1: the Earth rotation angle
