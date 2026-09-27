@@ -599,6 +599,19 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   run is stopped only when the window really closes, and a *Cancel*
   at either prompt leaves both the form and the run untouched.
 
+- **The GUI's run console leaked a process object per run, slowed
+  down quadratically on large reads and garbled split characters.**
+  Each run's `QProcess` stayed alive, as a child of the runner, for
+  the whole session (30 runs left 30 behind; now 0). A read carrying
+  many lines was split off one line at a time, copying the rest of
+  the buffer each time: 20 000 lines took 128 ms, 80 000 lines 10 s of
+  frozen GUI; one split per read now takes 42 ms and 172 ms. Each read
+  was decoded on its own, so a non-ASCII character (an accented
+  folder name in a path) cut between two reads came out as two
+  replacement characters: 4 of the 39 possible cuts of such a line
+  were garbled, now none. On ASCII output the lines shown are
+  unchanged.
+
 ## v0.4.1-beta &mdash; 2026-08-05
 
 ### Added
