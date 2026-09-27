@@ -24,7 +24,7 @@ Layout:
     |   (c) 2026 ValeEng - Apache License 2.0 |
     +-----------------------------------------+
     | App:    0.4.1-beta                      |
-    | Core:   1.2.0 (git c5c0dd9,             |
+    | Core:   2.0.0 (git c5c0dd9,             |
     |         built 2026-06-22T00:00:00Z)     |
     +-----------------------------------------+
     | Built on (collapsible credits):         |

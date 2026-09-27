@@ -551,9 +551,10 @@ static int cmd_batch(int argc, char **argv) {
     /* Per-case status + error message. Allocated once before the
      * loop so the parallel section only writes to disjoint slots
      * (no realloc, no shared mutation hazard). The message slot is
-     * sized after SpodyError.msg so any error string the engine can
-     * produce fits without truncation. */
-    enum { CASE_MSG_MAX = sizeof(((SpodyError *)0)->msg) };
+     * sized after SpodyError.msg plus room for the "skipped by the
+     * pre-check: " / "setup: " prefix, so any error string the engine
+     * can produce fits without truncation. */
+    enum { CASE_MSG_MAX = sizeof(((SpodyError *)0)->msg) + 32 };
     int   n_cases     = cfg.batch->n_cases;
     int  *case_failed = (int  *)calloc((size_t)n_cases, sizeof(int));
     char *case_errmsg = (char *)calloc((size_t)n_cases, CASE_MSG_MAX);

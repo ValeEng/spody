@@ -152,20 +152,22 @@ static int check_space_weather_window(const InputConfig *cfg,
     return SPODY_OK;
 }
 
-/* UTC MJD -> "YYYY-MM-DD" (the calendar day holding it). */
-static void mjd_to_date(double mjd, char out[11]) {
+/* UTC MJD -> "YYYY-MM-DD" (the calendar day holding it). The buffer
+ * holds any int the fields could print, not just four-digit years. */
+enum { DATE_BUF = 32 };
+static void mjd_to_date(double mjd, char out[DATE_BUF]) {
     int year = 0;
     spody_mjd_to_doy(mjd, &year, NULL, NULL);
     double day0 = floor(mjd);
     for (int month = 12; month >= 1; --month) {   /* calendar months */
         double first = spody_greg_to_jd(year, month, 1, 0, 0, 0.0) - JD_MJD_EPOCH;
         if (day0 >= first) {
-            snprintf(out, 11, "%04d-%02d-%02d", year, month,
+            snprintf(out, DATE_BUF, "%04d-%02d-%02d", year, month,
                      (int)(day0 - first) + 1);
             return;
         }
     }
-    snprintf(out, 11, "?");
+    snprintf(out, DATE_BUF, "?");
 }
 
 /* " (<bytes> bytes, modified YYYY-MM-DD)" for a data file: enough to
@@ -186,7 +188,7 @@ static void describe_file(const char *path, char *out, size_t n) {
  * through the log functions so it heads the saved log as well. */
 static void print_data_sources(const InputConfig *cfg,
                                const SimulationShared *shared) {
-    char info[128], d0[11], d1[11], d2[11], d3[11];
+    char info[128], d0[DATE_BUF], d1[DATE_BUF], d2[DATE_BUF], d3[DATE_BUF];
     double mjd0 = spody_et_to_mjd_utc(cfg->et_start_s);
     double mjd1 = spody_et_to_mjd_utc(cfg->et_start_s + cfg->duration_s);
 
@@ -827,8 +829,8 @@ int spody_build_worker(const InputConfig *cfg,
     opt.h_init  = cfg->h_init_s;
     opt.h_min   = cfg->h_min_s;
     opt.h_max   = cfg->h_max_s;
-    /* abs_tol / safety / max_steps left at library defaults: those are
-     * not exposed in the v0 TOML schema. */
+    /* safety / max_steps left at library defaults: those are not
+     * exposed in the v0 TOML schema. */
 
     if (spody_setup_integrator(&w->integ, SPODY_INTEG_RK45, &opt,
                                6, spody_force_rhs_default,

@@ -23,7 +23,7 @@
  *     duration_s is always emitted exactly (even when it is not a
  *     multiple of dt), so the output always contains the endpoint.
  *     States between integrator-accepted steps are evaluated via
- *     spody_dense_eval.
+ *     spody_dense_state_rv6.
  *   - SPODY_OUT_STEP : emit one record per accepted integrator step
  *     plus the initial state at t = 0.
  *   - Either mode, when a stop-class event (impact, stop altitude

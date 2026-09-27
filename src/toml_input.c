@@ -2277,7 +2277,15 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
             return SPODY_ERR_FILE_NOT_FOUND;
         }
         char probe[SPODY_MAX_PATH];
-        snprintf(probe, sizeof probe, "%s/tab5.2a.txt", cfg->iau2006_dir);
+        int n = snprintf(probe, sizeof probe, "%s/tab5.2a.txt",
+                         cfg->iau2006_dir);
+        if (n < 0 || (size_t)n >= sizeof probe) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "iau2006_dir is too long (%d characters max): %s",
+                    (int)(sizeof probe - sizeof "/tab5.2a.txt"),
+                    cfg->iau2006_dir);
+            return SPODY_ERR_BAD_VALUE;
+        }
         if (!file_exists(probe)) {
             spody_error_set(err, SPODY_ERR_FILE_NOT_FOUND,
                     "iau2006_dir does not contain tab5.2a.txt: %s",
