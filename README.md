@@ -48,8 +48,8 @@ PyInstaller bundle.
   CelesTrak space weather, plus an engine-side density-scale
   calibration against a reference ephemeris.
 - **Event detection**: always-on multi-body IMPACT, opt-in ECLIPSE
-  and altitude crossings, all localised to sub-millisecond by
-  Hermite + Brent — plus per-object life markers, so a log records
+  and altitude crossings, localised at the integrator's accuracy by
+  quintic Hermite dense output + Brent — plus per-object life markers, so a log records
   every object that was propagated and not only those that fired
   something.
 

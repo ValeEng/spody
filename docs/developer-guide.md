@@ -1159,7 +1159,7 @@ Checklist, in order:
    split (2026-07): algebra/geometry primitives (`spody_dot3` /
    `spody_cross3` / rotations / geodetic) live in `spody_math`;
    anything that evaluates **tabulated data** (`spody_bracket_index`,
-   `spody_interp_linear`, the cubic Hermite dense output, future
+   `spody_interp_linear`, the cubic and quintic Hermite dense output, future
    Lagrange/spline for an SPK reader) lives in `spody_interp`.
    Numeric defaults and thresholds go in `spody_const.h`
    (`SPODY_CAL_*` is the pattern), never inline.
@@ -1838,6 +1838,20 @@ Each entry: the rule, and the symptom you'll see if you break it.
   leap day UT1 is wrong by up to 1 s (0.5 km of frame rotation at
   LEO radius, 1.9 km at GPS radius by midnight); a 72-hour LEO run
   starting 2016-12-30 moves by about 5 m.*
+- **Dense output reads the FSAL derivatives, and their names are
+  swapped after a step.** The fixed output grid and the event
+  localisation both call `spody_dense_state_rv6`: a quintic Hermite
+  on r, v and the accelerations at the two ends of the last accepted
+  step. Those accelerations are components 3..5 of the RK45 FSAL
+  buffers, already unscaled by h -- do not rebuild them as `k/h`, one
+  rounding more for nothing. After acceptance the buffers are
+  swapped: `f_now` is f at the END of the step and `f_new` f at its
+  START (the names describe the next step). The dense state is valid
+  only until the next step or state reset, and assumes the (r, v)
+  layout with f = (v, a); a model with another state shape needs its
+  own. *Symptom of breakage: grid velocities an order worse than the
+  step nodes (mm/s at `rel_tol` 1e-9 in LEO), or event times off by
+  hundreds of microseconds.*
 - **Every external table a run loads appears in the data sources
   block.** `print_data_sources` in `sim_setup.c`, called once at the
   end of `spody_build_shared`, lists each loaded table (path, size in

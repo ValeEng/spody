@@ -108,6 +108,28 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Fixed-grid samples and event states carry the integrator's own
+  accuracy.** Between two integrator steps the state was a cubic
+  Hermite on position and velocity, which loses an order on the
+  velocity: on a LEO day against the analytic two-body solution the
+  grid velocity was off by 3.4 mm/s at `rel_tol` 1e-9 (0.85 mm/s at
+  1e-10, 32&nbsp;&micro;m/s at 1e-12) where the step nodes are good to 14&nbsp;&micro;m/s
+  (0.7&nbsp;&micro;m/s, 35 nm/s). The dense output is now a quintic Hermite that
+  also matches the accelerations at both ends of the step &mdash; the
+  derivatives the integrator already holds, so no force evaluation is
+  added &mdash; and grid samples sit at the level of the nodes, position
+  and velocity alike (13.6&nbsp;&micro;m/s, 0.72&nbsp;&micro;m/s, 37 nm/s). Event
+  localisation uses the same interpolant: on the lunar-impact example
+  at `rel_tol` 1e-9 the impact time moves from 134 &micro;s off to 8 &micro;s and
+  the altitude crossing from 216 &micro;s to 8 &micro;s, the trigger velocity from
+  0.2&ndash;0.35 mm/s off to 0.01 mm/s (reference: the same run at 1e-13).
+  The earlier "sub-microsecond" claim held only at tight tolerances.
+  Wall time is unchanged. Every `mode = "fixed"` output moves
+  accordingly &mdash; by 0.3 mm or less in position and 0.18 mm/s or less
+  in velocity on the bundled examples &mdash; while the integrator steps,
+  `mode = "step"` and the GPS validation RMS (50.70 m first day,
+  581.63 m over seven) are unchanged.
+
 - **Every run lists the data it uses.** Right after loading, a
   propagation, batch or calibration prints a *data sources* block:
   for each external table it loaded (ephemeris, gravity field, EOP,
