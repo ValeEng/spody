@@ -238,12 +238,38 @@ class Ephemeris:
         self.n_complete_sets        = struct.unpack_from(
             f"<{_N_BODY_SLOTS}i", b, 44 + 8 * _N_BODY_SLOTS)
 
+        # Same rules as spody-core's ephemeris_map_file: a record is the
+        # fixed prefix plus n_coefficients_per_rec doubles, every body
+        # slot in use fits its 3 components x sets inside them, and the
+        # payload is a whole, non-zero number of records.
+        n_coeff = self.n_coefficients_per_rec
+        expected_bpr = _RECORD_PREFIX_BYTES + 8 * n_coeff
+        if self.seconds_per_record <= 0:
+            raise ValueError(
+                f"{self._path}: inconsistent header (seconds_per_record="
+                f"{self.seconds_per_record}); the file is damaged, "
+                f"regenerate it")
+        for slot, (loc, nc, ns) in enumerate(zip(
+                self.location, self.n_coeffs_per_component,
+                self.n_complete_sets)):
+            if nc != 0 and not (nc > 0 and ns > 0 and loc >= 1
+                                and loc - 1 + 3 * nc * ns <= n_coeff):
+                raise ValueError(
+                    f"{self._path}: inconsistent header (body slot {slot} "
+                    f"does not fit in the {n_coeff} coefficients of a "
+                    f"record); the file is damaged, regenerate it")
+        if n_coeff <= 0 or self.bytes_per_record != expected_bpr:
+            raise ValueError(
+                f"{self._path}: inconsistent header (bytes_per_record="
+                f"{self.bytes_per_record}, {n_coeff} coefficients -> "
+                f"{expected_bpr} expected); the file is damaged, "
+                f"regenerate it")
         payload_bytes = len(b) - _HEADER_BYTES
-        if payload_bytes % self.bytes_per_record != 0:
+        if payload_bytes == 0 or payload_bytes % self.bytes_per_record != 0:
             raise ValueError(
                 f"{self._path}: payload size {payload_bytes} is not a "
-                f"multiple of bytes_per_record={self.bytes_per_record}; "
-                f"the file looks truncated")
+                f"positive multiple of bytes_per_record="
+                f"{self.bytes_per_record}; the file looks truncated")
         self.num_records = payload_bytes // self.bytes_per_record
 
         # Subset files (a partial DE440 conversion covering only the
