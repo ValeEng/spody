@@ -132,6 +132,20 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Earth runs evaluate the IAU 2006 X, Y, s series a quarter as
+  often.** The series (~70&nbsp;&micro;s a call) is evaluated on a fixed
+  hourly grid and interpolated with a 4-node cubic; each time the run
+  crossed into the next hour all four nodes were recomputed, three of
+  which were already in memory. The nodes still in the stencil are now
+  kept and only the new one is evaluated (any slide of 1&ndash;3 nodes,
+  forward or backward). Every node is computed at the same grid
+  instant as before, so outputs are **bit-identical**. Measured:
+  `gps_g11_validation` 0.485 s &rarr; 0.447 s (&minus;7.9 %),
+  `iss_drag_calibration` 5.41 s &rarr; 5.27 s (&minus;2.7 %), a batch of
+  64 one-day LEO cases 3.09 s &rarr; 2.74 s (&minus;11.3 %) on one thread
+  and 0.86 s &rarr; 0.78 s (&minus;9.2 %) on eight (spody-core
+  `spody_iau2006_xys_interp`).
+
 - **Fixed-grid samples and event states carry the integrator's own
   accuracy.** Between two integrator steps the state was a cubic
   Hermite on position and velocity, which loses an order on the

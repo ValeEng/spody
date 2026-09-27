@@ -1866,6 +1866,19 @@ Each entry: the rule, and the symptom you'll see if you break it.
   own. *Symptom of breakage: grid velocities an order worse than the
   step nodes (mm/s at `rel_tol` 1e-9 in LEO), or event times off by
   hundreds of microseconds.*
+- **The XYS nodes live on a fixed grid, and reuse never moves
+  them.** `spody_iau2006_xys_interp` evaluates the IAU 2006 series
+  (~70 us a call) only at multiples of SPODY_XYS_NODE_S from J2000 and
+  interpolates a 4-node cubic between them. When the stencil slides by
+  1..3 nodes it keeps the nodes still in the stencil and evaluates only
+  the new ones; each node is computed at its own grid instant, so the
+  result is a function of t alone, bit-identical to a cold recompute.
+  Never anchor the nodes to the current time or to the run start: the
+  force would then depend on the step sequence. The cache is per
+  thread (`MappedIAU2006` in each worker) and restarts with every
+  batch case. *Symptom of breakage: two runs of the same case, or the
+  same case alone and in a batch, no longer bit-identical; or a series
+  evaluation count far from one per hour crossed plus four at start.*
 - **Every external table a run loads appears in the data sources
   block.** `print_data_sources` in `sim_setup.c`, called once at the
   end of `spody_build_shared`, lists each loaded table (path, size in
