@@ -347,6 +347,20 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Removed
 
+- **spody-core 2.0.0: unused and unfinished API removed.** The
+  `mission` module (`spody_mission.h`, deprecated earlier in this
+  cycle) and the buffered binary log it wrote through
+  (`SpodyLogBuffer`, `spody_log_append` / `_flush` / `_read_header` /
+  `_dump_csv`): the app never used them, it drives the integrator,
+  the events and its own writers directly; the text log mirror stays.
+  The `RK78` and `VERLET` integrator methods, which setup accepted and
+  whose every step then failed with a null-pointer error: the enum
+  now lists only what exists (RK4, RK45). `IntegratorOptions.abs_tol`,
+  set and never read: the RK45 step control has only `rel_tol`, and
+  the header now says what that tolerance is. Together with the
+  two-part date of `spody_iau2006_era` / `spody_gmst1982` this breaks
+  the library API, hence the major version; no result changes.
+
 - **spody-core's partial ephemeris loader**
   (`spody_setup_partialMappedEphemerisData`). It copied only the
   records of a time window into memory, but nothing called it, it
@@ -359,15 +373,16 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   with a shorter coverage, loaded as usual. The commented-out older
   version of the loader went with it.
 
-### Deprecated
-
-- **spody-core's `mission` module** (`spody_mission.h`). The app
-  never used it: it drives the integrator, the force models and its
-  own writers directly. It still builds, but it is not maintained with
-  the rest of the library (its messages do not go through the log
-  mirror) and will be removed in a future release.
-
 ### Fixed
+
+- **Batch summaries keep the whole error message, and an over-long
+  `iau2006_dir` says so.** A case's error text (up to 511 characters)
+  was stored with its "skipped by the pre-check:" / "setup:" prefix in
+  a slot of the same size, so the final list of failed cases could
+  lose the last ~26 characters. An `iau2006_dir` long enough to
+  truncate the probe path was reported as "does not contain
+  tab5.2a.txt"; it is now refused as too long. The build is now clean
+  under gcc `-Wall -Wextra`.
 
 - **Earth runs and conversions refused outside the EOP table.** Past
   the last row of `finals2000A.all` (or before its first, 1973-01-02)

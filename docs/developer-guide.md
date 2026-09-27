@@ -476,7 +476,7 @@ time. Follow them for new/touched code; don't mass-rename old code.
     - check it with a TOML that sets `log_file` and `grep` the log.
     Exempt: usage lines and argument errors printed before any TOML
     is read; debug-build traces inside `#if DEBUG_*` blocks (they stay
-    bare `printf` on purpose); the deprecated `spody_mission.c`. The
+    bare `printf` on purpose). The
     `convert` / `maxhgdegree` / `info` subcommands never open a mirror,
     so there the functions behave like plain printf — use them anyway,
     so a future conversion log gets the lines for free.
@@ -1701,14 +1701,17 @@ Each entry: the rule, and the symptom you'll see if you break it.
   *Symptom of breakage: an angular error that looks large but moves the
   orbit little, or Earth-fixed outputs (impact lat/lon, ground tracks)
   offset by metres while the orbit looks fine.*
-- **RK45 is the only adaptive integrator that exists.**
-  `spody_integrator_method` declares `RK4`, `RK45`, `RK78` and
-  `VERLET`, but `step_rk78` and `step_verlet` in
-  `spody_integrators.c` are stubs returning
-  `SPODY_INTEG_ERR_NULL`. Don't read the enum as a menu, and don't
-  document RK78 as available. *Symptom: a run configured for RK78
-  fails immediately with a null-ish integrator error rather than
-  falling back.*
+- **RK45 is the only adaptive integrator, and its tolerance is
+  relative to the step.** `spody_integrator_method` has `RK4` (fixed
+  step) and `RK45`; a new method enters the enum only with its step
+  function, never as a stub. `rel_tol` is the only tolerance: per
+  3-component block the embedded error estimate is divided by the
+  step's own change of that block (absolute when its square is below
+  0.1), GMAT's RSS-step control, so `rel_tol` is not comparable with
+  another integrator's `atol + rtol|y|`. Changing the norm moves every
+  result (LRO included) and belongs with a new, higher-order
+  integrator. *Symptom of breakage: every output changes with no input
+  change; a method in the enum that fails its first step.*
 - **The integrator cost counters count attempts, not successes.**
   `n_rhs` in `IntegratorAllData` is incremented at the RHS call site,
   so it includes evaluations spent on trial steps that were later
