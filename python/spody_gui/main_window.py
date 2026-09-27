@@ -1239,6 +1239,13 @@ class MainWindow(QMainWindow):
         self._status_path.setText(label + dirty)
 
     def closeEvent(self, event) -> None:  # noqa: N802 -- Qt naming
+        # Save prompt first: it can be cancelled at no cost, while a
+        # killed run cannot be undone -- asked the other way round, a
+        # Cancel on the save prompt kept the window open with its run
+        # already gone.
+        if not self._maybe_save():
+            event.ignore()
+            return
         if self._runner.is_running():
             resp = QMessageBox.question(
                 self, "spody is running",
@@ -1249,7 +1256,4 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self._runner.stop()
-        if not self._maybe_save():
-            event.ignore()
-            return
         event.accept()
