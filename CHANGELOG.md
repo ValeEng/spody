@@ -215,6 +215,20 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   offsets; the `high_fidelity` path still writes `_wrt_icrf.csv` with
   identical numbers.
 
+### Removed
+
+- **spody-core's partial ephemeris loader**
+  (`spody_setup_partialMappedEphemerisData`). It copied only the
+  records of a time window into memory, but nothing called it, it
+  read past the record array for a window outside the file, and it
+  leaked every record it copied (the free function releases mapped
+  records only). It also saved nothing: the normal loader maps the
+  file, so the operating system reads only the pages a run touches.
+  A `.spody` converted from a subset of the DE chunks (the setup
+  wizard's shorter profiles) is unaffected: it is a complete file
+  with a shorter coverage, loaded as usual. The commented-out older
+  version of the loader went with it.
+
 ### Deprecated
 
 - **spody-core's `mission` module** (`spody_mission.h`). The app
