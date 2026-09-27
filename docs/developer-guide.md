@@ -1879,6 +1879,16 @@ Each entry: the rule, and the symptom you'll see if you break it.
   batch case. *Symptom of breakage: two runs of the same case, or the
   same case alone and in a batch, no longer bit-identical; or a series
   evaluation count far from one per hour crossed plus four at start.*
+- **UT1 dates travel in two parts.** `spody_iau2006_era` and
+  `spody_gmst1982` take `(jd1, jd2)` like SOFA; the Earth chain passes
+  `(JD_MJD_EPOCH, MJD_UT1)` and the spopy twin `erfa.era00(MJD_OFFSET,
+  mjd_ut1)`. Never add the MJD into one JD first: a double of order
+  2.4e6 days resolves 40 us of UT1, a staircase of up to 3e-9 rad in
+  the ERA (7 cm at GNSS radius). SGP4 alone passes `(JD, 0.0)`, on
+  purpose: its reference forms the epoch JD in one double and the
+  verification vectors are its output. *Symptom of breakage: GNSS
+  conversions move by a few cm with no input change; the GUI rotation
+  and the engine disagree by more than a few mm at GNSS radius.*
 - **Every external table a run loads appears in the data sources
   block.** `print_data_sources` in `sim_setup.c`, called once at the
   end of `spody_build_shared`, lists each loaded table (path, size in

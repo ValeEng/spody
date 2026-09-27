@@ -132,6 +132,22 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Earth rotation angle from a two-part UT1 date.** The engine
+  formed UT1 as one Julian Date in a double (`MJD + 2400000.5`),
+  which resolves only 40&nbsp;&micro;s of UT1: the Earth rotation angle
+  moved in steps, up to 3&times;10<sup>-9</sup> rad off (1.8 cm on
+  the surface, 7 cm at GNSS radius). It now keeps the date in two
+  parts, as SOFA does: the angle agrees with SOFA's `era00` to
+  1.7&times;10<sup>-11</sup> rad (0.5 mm at GNSS radius). Effect:
+  `spody convert sp3 | gps | glonass` states move by up to 67 mm
+  (30 mm rms); propagations by at most 5.5 mm (ISS, 15 days), 35
+  &micro;m for GPS G11 over a week, 0.3 mm for one-day LEO cases; the
+  G11 week against IGS final orbits is unchanged (50.68 m first day,
+  581.64 m over 7 days); `spody convert gp` moves by 35 &micro;m. SGP4
+  itself is unchanged: it keeps the reference's own one-double epoch.
+  spody-core's `spody_iau2006_era` / `spody_gmst1982` now take the
+  date as `(jd1, jd2)`.
+
 - **Earth runs evaluate the IAU 2006 X, Y, s series a quarter as
   often.** The series (~70&nbsp;&micro;s a call) is evaluated on a fixed
   hourly grid and interpolated with a 4-node cubic; each time the run
