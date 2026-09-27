@@ -1027,6 +1027,12 @@ static int cmd_convert(int argc, char **argv) {
                 return 1;
             }
         }
+        SpodyError name_err;
+        if (spody_io_check_output_name(output_tab, "convert harmonics_icgem: output",
+                                       &name_err) != SPODY_OK) {
+            spody_error_print(&name_err);
+            return 1;
+        }
         spody_log_printf("spody convert harmonics_icgem: %s -> %s%s\n",
             input_gfc, output_tab,
             max_degree > 0 ? " (truncated)" : "");
@@ -1093,6 +1099,12 @@ static int cmd_convert(int argc, char **argv) {
         if (!eop_file || !iau2006_dir) {
             fprintf(stderr,
                 "convert glonass: --eop and --iau2006-dir are required\n");
+            return 1;
+        }
+        SpodyError name_err;
+        if (spody_io_check_output_name(output_bin, "convert glonass: output",
+                                       &name_err) != SPODY_OK) {
+            spody_error_print(&name_err);
             return 1;
         }
         spody_log_printf("spody convert glonass: %d file%s -> %s (sat=%s)\n",
@@ -1166,6 +1178,12 @@ static int cmd_convert(int argc, char **argv) {
                 "convert gps: --eop and --iau2006-dir are required\n");
             return 1;
         }
+        SpodyError name_err;
+        if (spody_io_check_output_name(output_bin, "convert gps: output",
+                                       &name_err) != SPODY_OK) {
+            spody_error_print(&name_err);
+            return 1;
+        }
         spody_log_printf("spody convert gps: %d file%s -> %s (sat=%s)\n",
             n_inputs, n_inputs == 1 ? "" : "s", output_bin, sat_id);
         int rc = spody_convert_gps_to_state_icrf(n_inputs,
@@ -1232,6 +1250,12 @@ static int cmd_convert(int argc, char **argv) {
                 "convert sp3: --eop and --iau2006-dir are required\n");
             return 1;
         }
+        SpodyError name_err;
+        if (spody_io_check_output_name(output_bin, "convert sp3: output",
+                                       &name_err) != SPODY_OK) {
+            spody_error_print(&name_err);
+            return 1;
+        }
         spody_log_printf("spody convert sp3: %d file%s -> %s (sat=%s)\n",
             n_inputs, n_inputs == 1 ? "" : "s", output_bin, sat_id);
         int rc = spody_convert_sp3_to_state_icrf(n_inputs,
@@ -1268,6 +1292,12 @@ static int cmd_convert(int argc, char **argv) {
         const char *const *input_oem_paths =
             (const char *const *)(argv + 2);
         const char *output_bin = argv[argc - 1];
+        SpodyError name_err;
+        if (spody_io_check_output_name(output_bin, "convert oem: output",
+                                       &name_err) != SPODY_OK) {
+            spody_error_print(&name_err);
+            return 1;
+        }
         spody_log_printf("spody convert oem: %d file%s -> %s\n",
             n_inputs, n_inputs == 1 ? "" : "s", output_bin);
         int rc = spody_convert_oem_to_state_icrf(n_inputs,

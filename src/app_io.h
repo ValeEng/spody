@@ -43,6 +43,16 @@ extern "C" {
  * either platform. Returns a pointer into `path` (no allocation). */
 const char *spody_io_basename(const char *path);
 
+/* Refuse an output file whose name is a Windows device: CON, PRN, AUX,
+ * NUL, CONIN$, CONOUT$, COM0-9, LPT0-9, case-insensitive, with or
+ * without an extension. Opening such a name opens the device, so the
+ * run "succeeds" and no file is ever written. Refused on every
+ * platform, so an input behaves the same wherever it runs. `what`
+ * names the setting in the message (e.g. "output.bin_file"). Returns
+ * SPODY_OK, or SPODY_ERR_BAD_VALUE with `err` filled. */
+int spody_io_check_output_name(const char *path, const char *what,
+                               SpodyError *err);
+
 /* Create <output_dir>/<UTC-ISO8601>/ for a fresh run and return the
  * full path. The timestamp is captured once on entry (so every file
  * within the run shares the same folder name) and uses the same

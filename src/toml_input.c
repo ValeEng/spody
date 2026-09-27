@@ -39,6 +39,7 @@
 #include "spody_forcemodels.h"   /* spody_inertial_to_cr3bp_synodic     */
 #include "spody_kepler.h"        /* keplerian -> Cartesian conversion   */
 #include "central_body.h"        /* spody_central_body_get for mu lookup */
+#include "app_io.h"              /* spody_io_check_output_name          */
 
 /* --------------------------------------------------------------------------
  * Path helpers
@@ -1873,6 +1874,22 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                     "simulation.dynamics_model = '%s' is not yet implemented",
                     spec ? spec->name : "?");
             return SPODY_ERR_BAD_VALUE;
+        }
+    }
+
+    /* Output file names, for every dynamics model: a Windows device
+     * name would swallow the data without an error. */
+    {
+        const struct { const char *path, *what; } out[] = {
+            { cfg->csv_file,           "output.csv_file"           },
+            { cfg->bin_file,           "output.bin_file"           },
+            { cfg->log_file,           "output.log_file"           },
+            { cfg->accelerations_file, "output.accelerations_file" },
+            { cfg->events_log,         "output.events_log"         },
+        };
+        for (size_t i = 0; i < sizeof out / sizeof out[0]; ++i) {
+            int rc = spody_io_check_output_name(out[i].path, out[i].what, err);
+            if (rc != SPODY_OK) return rc;
         }
     }
 

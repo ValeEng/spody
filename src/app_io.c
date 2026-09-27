@@ -18,8 +18,10 @@
  */
 #include "app_io.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #ifdef _WIN32
@@ -36,6 +38,38 @@ const char *spody_io_basename(const char *path) {
         if (*p == '/' || *p == '\\') last = p + 1;
     }
     return last;
+}
+
+int spody_io_check_output_name(const char *path, const char *what,
+                               SpodyError *err) {
+    /* Windows matches the device on the part before the first dot,
+     * trailing spaces ignored: "nul", "NUL.bin", "con .csv" all hit. */
+    static const char *const device[] = {
+        "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"
+    };
+    const char *bn = spody_io_basename(path);
+    size_t n = strcspn(bn, ".");
+    while (n > 0 && bn[n - 1] == ' ') n--;
+
+    char stem[8];
+    if (n == 0 || n >= sizeof stem) return SPODY_OK;
+    for (size_t i = 0; i < n; ++i)
+        stem[i] = (char)toupper((unsigned char)bn[i]);
+    stem[n] = '\0';
+
+    int hit = n == 4 && isdigit((unsigned char)stem[3])
+              && (strncmp(stem, "COM", 3) == 0 || strncmp(stem, "LPT", 3) == 0);
+    for (size_t i = 0; !hit && i < sizeof device / sizeof device[0]; ++i)
+        hit = strcmp(stem, device[i]) == 0;
+    if (!hit) return SPODY_OK;
+
+    spody_error_clear(err);   /* callers may pass a fresh struct */
+    spody_error_set(err, SPODY_ERR_BAD_VALUE,
+            "%s '%s': %s is a device name reserved by Windows, with or "
+            "without an extension; the data would go to the device and no "
+            "file would be written -- choose another name",
+            what, path, stem);
+    return SPODY_ERR_BAD_VALUE;
 }
 
 int spody_io_make_run_subdir(const char *output_dir,
