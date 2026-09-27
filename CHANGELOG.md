@@ -591,6 +591,14 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   (`console.bin`, `nullx.bin`, `com10.bin`, `prn_.bin`) are accepted,
   and so is every bundled example; outputs are byte-identical.
 
+- **Closing the GUI could kill a run and then stay open.** With a run
+  in progress and unsaved form edits, closing the window asked first
+  whether to stop the run and only then whether to save: answering
+  *Yes* to the first and *Cancel* to the second left the window open
+  with its run already killed. The save prompt now comes first; the
+  run is stopped only when the window really closes, and a *Cancel*
+  at either prompt leaves both the form and the run untouched.
+
 ## v0.4.1-beta &mdash; 2026-08-05
 
 ### Added
