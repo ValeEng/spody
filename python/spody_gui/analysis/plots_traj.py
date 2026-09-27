@@ -168,19 +168,13 @@ def _state_in_plot_frame(d: np.ndarray, ctx: "PlotContext | None"
     except (OSError, ValueError):
         return d, ""
     et_start = float(info["et_start_s"])
-    # Sample R_icrf_to_bf at every trajectory time; one numpy op per
-    # column instead of a Python loop over `len(d)` keeps the call
-    # cheap on dense trajectories.
-    n = len(d)
-    Rs = np.empty((n, 3, 3), dtype=float)
-    for i in range(n):
-        try:
-            Rs[i] = np.asarray(
-                ctx.central_body.bf_orientation(
-                    et_start + float(d["t"][i]), eph),
-                dtype=float)
-        except (ValueError, IndexError):
-            return d, ""
+    # R_icrf_to_bf at every trajectory time, in one array call (the
+    # provider's setup and the series nodes are shared by all samples).
+    try:
+        Rs = ctx.central_body.bf_orientation_many(
+            et_start + np.asarray(d["t"], dtype=float), eph)
+    except (ValueError, IndexError):
+        return d, ""
     r_icrf = np.stack((d["x"],  d["y"],  d["z"]),  axis=-1)
     v_icrf = np.stack((d["vx"], d["vy"], d["vz"]), axis=-1)
     r_bf = np.einsum("nij,nj->ni", Rs, r_icrf)

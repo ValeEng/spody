@@ -26,9 +26,11 @@ Today the package covers:
 - `eop.MappedEOP`: parser + interpolator for the IERS finals2000A.all
   table. Mirrors `spody_setup_MappedEOPData` /
   `spody_interpolate_eop` in `src/spody_eop.c`.
-- `earth_orientation.icrf_to_itrs`: ICRF -> ITRS rotation via SOFA
-  (erfa.c2t06a). Mirrors `spody_bf_rotation_earth` in
-  `src/spody_earth_orientation.c` at the GUI's mas precision floor.
+- `earth_orientation.icrf_to_itrs` / `icrf_to_itrs_many`: ICRF -> ITRS
+  rotation at one epoch / an array of epochs. Twin of
+  `spody_bf_rotation_earth` in `src/spody_earth_orientation.c`: same
+  chain (EOP with dX/dY, X/Y/s on the engine's hourly nodes), SOFA
+  building blocks from erfa.
 - `time`: calendar / time-scale conversions. The leap-second table,
   the SPICE-deltet TDB-TT term and the ET -> UTC MJD chain mirror
   `src/spody_time.c` bit-for-bit; on top sit the datetime-level
@@ -53,7 +55,7 @@ from .ephemeris import (
 )
 from .rotations import bf_angular_velocity_icrf, icrf_to_moon_pa, moon_pa_to_icrf
 from .eop import MappedEOP
-from .earth_orientation import icrf_to_itrs
+from .earth_orientation import icrf_to_itrs, icrf_to_itrs_many
 from .kepler import (
     kepler_solve_E, mean_to_true_anom, true_to_mean_anom,
     keplerian_to_cartesian, cartesian_to_keplerian,
@@ -69,7 +71,7 @@ __all__ = [
     "NAIF_MOON", "NAIF_MARS", "NAIF_JUPITER", "NAIF_SATURN", "NAIF_URANUS",
     "NAIF_NEPTUNE", "NAIF_PLUTO",
     "icrf_to_moon_pa", "moon_pa_to_icrf", "bf_angular_velocity_icrf",
-    "MappedEOP", "icrf_to_itrs",
+    "MappedEOP", "icrf_to_itrs", "icrf_to_itrs_many",
     "kepler_solve_E", "mean_to_true_anom", "true_to_mean_anom",
     "keplerian_to_cartesian", "cartesian_to_keplerian",
     "inertial_to_synodic", "synodic_to_inertial",

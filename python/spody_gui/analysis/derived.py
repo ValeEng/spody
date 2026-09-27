@@ -387,7 +387,7 @@ def impact_latlon(events: np.ndarray, info: dict, central_body
     For every impact row:
 
         et    = sim.et_start_s + row.t
-        R     = central_body.bf_orientation(et, eph)     (ICRF -> BF)
+        R     = central_body.bf_orientation_many(et, eph)  (ICRF -> BF)
         r_bf  = R @ row.y[0:3]
         lat   = asin(z/|r|),  lon = atan2(y, x)
 
@@ -412,20 +412,17 @@ def _impact_latlon_impl(events, info, central_body):
         return None
     mask = events["kind"] == EVENT_KIND_IMPACT
     n = int(mask.sum())
-    bf_orientation = central_body.bf_orientation
     et_start = info["et_start_s"]
     t_sim = np.asarray(events["t"][mask], dtype=float)
     r_icrf = np.asarray(events["y"][mask][:, 0:3], dtype=float)
     case_id = (np.asarray(events["case_idx"][mask], dtype=int)
                if "case_idx" in (events.dtype.names or ())
                else np.zeros(n, dtype=int))   # per-run file: single object
-    lat_deg = np.empty(n)
-    lon_deg = np.empty(n)
-    for i in range(n):
-        r_bf = bf_orientation(et_start + float(t_sim[i]), eph) @ r_icrf[i]
-        norm = np.linalg.norm(r_bf)
-        lat_deg[i] = np.degrees(np.arcsin(r_bf[2] / norm))
-        lon_deg[i] = np.degrees(np.arctan2(r_bf[1], r_bf[0]))
+    Rs = central_body.bf_orientation_many(et_start + t_sim, eph)
+    r_bf = np.einsum("nij,nj->ni", Rs, r_icrf)
+    norm = np.linalg.norm(r_bf, axis=1)
+    lat_deg = np.degrees(np.arcsin(r_bf[:, 2] / norm))
+    lon_deg = np.degrees(np.arctan2(r_bf[:, 1], r_bf[:, 0]))
     return lat_deg, lon_deg, t_sim / 86400.0, case_id
 
 

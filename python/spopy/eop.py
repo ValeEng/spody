@@ -32,7 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .time import et_to_mjd_utc, tai_minus_utc
+from .time import et_to_mjd_utc, tai_minus_utc, tai_minus_utc_many
 
 
 # ----------------------------------------------------------------------
@@ -170,3 +170,40 @@ class MappedEOP:
         out = lo[1:] + frac * (hi_vals - lo[1:])
         return (float(out[0]), float(out[1]), float(out[2]),
                 float(out[3]), float(out[4]))
+
+    def interpolate_many(self, et: np.ndarray,
+                         mjd_utc: np.ndarray | None = None
+                         ) -> tuple[np.ndarray, np.ndarray]:
+        """`interpolate` over an array of ETs, same arithmetic element
+        by element (so the same values bit for bit). Returns
+        `(values, ok)`: values is (n, 5) = (xp, yp, dut1, dX, dY), and
+        ok is False where `et` falls outside the table's coverage
+        (those rows hold zeros). `mjd_utc`, when the caller already
+        has it, is `et_to_mjd_utc` of each epoch."""
+        et = np.asarray(et, dtype=np.float64).reshape(-1)
+        mjd = (np.array([et_to_mjd_utc(float(e)) for e in et])
+               if mjd_utc is None else np.asarray(mjd_utc, dtype=np.float64))
+        ok = (mjd >= self.mjd_first) & (mjd <= self.mjd_last_predicted)
+        out = np.zeros((len(et), 5))
+        if not ok.any():
+            return out, ok
+        mjds = self._records[:, 0]
+        n = len(mjds)
+        m = mjd[ok]
+        i = np.searchsorted(mjds, m, side="right") - 1
+        i = np.clip(i, 0, n - 1)
+        last = i >= n - 1                   # exactly on the last record
+        j = np.minimum(i + 1, n - 1)
+        lo = self._records[i]
+        hi = self._records[j]
+        dmjd = hi[:, 0] - lo[:, 0]
+        frac = np.where(dmjd > 0.0,
+                        (m - lo[:, 0]) / np.where(dmjd > 0.0, dmjd, 1.0),
+                        0.0)
+        hi_vals = hi[:, 1:].copy()
+        hi_vals[:, 2] -= (tai_minus_utc_many(hi[:, 0])
+                          - tai_minus_utc_many(lo[:, 0]))
+        vals = lo[:, 1:] + frac[:, None] * (hi_vals - lo[:, 1:])
+        vals[last] = lo[last, 1:]
+        out[ok] = vals
+        return out, ok

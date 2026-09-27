@@ -23,8 +23,9 @@ settings store. The caller passes
 
 * `ephemeris`  -- any object with `position(center_naif, target_naif,
                   et_s) -> (3,) km` (duck-typed on `spopy.Ephemeris`);
-* `bf_orientation` / `orientation_for` -- callables `(et_s, ephemeris)
-                  -> R_icrf_to_bf (3, 3)` per body;
+* `bf_orientation_many` / `orientation_for` -- callables
+                  `(et_s[n], ephemeris) -> R_icrf_to_bf (n, 3, 3)`
+                  per body, one call for the whole time grid;
 * `texture_for` -- `name -> Path | None` texture lookup;
 * `radius_km_by_name` -- `{name: mean radius km}` physical radii;
 * `pump`       -- optional zero-arg callable invoked every 512
@@ -190,7 +191,7 @@ def add_third_bodies(scene: Scene3D, *,
     "no filter".
 
     `orientation_for(name)` returns the body's orientation provider
-    `(et_s, ephemeris) -> R_icrf_to_bf` or None; when present the
+    `(et_s[n], ephemeris) -> R_icrf_to_bf[n]` or None; when present the
     marker actor spins so the texture features (continents, mares)
     track the physical rotation. `texture_for(name)` returns the
     equirectangular map path or None (flat-colour glowing puck)."""
@@ -234,17 +235,14 @@ def add_third_bodies(scene: Scene3D, *,
         marker_R_seq: "np.ndarray | None" = None
         provider = orientation_for(name) if orientation_for is not None else None
         if provider is not None:
-            n = len(times_s)
             try:
-                marker_R_seq = np.empty((n, 3, 3), dtype=float)
-                for i in range(n):
-                    R_icrf_to_bf = provider(
-                        et_start_s + float(times_s[i]), ephemeris)
-                    # SetUserMatrix takes a model-to-world rotation; we
-                    # want the body-fixed texture rotated INTO the ICRF
-                    # scene, so transpose.
-                    marker_R_seq[i] = np.asarray(R_icrf_to_bf,
-                                                  dtype=float).T
+                R_icrf_to_bf = provider(
+                    et_start_s + np.asarray(times_s, dtype=float), ephemeris)
+                # SetUserMatrix takes a model-to-world rotation; we
+                # want the body-fixed texture rotated INTO the ICRF
+                # scene, so transpose.
+                marker_R_seq = np.transpose(
+                    np.asarray(R_icrf_to_bf, dtype=float), (0, 2, 1))
             except Exception:  # noqa: BLE001 -- decoration stays silent
                 marker_R_seq = None
         scene.add_animated_trajectory(
@@ -309,7 +307,7 @@ def add_animated_body_frame(scene: Scene3D, *,
                                radius_km: float,
                                bf_frame_name: str = "BF",
                                ephemeris: Any = None,
-                               bf_orientation: "Callable | None" = None,
+                               bf_orientation_many: "Callable | None" = None,
                                et_start_s: float = 0.0,
                                show_icrf: bool = True,
                                show_bf: bool = True) -> None:
@@ -329,8 +327,9 @@ def add_animated_body_frame(scene: Scene3D, *,
         Without this the axes would visibly slide over a frozen
         surface.
 
-    `bf_orientation` is the `(et_s, ephemeris) -> R_icrf_to_bf`
-    provider; when it is None (or `ephemeris` is) we degrade to
+    `bf_orientation_many` is the `(et_s[n], ephemeris) ->
+    R_icrf_to_bf[n]` provider; when it is None (or `ephemeris` is) we
+    degrade to
     "just the static ICRF triad" rather than crashing.
 
     The design is symmetric: a future "scene_frame='pa'" mode flips
@@ -348,20 +347,18 @@ def add_animated_body_frame(scene: Scene3D, *,
             opacity=0.25,
         )
 
-    if not show_bf or bf_orientation is None or ephemeris is None:
+    if not show_bf or bf_orientation_many is None or ephemeris is None:
         return
 
-    # Sample R_icrf_to_bf at each trajectory time; columns of its
+    # R_icrf_to_bf at every trajectory time in one call; columns of its
     # transpose are body-fixed axes expressed in ICRF -- what
     # add_animated_frame_triad expects for an ICRF-frame scene.
-    n = len(times_s)
-    R_bf_in_icrf = np.empty((n, 3, 3), dtype=float)
-    for i in range(n):
-        try:
-            R = bf_orientation(et_start_s + float(times_s[i]), ephemeris)
-        except (ValueError, IndexError):
-            return  # ET out of coverage; skip animation entirely
-        R_bf_in_icrf[i] = np.asarray(R).T
+    try:
+        R = bf_orientation_many(
+            et_start_s + np.asarray(times_s, dtype=float), ephemeris)
+    except (ValueError, IndexError):
+        return  # ET out of coverage; skip animation entirely
+    R_bf_in_icrf = np.transpose(np.asarray(R, dtype=float), (0, 2, 1))
 
     frame_tag = bf_frame_name.lower()
     scene.add_animated_frame_triad(

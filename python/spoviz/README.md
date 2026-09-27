@@ -112,9 +112,9 @@ Everything takes explicit inputs; `ephemeris` is duck-typed on
 | call | what it does |
 |------|--------------|
 | `add_reference_triads(scene, scene_frame, R_icrf_to_bf, radius_km, bf_frame_label="PA")` | The project-wide two-triad convention: body-fixed bright, ICRF muted. `scene_frame` = `'bf'` or `'icrf'`. |
-| `add_third_bodies(scene, *, ephemeris, central_naif, central_radius_km, body_names, times_s, et_start_s, only=None, radius_km_by_name=None, texture_for=None, orientation_for=None, pump=None)` | One animated marker + direction arrow per body name. `texture_for(name)->Path|None`; `orientation_for(name)` returns an `(et_s, eph) -> R_icrf_to_bf` provider or `None`. |
+| `add_third_bodies(scene, *, ephemeris, central_naif, central_radius_km, body_names, times_s, et_start_s, only=None, radius_km_by_name=None, texture_for=None, orientation_for=None, pump=None)` | One animated marker + direction arrow per body name. `texture_for(name)->Path|None`; `orientation_for(name)` returns an `(et_s[n], eph) -> R_icrf_to_bf[n, 3, 3]` provider or `None` (one call for the whole time grid). |
 | `add_sun_illumination(scene, *, ephemeris, central_naif, times_s, et_start_s, pump=None)` | Sample the Sun direction over the timeline and install `set_sun_light`. Call LAST. |
-| `add_animated_body_frame(scene, *, times_s, radius_km, bf_frame_name="BF", ephemeris=None, bf_orientation=None, et_start_s=0.0, show_icrf=True, show_bf=True)` | Static muted ICRF triad + animated bright body-fixed triad + central-body attitude, all on the playback timeline. |
+| `add_animated_body_frame(scene, *, times_s, radius_km, bf_frame_name="BF", ephemeris=None, bf_orientation_many=None, et_start_s=0.0, show_icrf=True, show_bf=True)` | Static muted ICRF triad + animated bright body-fixed triad + central-body attitude, all on the playback timeline. |
 | `sample_positions(ephemeris, center_naif, target_naif, times_s, et_start_s, pump=None)` | `(N,3)` km or `None` on the first failed sample. |
 | `TRIAD_BRIGHT_COLORS`, `TRIAD_MUTED_COLORS` | The two triad palettes. |
 

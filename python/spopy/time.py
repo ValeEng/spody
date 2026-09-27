@@ -130,6 +130,14 @@ def tai_minus_utc(mjd_utc: float) -> float:
     return float(_LEAP_TAI_MINUS_UTC[idx])
 
 
+def tai_minus_utc_many(mjd_utc: np.ndarray) -> np.ndarray:
+    """`tai_minus_utc` over an array of UTC MJDs (same table, same
+    step rule, epochs before the table take its first value)."""
+    idx = np.searchsorted(_LEAP_MJDS, np.asarray(mjd_utc, dtype=float),
+                          side="right") - 1
+    return _LEAP_TAI_MINUS_UTC[np.maximum(idx, 0)].astype(float)
+
+
 def tdb_minus_tt(et_sec: float) -> float:
     """SPICE `deltet` algorithm: TDB - TT in seconds, as a function of
     ET (TDB seconds past J2000). Mirrors spody-core's

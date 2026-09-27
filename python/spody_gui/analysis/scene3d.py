@@ -118,11 +118,11 @@ def add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
         return assets.central_body_texture_path(paths.data_dir(), name)
 
     def orientation_for(name: str):
-        # Orientation provider from the central-body registry (Earth
-        # ITRS via spopy.icrf_to_itrs, Moon PA via libration angles);
-        # None for bodies without one (Sun, planets).
+        # Array orientation provider from the central-body registry
+        # (Earth ITRS via spopy.icrf_to_itrs_many, Moon PA via libration
+        # angles); None for bodies without one (Sun, planets).
         spec = resolve_central_body(name)
-        return spec.bf_orientation if spec is not None else None
+        return spec.bf_orientation_many if spec is not None else None
 
     sv_decoration.add_third_bodies(
         canvas.scene,
@@ -176,20 +176,20 @@ def add_animated_pa_decoration(canvas: VtkCanvas, ctx: "PlotContext",
     body = ctx.central_body if ctx is not None else default_central_body()
     eph = None
     et_start = 0.0
-    bf_orientation = None
-    if show_pa and ctx is not None and body.bf_orientation is not None:
+    bf_orientation_many = None
+    if show_pa and ctx is not None and body.bf_orientation_many is not None:
         resolved = _run_ephemeris(ctx)
         if resolved is not None:
             info, eph = resolved
             et_start = float(info["et_start_s"])
-            bf_orientation = body.bf_orientation
+            bf_orientation_many = body.bf_orientation_many
     sv_decoration.add_animated_body_frame(
         canvas.scene,
         times_s=times_s,
         radius_km=body.radius_km,
         bf_frame_name=body.bf_frame_name,
         ephemeris=eph,
-        bf_orientation=bf_orientation,
+        bf_orientation_many=bf_orientation_many,
         et_start_s=et_start,
         show_icrf=show_icrf,
         show_bf=show_pa,

@@ -39,6 +39,12 @@ know about the body the satellite orbits, without hardcoding
                           Time. None when the body has no rotation
                           model exposed to the GUI yet (we degrade
                           to a static body and no PA triad).
+    * `bf_orientation_many` -- the same over an array of epochs,
+                          `(et_s[n], ephemeris) -> R[n, 3, 3]`. Every
+                          per-sample use (plots in the body-fixed
+                          frame, impact lat/lon, animated triads)
+                          goes through it: one setup per call, not
+                          per sample.
 
 `resolve_central_body(name)` is the only entry point: it looks up
 the name (case-insensitive, "Moon" / "moon" / "MOON" all map to the
@@ -84,6 +90,7 @@ from .constants import (
 #   rows are body-fixed axes expressed in ICRF. Apply as
 #   `r_bf = R @ r_icrf`.
 BfOrientationFn = Callable[[float, "object"], np.ndarray]
+BfOrientationManyFn = Callable[[np.ndarray, "object"], np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -99,6 +106,7 @@ class CentralBodySpec:
     mu_km3_s2:      float
     bf_frame_name:  str
     bf_orientation: BfOrientationFn | None
+    bf_orientation_many: BfOrientationManyFn | None
 
 
 # ----------------------------------------------------------------------
@@ -119,6 +127,13 @@ def _moon_orientation(et: float, eph) -> np.ndarray:
     return icrf_to_moon_pa(*angles)
 
 
+def _moon_orientation_many(et: np.ndarray, eph) -> np.ndarray:
+    """`_moon_orientation` over an array of epochs (the libration
+    lookup is per epoch anyway; values identical to the scalar)."""
+    return np.array([_moon_orientation(float(e), eph) for e in et],
+                    dtype=float).reshape(-1, 3, 3)
+
+
 # Lazy-loaded EOP handle. None on first call (triggers load); a
 # spopy.MappedEOP after a successful load; the literal False sentinel
 # means "tried and failed, do not retry" (no EOP file under the
@@ -129,24 +144,16 @@ _earth_eop_cache: object = None
 _earth_eop_mtime: float = 0.0
 
 
-def _earth_orientation(et: float, eph) -> np.ndarray:
-    """ICRF -> ITRS rotation at TDB epoch `et`. Mirrors spody-core's
-    spody_bf_rotation_earth: IAU 2006/2000A_R06 + IERS EOP, composed
-    via spopy.icrf_to_itrs (which wraps erfa.c2t06a).
+def _earth_eop():
+    """The wizard's EOP table as a spopy.MappedEOP, or None when it is
+    unreachable (the caller then returns the identity, so the 3D scene
+    degrades to a non-rotating Earth instead of crashing).
 
-    The `eph` argument is part of the BfOrientationFn contract but
-    unused here -- Earth's rotation parameters are independent of
-    any planetary ephemeris.
-
-    Returns the identity matrix (and disables further attempts) when
-    the wizard's `<data_dir>/eop/finals2000A.all` is unreachable, so
-    the 3D scene degrades to a non-rotating Earth instead of crashing.
-
-    Cache invalidation: on every call we cheaply stat the EOP file and
-    reload the table if the mtime has advanced. That lets a wizard
-    re-download in the same GUI session refresh the rotation
-    without restarting the app.
-    """
+    Cache invalidation: one stat of the file per call -- per provider
+    call, not per sample -- and a reload when its mtime has advanced,
+    so a wizard re-download in the same GUI session refreshes the
+    rotation without restarting the app. A failed load is not retried
+    until the file changes."""
     global _earth_eop_cache, _earth_eop_mtime
     from . import paths
     eop_path = paths.data_dir() / "eop" / "finals2000A.all"
@@ -155,20 +162,33 @@ def _earth_orientation(et: float, eph) -> np.ndarray:
     except OSError:
         _earth_eop_cache = False
         _earth_eop_mtime = 0.0
-        return np.eye(3)
-    # File present, but cache may be stale or never built.
-    if _earth_eop_cache is None or _earth_eop_cache is False or mtime != _earth_eop_mtime:
+        return None
+    if _earth_eop_cache is None or mtime != _earth_eop_mtime:
         try:
             from spopy import MappedEOP
             _earth_eop_cache = MappedEOP(eop_path)
-            _earth_eop_mtime = mtime
         except (OSError, ValueError, ImportError):
             _earth_eop_cache = False
-            _earth_eop_mtime = 0.0
-            return np.eye(3)
+        _earth_eop_mtime = mtime
+    return _earth_eop_cache or None
 
-    from spopy import icrf_to_itrs
-    return icrf_to_itrs(et, _earth_eop_cache)
+
+def _earth_orientation_many(et: np.ndarray, eph) -> np.ndarray:
+    """ICRF -> ITRS rotations at the TDB epochs `et`, shape (n, 3, 3).
+    Twin of spody-core's spody_bf_rotation_earth (same chain: EOP with
+    dX/dY, X/Y/s on the engine's hourly nodes, SOFA composition) via
+    spopy.icrf_to_itrs_many. `eph` is part of the provider contract
+    but unused: Earth rotation does not depend on the ephemeris.
+    Identity where the EOP table is missing or does not cover `et`."""
+    from spopy import icrf_to_itrs_many
+    from .constants import const
+    return icrf_to_itrs_many(et, _earth_eop(),
+                             const("SPODY_XYS_NODE_S", 3600.0))
+
+
+def _earth_orientation(et: float, eph) -> np.ndarray:
+    """`_earth_orientation_many` at one epoch: ICRF -> ITRS (3x3)."""
+    return _earth_orientation_many(np.array([float(et)]), eph)[0]
 
 
 # ----------------------------------------------------------------------
@@ -182,6 +202,7 @@ _KNOWN_BODIES: dict[str, CentralBodySpec] = {
         mu_km3_s2=MOON_MU_KM3_S2,
         bf_frame_name="PA",
         bf_orientation=_moon_orientation,
+        bf_orientation_many=_moon_orientation_many,
     ),
     "Earth": CentralBodySpec(
         name="Earth",
@@ -196,6 +217,7 @@ _KNOWN_BODIES: dict[str, CentralBodySpec] = {
         # returns identity so the 3D scene still renders -- just with
         # no Earth rotation animation.
         bf_orientation=_earth_orientation,
+        bf_orientation_many=_earth_orientation_many,
     ),
 }
 
