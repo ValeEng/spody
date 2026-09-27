@@ -26,6 +26,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #include "spody_const.h"
 #include "spody_time.h"   /* run-window vs space-weather-horizon check */
@@ -112,10 +114,15 @@ static int check_eop_window(const InputConfig *cfg,
  * and without a word. The NRLMSISE Ap history reaches 57 h back,
  * hence the 3 days required before the start; the end is the last
  * DAILY row, usable to its end: the file's monthly long-range tail
- * (years past it) has no 3-hour Ap and cannot drive the model. */
+ * (years past it) has no 3-hour Ap and cannot drive the model.
+ *
+ * `warn_forecast` is set on the base window only, like the EOP
+ * prediction warning: past the last observed day the daily rows are
+ * CelesTrak's forecast -- usable, but the drag then rests on predicted
+ * solar and geomagnetic activity, and the user should know. */
 static int check_space_weather_window(const InputConfig *cfg,
                                       const MappedSpaceWeatherData *sw,
-                                      SpodyError *err) {
+                                      int warn_forecast, SpodyError *err) {
     double mjd_start = spody_et_to_mjd_utc(cfg->et_start_s);
     double mjd_end   = spody_et_to_mjd_utc(cfg->et_start_s + cfg->duration_s);
     double first_ok  = sw->mjd_first + 3.0;
@@ -132,7 +139,136 @@ static int check_space_weather_window(const InputConfig *cfg,
                 sw->mjd_last_observed, cfg->space_weather_file);
         return SPODY_ERR_BAD_VALUE;
     }
+    /* A daily row holds that whole day: observed data reach the end
+     * of the last observed day. */
+    if (warn_forecast && mjd_end > sw->mjd_last_observed + 1.0) {
+        spody_log_eprintf(
+                "spody: warning: run window (UTC MJD %.2f .. %.2f) "
+                "extends past the last observed space weather (%.2f); "
+                "from there the drag uses CelesTrak's daily forecast of "
+                "solar and geomagnetic activity.\n",
+                mjd_start, mjd_end, sw->mjd_last_observed);
+    }
     return SPODY_OK;
+}
+
+/* UTC MJD -> "YYYY-MM-DD" (the calendar day holding it). */
+static void mjd_to_date(double mjd, char out[11]) {
+    int year = 0;
+    spody_mjd_to_doy(mjd, &year, NULL, NULL);
+    double day0 = floor(mjd);
+    for (int month = 12; month >= 1; --month) {   /* calendar months */
+        double first = spody_greg_to_jd(year, month, 1, 0, 0, 0.0) - JD_MJD_EPOCH;
+        if (day0 >= first) {
+            snprintf(out, 11, "%04d-%02d-%02d", year, month,
+                     (int)(day0 - first) + 1);
+            return;
+        }
+    }
+    snprintf(out, 11, "?");
+}
+
+/* " (<bytes> bytes, modified YYYY-MM-DD)" for a data file: enough to
+ * tell two downloads of the same table apart when reading a log. */
+static void describe_file(const char *path, char *out, size_t n) {
+    struct stat st;
+    if (stat(path, &st) != 0) { snprintf(out, n, " (cannot stat)"); return; }
+    char when[16] = "?";
+    time_t mt = st.st_mtime;
+    struct tm *tm = gmtime(&mt);
+    if (tm) strftime(when, sizeof when, "%Y-%m-%d", tm);
+    snprintf(out, n, " (%lld bytes, modified %s)", (long long)st.st_size, when);
+}
+
+/* The "data sources" block: every external table the run loaded, with
+ * what identifies it and the part of it the run window uses. Printed
+ * once per run (per batch), after the loads and their window checks,
+ * through the log functions so it heads the saved log as well. */
+static void print_data_sources(const InputConfig *cfg,
+                               const SimulationShared *shared) {
+    char info[128], d0[11], d1[11], d2[11], d3[11];
+    double mjd0 = spody_et_to_mjd_utc(cfg->et_start_s);
+    double mjd1 = spody_et_to_mjd_utc(cfg->et_start_s + cfg->duration_s);
+
+    spody_log_printf("  data sources\n");
+    if (shared->init_med) {
+        const EphemerisFile_Header *h = shared->med.header;
+        describe_file(cfg->ephemeris_file, info, sizeof info);
+        /* In TDB, the file's own scale: its records start and end at
+         * 0h TDB, which in UTC falls about a minute into the day
+         * before. */
+        mjd_to_date(JD_FROM_ET(h->start_epoch) - JD_MJD_EPOCH, d0);
+        mjd_to_date(JD_FROM_ET(h->end_epoch) - JD_MJD_EPOCH, d1);
+        spody_log_printf("    ephemeris : %s%s\n"
+                         "                %zu records, coverage %s .. %s (TDB)\n",
+                         cfg->ephemeris_file, info,
+                         shared->med.num_records, d0, d1);
+    }
+    if (shared->init_hgd) {
+        const HarmonicGravityData *g = &shared->hgd;
+        describe_file(cfg->harmonics_file, info, sizeof info);
+        spody_log_printf("    gravity   : %s%s\n"
+                         "                degree %d%s, R_ref %.4f km, "
+                         "GM %.10g km^3/s^2, %s kernel\n",
+                         cfg->harmonics_file, info, g->N,
+                         cfg->harmonics_adaptive ? " (adaptive ceiling)" : "",
+                         g->R_ref, g->GM,
+                         g->use_reference_kernel ? "reference" : "HPC");
+    }
+    if (shared->init_eop) {
+        const MappedEOPData *e = &shared->eop_data;
+        describe_file(cfg->eop_file, info, sizeof info);
+        mjd_to_date(e->mjd_first, d0);
+        mjd_to_date(e->mjd_last_observed, d1);
+        mjd_to_date(e->mjd_last_measured, d2);
+        mjd_to_date(e->mjd_last_predicted, d3);
+        spody_log_printf("    EOP       : %s%s\n"
+                         "                %s .. %s; Bulletin B to %s, "
+                         "measured to %s, IERS prediction after\n"
+                         "                run window: %s\n",
+                         cfg->eop_file, info, d0, d3, d1, d2,
+                         mjd1 <= e->mjd_last_observed ? "Bulletin B"
+                         : mjd1 <= e->mjd_last_measured ? "measured"
+                         : "reaches the IERS prediction");
+    }
+    if (shared->init_iau) {
+        const MappedIAU2006Data *a = &shared->iau2006_data;
+        spody_log_printf("    IAU 2006  : %s  (X %zu, Y %zu, s+XY/2 %zu terms)\n",
+                         cfg->iau2006_dir, a->X.n_terms, a->Y.n_terms,
+                         a->s_xy.n_terms);
+    }
+    if (shared->init_sw) {
+        const MappedSpaceWeatherData *w = &shared->sw_data;
+        describe_file(cfg->space_weather_file, info, sizeof info);
+        mjd_to_date(w->mjd_last_observed, d0);
+        mjd_to_date(w->mjd_last_daily, d1);
+        mjd_to_date(w->mjd_last_predicted, d2);
+        spody_log_printf("    space wx  : %s%s\n"
+                         "                observed to %s, daily forecast to %s, "
+                         "monthly to %s\n"
+                         "                run window: %s\n",
+                         cfg->space_weather_file, info, d0, d1, d2,
+                         mjd1 <= w->mjd_last_observed + 1.0
+                         ? "observed" : "reaches the daily forecast");
+    }
+    if (cfg->enable_drag) {
+        if (cfg->density_scale_file[0] != '\0' && shared->init_ds) {
+            const MappedDensityScale *s = &shared->ds_data;
+            describe_file(cfg->density_scale_file, info, sizeof info);
+            mjd_to_date(s->mjd[0], d0);
+            mjd_to_date(s->mjd[s->n - 1], d1);
+            spody_log_printf("    density k : %s%s\n"
+                             "                %zu nodes, %s .. %s\n",
+                             cfg->density_scale_file, info, s->n, d0, d1);
+        } else {
+            spody_log_printf("    density k : constant %g\n", cfg->density_scale);
+        }
+    }
+    if (shared->init_eop || shared->init_sw) {
+        mjd_to_date(mjd0, d0);
+        spody_log_printf("    leap secs : built-in table, TAI-UTC %.0f s on %s\n",
+                         spody_tai_minus_utc(mjd0), d0);
+    }
 }
 
 int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
@@ -228,7 +364,7 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
             goto fail;
         }
         shared->init_sw = 1;
-        if (check_space_weather_window(cfg, &shared->sw_data, err) != SPODY_OK)
+        if (check_space_weather_window(cfg, &shared->sw_data, 1, err) != SPODY_OK)
             goto fail;
 
         /* Optional density calibration k(t): node file, or one node
@@ -275,6 +411,7 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
         }
     }
 
+    print_data_sources(cfg, shared);
     return SPODY_OK;
 
 fail:
@@ -452,7 +589,7 @@ int spody_check_case(const InputConfig *cfg,
         (rc = check_eop_window(cfg, &shared->eop_data, 0, err)) != SPODY_OK)
         return rc;
     if (shared->init_sw && cfg->enable_drag &&
-        (rc = check_space_weather_window(cfg, &shared->sw_data, err)) != SPODY_OK)
+        (rc = check_space_weather_window(cfg, &shared->sw_data, 0, err)) != SPODY_OK)
         return rc;
     return SPODY_OK;
 }
