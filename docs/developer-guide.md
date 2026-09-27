@@ -1835,6 +1835,18 @@ Each entry: the rule, and the symptom you'll see if you break it.
   leap day UT1 is wrong by up to 1 s (0.5 km of frame rotation at
   LEO radius, 1.9 km at GPS radius by midnight); a 72-hour LEO run
   starting 2016-12-30 moves by about 5 m.*
+- **Every external table a run loads appears in the data sources
+  block.** `print_data_sources` in `sim_setup.c`, called once at the
+  end of `spody_build_shared`, lists each loaded table (path, size in
+  bytes, modification date, coverage, and where the run window falls:
+  Bulletin B / measured / prediction for EOP, observed / forecast for
+  space weather). A new data file loaded by `spody_build_shared` gets
+  its line there, in the same shape; a new horizon (a measured vs
+  predicted boundary) gets both a *run window* word in the block and
+  a warning in its window check with the `warn_*` flag set on the
+  base window only. *Symptom of breakage: a log that does not say
+  which download of a table produced the run, or a run resting on
+  forecast data with no word about it.*
 - **Every rule on a run's configuration lives in one per-case gate.**
   A batch case (base + overrides + deltas) or a calibrate arc is not
   the configuration `spody_validate_input` saw at load. So

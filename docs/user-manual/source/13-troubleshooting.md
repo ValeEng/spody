@@ -202,6 +202,12 @@ diagnostic before exit. Common cases:
   distance from the last measured day. For a run in the near future
   that is the best available; for a run in the past, a fresh
   `finals2000A.all` replaces the prediction with measured values.
+- **`spody: warning: run window ... extends past the last observed
+  space weather`** &mdash; not an error: the run goes on. Past the last
+  observed day `SW-All.csv` carries CelesTrak's daily *forecast* of
+  solar flux and geomagnetic activity, so the drag in that part of
+  the run rests on predicted, not measured, inputs. For a run in the
+  past, a fresh `SW-All.csv` replaces the forecast with observations.
 - **`error: ... write failed on '...' (No space left on device): the
   file is incomplete`** &mdash; the disk filled up while an output
   file was being written. The run stops with an error; free some

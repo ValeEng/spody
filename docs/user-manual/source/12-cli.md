@@ -77,6 +77,35 @@ diagnostics to stdout, with errors on stderr. The GUI streams
 this into the terminal pane; on the command line you see it in
 your shell.
 
+**Data sources block.** After loading, a high-fidelity run lists
+every external table it uses, what identifies it, and which part of
+it the run window falls in (`spody batch` and `spody calibrate` print
+it once, for the base window):
+
+```
+  data sources
+    ephemeris : ../../data/DE440/de440.spody (102557632 bytes, modified 2026-06-03)
+                12556 records, coverage 1549-12-31 .. 2650-01-25 (TDB)
+    gravity   : ../../data/EIGEN-6C4/eigen-6c4.tab (252139802 bytes, modified 2026-06-20)
+                degree 70, R_ref 6378.1365 km, GM 398600.4415 km^3/s^2, HPC kernel
+    EOP       : ../../data/eop/finals2000A.all (3750412 bytes, modified 2026-06-20)
+                1973-01-02 .. 2027-06-26; Bulletin B to 2026-05-01, measured to 2026-06-18, IERS prediction after
+                run window: Bulletin B
+    IAU 2006  : ../../data/iau2006  (X 1600, Y 1275, s+XY/2 66 terms)
+    space wx  : ../../data/spaceweather/SW-All.csv (2879376 bytes, modified 2026-07-05)
+                observed to 2026-07-04, daily forecast to 2026-08-17, monthly to 2041-10-01
+                run window: observed
+    density k : constant 1
+    leap secs : built-in table, TAI-UTC 37 s on 2024-07-03
+```
+
+Only the tables the run loads appear (no EOP or IAU lines around the
+Moon, no space weather without drag). Size and modification date tell
+two downloads of the same file apart when you compare logs. The *run
+window* lines say whether the run rests on final or measured data or
+reaches into a forecast; the two forecast cases also print a warning
+(chapter 13). With `output.log_file` set the block heads the saved log.
+
 **CR3BP parameter block.** Under `dynamics_model = "cr3bp"` the
 opening block gains the three lines below (`spody batch` and
 `spody validate` print them too). The input TOML names the primary

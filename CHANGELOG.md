@@ -108,6 +108,25 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Every run lists the data it uses.** Right after loading, a
+  propagation, batch or calibration prints a *data sources* block:
+  for each external table it loaded (ephemeris, gravity field, EOP,
+  IAU 2006 series, space weather, density-scale nodes) the path, the
+  size in bytes and the modification date, the coverage, and where
+  the run window falls in it &mdash; Bulletin B, measured or IERS
+  prediction for the EOP; observed or forecast for the space
+  weather &mdash; plus the TAI&minus;UTC in force. It goes through the
+  log functions, so it heads the saved `log_file` too: a run log now
+  says which data produced it.
+
+- **A warning when drag runs on forecast space weather.** Past the
+  last observed day `SW-All.csv` holds CelesTrak's daily forecast;
+  the drag window check accepted it without a word, while the EOP
+  check has always warned about the IERS prediction. A run whose
+  window reaches past the last observed day now prints
+  `spody: warning: run window ... extends past the last observed
+  space weather` (once, for the base window) and goes on.
+
 - **Two runs started in the same second keep separate folders.**
   The run folder is named after the start time to the second, and a
   second run in the same `output_dir` within that second reused the
