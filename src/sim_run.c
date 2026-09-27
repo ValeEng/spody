@@ -26,7 +26,7 @@
  *       onestep
  *       event_check(refined) on every configured event
  *       while t_next <= integ.t (and t_next < t_trigger if one fired):
- *           y_q = hermite(integ, t_next)
+ *           y_q = dense_state_rv6(integ, t_next)   -- quintic
  *           emit_traj  (t_next, y_q)
  *           emit_accel (t_next, y_q)      -- if accelerations enabled
  *           t_next = ++k * dt
@@ -670,16 +670,16 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                                               : t_end;
 
             /* Drain every grid sample that fell into the just-completed
-             * interval [t_old, t]. Hermite C^1 dense output on (r, v).
+             * interval [t_old, t]. Quintic Hermite dense output on (r, v)
+             * with the step's end accelerations: the cubic on r and v
+             * alone lost an order on the velocity (3.4 mm/s against the
+             * integrator's 15 um/s on a LEO day at rel_tol 1e-9).
              * Strictly before the trigger: a sample landing on it would
              * duplicate the record that closes the file. */
             while (t_next <= w->integ.t + eps && t_next <= t_end + eps
                    && (ev_rc <= 0 || t_next < t_stop - eps)) {
                 double y_q[6];
-                spody_hermite_dense_rv6(t_next,
-                                        w->integ.t_old, w->integ.y_old,
-                                        w->integ.t,     w->integ.y,
-                                        y_q);
+                spody_dense_state_rv6(&w->integ, t_next, y_q);
                 if (emit_trajectory(csv, bin, t_next, y_q) < 0) {
                     spody_error_set(err, SPODY_ERR_IO,
                             "trajectory write failed at t=%.6g s", t_next);
