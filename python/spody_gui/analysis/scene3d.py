@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib import colormaps as mpl_colormaps
+from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication
 from spoviz import bodies as sv_bodies
 from spoviz import decoration as sv_decoration
@@ -136,8 +137,9 @@ def add_third_bodies(canvas: VtkCanvas, ctx: "PlotContext",
         texture_for=texture_for,
         orientation_for=orientation_for,
         # Keep the cursor + status responsive when N is large (e.g.
-        # multi-day batch with a dense trajectory).
-        pump=QApplication.processEvents,
+        # multi-day batch with a dense trajectory). Paint only: user
+        # input waits for the scene, it must not re-enter the panel.
+        pump=lambda: QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents),
     )
 
 
@@ -156,7 +158,7 @@ def add_sun_illumination(canvas: VtkCanvas, ctx: "PlotContext",
         central_naif=ctx.central_body.naif_id,
         times_s=times_s,
         et_start_s=float(info["et_start_s"]),
-        pump=QApplication.processEvents,
+        pump=lambda: QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents),
     )
 
 

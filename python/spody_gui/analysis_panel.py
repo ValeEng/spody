@@ -51,7 +51,7 @@ from matplotlib.backends.backend_qtagg import (
     NavigationToolbar2QT,
 )
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEventLoop, Qt
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1266,7 +1266,11 @@ class AnalysisPanel(QWidget):
                     # Pump the event loop between subplots so a slow
                     # tile (e.g. 12 batch plots) still updates the
                     # cursor / message without freezing the title bar.
-                    QApplication.processEvents()
+                    # Paint only: a click let through here would run
+                    # its handler mid-tile -- another file picked in
+                    # the tree swaps self._data under the remaining
+                    # subplots. Input stays queued until the tile ends.
+                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
                 if subtitle:
                     self._figure.suptitle(subtitle, fontsize="small")
                 self._figure.tight_layout()
@@ -1346,7 +1350,10 @@ class AnalysisPanel(QWidget):
         operation > ~1 s that runs on the main thread (file loads,
         3D scene builds, batch tile renders, third-body ephemeris
         loops) gets visible feedback. `processEvents()` is called on
-        entry so the cursor + message paint before the work starts;
+        entry so the cursor + message paint before the work starts,
+        with user input excluded here and in every pump inside the
+        wrapped work: a click or key is queued and handled after the
+        operation, never re-entering the panel halfway through it;
         on exit the cursor is unconditionally restored even when the
         wrapped block raises. If the wrapped block did NOT overwrite
         the info-label (e.g. a 3D scene render that has nothing
@@ -1358,7 +1365,7 @@ class AnalysisPanel(QWidget):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         self._info_label.setText(busy_text)
         self._info_label.setStyleSheet("color: #888;")
-        QApplication.processEvents()
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
         try:
             yield
         finally:
@@ -1370,7 +1377,7 @@ class AnalysisPanel(QWidget):
             if self._info_label.text() == busy_text:
                 self._info_label.setText(prev_text)
                 self._info_label.setStyleSheet(prev_stylesheet)
-            QApplication.processEvents()
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
 
     def _refresh_utc_overlay(self, t_s: float) -> None:
         """Convert (et_start + t_s) to a UTC ISO string and push it
@@ -1640,7 +1647,7 @@ class AnalysisPanel(QWidget):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         if dlg is not None:
             dlg.set_status(f"Saving to {dest_path.name}...")
-        QApplication.processEvents()
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
         try:
             dest_path.write_text(csv_text, encoding="utf-8")
         except OSError as exc:
