@@ -65,7 +65,18 @@ typedef enum {
                                          * frame via the body's
                                          * bf_rotation provider; no
                                          * other downstream stage sees
-                                         * the body-fixed values. */,
+                                         * the body-fixed values. The
+                                         * VELOCITY is the inertial one
+                                         * expressed on the body-fixed
+                                         * axes: pure rotation, no
+                                         * omega x r. */,
+    SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING = 4, /* HF: same axes, but
+                                         * the velocity is measured in
+                                         * the rotating frame (ECEF-
+                                         * style: SP3, receivers, other
+                                         * tools). sim_setup applies the
+                                         * transport theorem,
+                                         * v = R v_rot + omega x r. */
     SPODY_FRAME_ORBIT_PLANE       = 3   /* HF: Ely's "orbit plane" (OP)
                                          * frame, frozen at et_start_s.
                                          * +z along the orbit normal of

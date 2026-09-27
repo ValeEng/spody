@@ -51,7 +51,7 @@ from .ephemeris import (
     NAIF_MOON, NAIF_MARS, NAIF_JUPITER, NAIF_SATURN, NAIF_URANUS,
     NAIF_NEPTUNE, NAIF_PLUTO,
 )
-from .rotations import icrf_to_moon_pa, moon_pa_to_icrf
+from .rotations import bf_angular_velocity_icrf, icrf_to_moon_pa, moon_pa_to_icrf
 from .eop import MappedEOP
 from .earth_orientation import icrf_to_itrs
 from .kepler import (
@@ -68,7 +68,7 @@ __all__ = [
     "NAIF_SSB", "NAIF_SUN", "NAIF_MERCURY", "NAIF_VENUS", "NAIF_EARTH",
     "NAIF_MOON", "NAIF_MARS", "NAIF_JUPITER", "NAIF_SATURN", "NAIF_URANUS",
     "NAIF_NEPTUNE", "NAIF_PLUTO",
-    "icrf_to_moon_pa", "moon_pa_to_icrf",
+    "icrf_to_moon_pa", "moon_pa_to_icrf", "bf_angular_velocity_icrf",
     "MappedEOP", "icrf_to_itrs",
     "kepler_solve_E", "mean_to_true_anom", "true_to_mean_anom",
     "keplerian_to_cartesian", "cartesian_to_keplerian",

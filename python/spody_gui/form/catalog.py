@@ -59,7 +59,7 @@ DYNAMICS_MODELS  = ("high_fidelity", "cr3bp")
 #     defined in. Moon-only for now, mirroring the engine validator.
 FRAMES_BY_MODEL: dict[str, tuple[str, ...]] = {
     "high_fidelity": ("central_inertial", "central_body_fixed",
-                      "orbit_plane"),
+                      "central_body_fixed_rotating", "orbit_plane"),
     "cr3bp":         ("synodic_rotating",),
 }
 # Curated CR3BP primary pairs. Mirror of CR3BP_PAIRS in
@@ -140,7 +140,7 @@ TOOLTIPS: dict[str, str] = {
     "debris.Cr":                     "Reflectivity coefficient (used only when SRP is enabled).",
     "debris.am_drag":                "Drag area-to-mass ratio in m²/kg; > 0 (may differ from am_srp).",
     "debris.Cd":                     "Drag coefficient (used only when drag is enabled).",
-    "initial_state.frame":           "Basis the initial state is written in. HF: 'central_inertial' (ICRF-aligned, central body at origin), 'central_body_fixed' (Earth ITRS / Moon PA at et_start_s), or 'orbit_plane' (Moon-only: Ely's OP frame, +z along the Earth's apparent orbit normal about the Moon, +x = lunar pole × z — the frame lunar frozen orbits are defined in). CR3BP: 'synodic_rotating'. Non-inertial choices are rotated to ICRF at et_start_s by the engine; flipping the combo re-expresses the values you already typed.",
+    "initial_state.frame":           "Basis the initial state is written in. HF: 'central_inertial' (ICRF-aligned, central body at origin), 'central_body_fixed' (Earth ITRS / Moon PA axes at et_start_s; the VELOCITY is the inertial one written on those axes, no omega x r), 'central_body_fixed_rotating' (same axes, velocity measured in the rotating frame as ECEF data gives it -- SP3, receivers, other tools; the engine adds omega x r; Cartesian only), or 'orbit_plane' (Moon-only: Ely's OP frame, +z along the Earth's apparent orbit normal about the Moon, +x = lunar pole × z — the frame lunar frozen orbits are defined in). CR3BP: 'synodic_rotating'. Non-inertial choices are rotated to ICRF at et_start_s by the engine; flipping the combo re-expresses the values you already typed.",
     "initial_state.kind":            "Cartesian (default) gives [x, y, z] and [vx, vy, vz] directly. Keplerian gives six classical orbital elements + a reference body; the engine (and the form's swap helper) converts to Cartesian on the fly.",
     "initial_state.reference_body":  "Which body the Keplerian elements reference. HF: 'central' (implicit). CR3BP: 'primary_1' (bigger) or 'primary_2' (smaller); required, no default.",
     "initial_state.semi_major_axis_km": "Semi-major axis a, in km; > 0 for elliptical orbits.",

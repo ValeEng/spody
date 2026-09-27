@@ -186,7 +186,8 @@ class RoundTripMixin:
             flat.pop("events.eclipse_threshold", None)
 
         # BF input: from spody 0.2.x the engine understands
-        # `frame = "central_body_fixed"` natively and rotates the
+        # `frame = "central_body_fixed"` (and, for a rotating-frame
+        # velocity, "central_body_fixed_rotating") natively and rotates the
         # parsed (position, velocity) into the integrator's
         # central_inertial frame at sim_setup via the central body's
         # bf_rotation provider. The GUI therefore writes the BF

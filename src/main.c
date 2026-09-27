@@ -111,6 +111,25 @@ static void print_config_summary(const InputConfig *cfg) {
     spody_log_printf("  dynamics model   : %s\n",
            spody_dynamics_model_name(cfg->dynamics_model));
     if (cfg->dynamics_model == SPODY_DYN_CR3BP) print_cr3bp_params(cfg, 17);
+    /* Says what the velocity means, not only which axes: the two
+     * body-fixed frames share their axes and differ by omega x r. */
+    {
+        const char *f = "central_inertial (ICRF axes)";
+        switch (cfg->initial_frame) {
+        case SPODY_FRAME_SYNODIC_ROTATING:
+            f = "synodic_rotating"; break;
+        case SPODY_FRAME_CENTRAL_BODY_FIXED:
+            f = "central_body_fixed (body-fixed axes, velocity inertial: "
+                "rotated, no omega x r)"; break;
+        case SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING:
+            f = "central_body_fixed_rotating (body-fixed axes, velocity "
+                "in the rotating frame: omega x r added)"; break;
+        case SPODY_FRAME_ORBIT_PLANE:
+            f = "orbit_plane (frozen at et_start)"; break;
+        default: break;
+        }
+        spody_log_printf("  initial frame    : %s\n", f);
+    }
     spody_log_printf("  central body     : %s\n",
            spody_central_body_name(cfg->central_body));
     spody_log_printf("  harmonics file   : %s  (N=%d%s)\n",

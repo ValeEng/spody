@@ -300,13 +300,17 @@ static int parse_frame(const char *name, SpodyFrame *out, SpodyError *err) {
     if (strcmp(name, "central_body_fixed") == 0) {
         *out = SPODY_FRAME_CENTRAL_BODY_FIXED; return SPODY_OK;
     }
+    if (strcmp(name, "central_body_fixed_rotating") == 0) {
+        *out = SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING; return SPODY_OK;
+    }
     if (strcmp(name, "orbit_plane") == 0) {
         *out = SPODY_FRAME_ORBIT_PLANE; return SPODY_OK;
     }
     spody_error_set(err, SPODY_ERR_BAD_VALUE,
             "initial_state.frame = '%s' is not supported "
             "(supported: 'central_inertial', 'synodic_rotating', "
-            "'central_body_fixed', 'orbit_plane')", name);
+            "'central_body_fixed', 'central_body_fixed_rotating', "
+            "'orbit_plane')", name);
     return SPODY_ERR_BAD_VALUE;
 }
 
@@ -709,6 +713,17 @@ static int finalize_keplerian_initial_state(InputConfig *cfg, SpodyError *err) {
         mu_ref = (cfg->kep_ref_body == SPODY_REF_BODY_PRIMARY_2)
                  ? cfg->cr3bp_mu2 : cfg->cr3bp_mu1;
     } else {  /* high_fidelity */
+        /* Elements describe inertial motion: laid on the body-fixed
+         * axes they are still inertial, so only the rotation applies.
+         * A rotating-frame velocity has no Keplerian reading. */
+        if (cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "initial_state.frame = 'central_body_fixed_rotating' "
+                    "takes a Cartesian state (a rotating-frame velocity); "
+                    "Keplerian elements are inertial -- use "
+                    "'central_body_fixed' to lay them on the body-fixed axes");
+            return SPODY_ERR_BAD_VALUE;
+        }
         if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL
                 && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED
                 && cfg->initial_frame != SPODY_FRAME_ORBIT_PLANE) {
@@ -1991,11 +2006,12 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
      * sees a plain central_inertial state). */
     if (cfg->initial_frame != SPODY_FRAME_CENTRAL_INERTIAL
             && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED
+            && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING
             && cfg->initial_frame != SPODY_FRAME_ORBIT_PLANE) {
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
                 "initial_state.frame must be 'central_inertial', "
-                "'central_body_fixed' or 'orbit_plane' when "
-                "dynamics_model = 'high_fidelity'");
+                "'central_body_fixed', 'central_body_fixed_rotating' or "
+                "'orbit_plane' when dynamics_model = 'high_fidelity'");
         return SPODY_ERR_BAD_VALUE;
     }
 

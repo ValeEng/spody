@@ -456,19 +456,25 @@ static int initial_state_to_icrf(const InputConfig *cfg,
      * same `get_bf_rotation` callback the force-model uses on every
      * integrator step (Earth ITRS via IAU 2006 + EOP, Moon PA via
      * the DE-series libration angles). Pure rotation only -- no
-     * omega x r correction; matches the GUI / spopy plotting
-     * convention so values round-trip through both. */
+     * omega x r correction: the velocity is the inertial one on the
+     * body-fixed axes, the GUI / spopy plotting convention, so values
+     * round-trip through both. `central_body_fixed_rotating` takes a
+     * rotating-frame (ECEF-style) velocity instead and adds omega x r
+     * -- the transport theorem, as the GNSS converters apply it. */
     y0[0] = cfg->position_km[0];  y0[1] = cfg->position_km[1];
     y0[2] = cfg->position_km[2];
     y0[3] = cfg->velocity_kms[0]; y0[4] = cfg->velocity_kms[1];
     y0[5] = cfg->velocity_kms[2];
-    if (cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED) {
+    if (cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED
+            || cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING) {
         if (!ctx->get_bf_rotation) {
             spody_error_set(err, SPODY_ERR_INTERNAL,
                     "central body '%s' has no body-fixed rotation "
-                    "provider; initial_state.frame = 'central_body_fixed' "
+                    "provider; initial_state.frame = 'central_body_fixed%s' "
                     "is not supported for this body",
-                    body->name);
+                    body->name,
+                    cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING
+                        ? "_rotating" : "");
             return err ? err->code : SPODY_ERR_INTERNAL;
         }
         double R_icrf_to_bf[3][3], R_bf_to_icrf[3][3];
@@ -483,6 +489,15 @@ static int initial_state_to_icrf(const InputConfig *cfg,
             y0[i + 3] = R_bf_to_icrf[i][0] * v_bf[0]
                       + R_bf_to_icrf[i][1] * v_bf[1]
                       + R_bf_to_icrf[i][2] * v_bf[2];
+        }
+        if (cfg->initial_frame == SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING) {
+            double w[3];
+            spody_bf_angular_velocity_icrf(ctx, cfg->et_start_s, w);
+            /* Same association as the GNSS converters, (v + a) - b,
+             * so an ECEF state gives the converter's ICRF bit for bit. */
+            y0[3] = y0[3] + w[1] * y0[2] - w[2] * y0[1];
+            y0[4] = y0[4] + w[2] * y0[0] - w[0] * y0[2];
+            y0[5] = y0[5] + w[0] * y0[1] - w[1] * y0[0];
         }
     } else if (cfg->initial_frame == SPODY_FRAME_ORBIT_PLANE) {
         /* Ely's orbit-plane (OP) frame, evaluated once at et_start_s
@@ -853,6 +868,7 @@ int spody_resolve_initial_state_icrf(InputConfig *cfg,
      * CR3BP integrator's own basis -- there is no ICRF to resolve to,
      * and `shared` carries no ephemeris under CR3BP to try it with. */
     if (cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED
+            && cfg->initial_frame != SPODY_FRAME_CENTRAL_BODY_FIXED_ROTATING
             && cfg->initial_frame != SPODY_FRAME_ORBIT_PLANE) {
         return SPODY_OK;
     }

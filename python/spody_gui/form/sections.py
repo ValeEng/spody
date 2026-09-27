@@ -764,6 +764,17 @@ class SectionBuildersMixin:
             # the destination view we fall back to legacy
             # conversion + repopulate the cache once from that.
             _, current_frame = self._ic_current_view()
+            if is_kep and current_frame == self._IC_ROTATING:
+                # Elements are inertial: the Keplerian view of this
+                # state lies on the body-fixed AXES, central_body_fixed.
+                self._seed_ic_cache_from_view(("cartesian", current_frame))
+                frame_combo = self._widgets.get("initial_state.frame")
+                if isinstance(frame_combo, QComboBox):
+                    frame_combo.blockSignals(True)
+                    frame_combo.setCurrentText("central_body_fixed")
+                    frame_combo.blockSignals(False)
+                current_frame = "central_body_fixed"
+                self._input_frame_prev = current_frame
             if not self._apply_ic_cache_to_widgets(kind, current_frame):
                 if is_kep:
                     self._convert_cart_to_kep()
@@ -778,6 +789,8 @@ class SectionBuildersMixin:
                 self._seed_ic_cache_from_view((kind, current_frame))
         self._init_cart_block.setVisible(not is_kep)
         self._init_kep_block.setVisible(is_kep)
+        # The rotating frame is offered for Cartesian input only.
+        self._refresh_input_frame_availability()
         self._touch()
 
     # ------------------------------------------------------------------
@@ -793,6 +806,7 @@ class SectionBuildersMixin:
     _IC_VARIANTS: tuple[tuple[str, str], ...] = (
         ("cartesian", "central_inertial"),
         ("cartesian", "central_body_fixed"),
+        ("cartesian", "central_body_fixed_rotating"),
         ("cartesian", "orbit_plane"),
         ("keplerian", "central_inertial"),
         ("keplerian", "central_body_fixed"),
@@ -802,7 +816,11 @@ class SectionBuildersMixin:
     # entry other than `central_inertial` must be resolvable by
     # `_resolve_ic_frame_rotation`.
     _IC_HF_FRAMES = frozenset(
-        {"central_inertial", "central_body_fixed", "orbit_plane"})
+        {"central_inertial", "central_body_fixed",
+         "central_body_fixed_rotating", "orbit_plane"})
+    # Body-fixed axes with a velocity measured in the rotating frame
+    # (ECEF-style). Cartesian only: Keplerian elements are inertial.
+    _IC_ROTATING = "central_body_fixed_rotating"
 
     _IC_CART_KEYS = (
         "initial_state.position_km",
@@ -915,6 +933,13 @@ class SectionBuildersMixin:
                 return None
             r = R.T @ r
             v = R.T @ v
+            if frame == self._IC_ROTATING:
+                if kind != "cartesian":
+                    return None
+                w = self._resolve_bf_omega(et)
+                if w is None:
+                    return None
+                v = v + np.cross(w, r)      # transport theorem
         return r, v
 
     def _ic_block_from_cart_inertial(self, r: "np.ndarray", v: "np.ndarray",
@@ -934,7 +959,15 @@ class SectionBuildersMixin:
             if R is None:
                 return None
             r_dst = R @ r
-            v_dst = R @ v
+            if frame == self._IC_ROTATING:
+                if kind != "cartesian":
+                    return None
+                w = self._resolve_bf_omega(et)
+                if w is None:
+                    return None
+                v_dst = R @ (v - np.cross(w, r))
+            else:
+                v_dst = R @ v
         else:
             r_dst = np.asarray(r, dtype=float)
             v_dst = np.asarray(v, dtype=float)
@@ -1317,6 +1350,36 @@ class SectionBuildersMixin:
         except Exception:
             return None
 
+    def _resolve_bf_omega(self, et_s: float) -> "np.ndarray | None":
+        """Angular velocity of the central body's body-fixed frame in
+        ICRF at `et_s` (rad/s), for `central_body_fixed_rotating`; None
+        when the rotation itself is unavailable. spopy twin of the
+        engine's spody_bf_angular_velocity_icrf: the Earth spins at
+        EARTH_ROT_RATE_RADPS about ITRS z, other bodies are
+        differentiated over +-SPODY_BF_OMEGA_FD_STEP_S."""
+        if self._resolve_bf_rotation(et_s) is None:
+            return None
+        cb_combo = self._widgets.get("force_model.central_body")
+        cb_name = (cb_combo.currentText()
+                   if isinstance(cb_combo, QComboBox) else "")
+        from ..central_bodies import resolve_central_body
+        from .. import constants
+        spec = resolve_central_body(cb_name)
+        eph = (self._cached_ephemeris_for_form()
+               if spec.name == "Moon" else None)
+        earth_rate = (constants.const("EARTH_ROT_RATE_RADPS",
+                                      7.2921151467e-5)
+                      if spec.naif_id == 399 else None)
+        try:
+            from spopy import bf_angular_velocity_icrf
+            return bf_angular_velocity_icrf(
+                lambda t: spec.bf_orientation(float(t), eph),
+                float(et_s),
+                constants.const("SPODY_BF_OMEGA_FD_STEP_S", 60.0),
+                earth_rate)
+        except Exception:
+            return None
+
     def _resolve_op_rotation(self, et_s: float) -> "np.ndarray | None":
         """Return R_icrf_to_op at ET `et_s` -- Ely's orbit-plane frame,
         anchored at the epoch and then treated as inertial. None on any
@@ -1354,7 +1417,7 @@ class SectionBuildersMixin:
         frames, or None when unavailable. `central_inertial` is the
         identity and is filtered out by the callers rather than
         materialised here."""
-        if frame == "central_body_fixed":
+        if frame in ("central_body_fixed", self._IC_ROTATING):
             return self._resolve_bf_rotation(et_s)
         if frame == "orbit_plane":
             return self._resolve_op_rotation(et_s)
@@ -1512,6 +1575,23 @@ class SectionBuildersMixin:
         if self._apply_ic_cache_to_widgets(kind, new_frame):
             self._input_frame_prev = new_frame
             return
+        # The rotating frame is not a pure rotation of the others
+        # (omega x r enters the velocity), so the in-place rotation
+        # below cannot serve it: derive every view from the old one
+        # through the inertial state and write the destination.
+        if self._IC_ROTATING in (self._input_frame_prev, new_frame):
+            self._seed_ic_cache_from_view((kind, self._input_frame_prev))
+            if not self._apply_ic_cache_to_widgets(kind, new_frame):
+                QMessageBox.warning(
+                    self, "Frame conversion unavailable",
+                    "Could not convert the state to '" + new_frame + "' "
+                    "at the current et_start_s (rotation or body spin "
+                    "unavailable: check et_start_s, the ephemeris for the "
+                    "Moon, the EOP file for the Earth). The frame "
+                    "selector was kept on '" + new_frame + "' but the "
+                    "values below have NOT been converted.")
+            self._input_frame_prev = new_frame
+            return
         # Cache miss: fall back to the legacy in-place rotation, and
         # if the prerequisites are missing surface a one-shot warning
         # so the user knows what to fix.
@@ -1658,6 +1738,11 @@ class SectionBuildersMixin:
                             and spec.bf_orientation is not None)
             items = (("central_inertial", "central_body_fixed")
                      if bf_available else ("central_inertial",))
+            kind_combo = self._widgets.get("initial_state.kind")
+            is_cart = (not isinstance(kind_combo, QComboBox)
+                       or kind_combo.currentText() == "cartesian")
+            if bf_available and is_cart:
+                items += (self._IC_ROTATING,)
             if bf_available and cb_name == "Moon":
                 items += ("orbit_plane",)
         prev = frame_combo.currentText()
