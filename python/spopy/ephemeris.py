@@ -272,6 +272,24 @@ class Ephemeris:
                 f"{self.bytes_per_record}; the file looks truncated")
         self.num_records = payload_bytes // self.bytes_per_record
 
+        # Records must follow each other with no gap: the lookup is pure
+        # arithmetic on (et - start). Same check and message as
+        # spody-core's ephemeris_map_file.
+        if self.num_records > 1:
+            starts = np.ndarray((self.num_records,), dtype="<f8", buffer=b,
+                                offset=_HEADER_BYTES + 8,
+                                strides=(self.bytes_per_record,))
+            ends = np.ndarray((self.num_records,), dtype="<f8", buffer=b,
+                              offset=_HEADER_BYTES + 16,
+                              strides=(self.bytes_per_record,))
+            gaps = np.flatnonzero(starts[1:] != ends[:-1])
+            if gaps.size:
+                k = int(gaps[0])
+                raise ValueError(
+                    f"{self._path}: has a gap after record {k} "
+                    f"({ends[k]:.3f} -> {starts[k + 1]:.3f} ET): a chunk "
+                    f"is missing, regenerate it")
+
         # Subset files (a partial DE440 conversion covering only the
         # chunks the user downloaded) may carry the full-span epochs
         # read from header.440 before the converter knew which chunks
