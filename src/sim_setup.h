@@ -116,9 +116,10 @@ typedef struct {
     HarmonicGravity    hg;
     /* Earth-only per-thread handles. MappedEOP carries a per-thread
      * lookup cache (cached_idx + cached_valid) so we cannot share one
-     * across worker threads; MappedIAU2006 is currently stateless but
-     * kept symmetric for the same reason should it grow per-thread
-     * state later. Both reference the read-only Shared data above. */
+     * across worker threads; MappedIAU2006 carries the XYS node cache
+     * of spody_iau2006_xys_interp (the stencil on the fixed hourly
+     * grid), per thread for the same reason. Both reference the
+     * read-only Shared data above. */
     MappedEOP          eop;
     MappedIAU2006      iau2006;
     /* Drag-only per-thread space weather handle (carries a last-hit
