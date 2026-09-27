@@ -247,6 +247,27 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **A DE440 conversion no longer succeeds with records missing.**
+  `spody convert ephemeris` treated a damaged ASCII chunk as a clean
+  end of file and a missing chunk as something to skip, and exited 0
+  either way. A chunk with a wrong coefficient count in record 500
+  produced 499 of its 1143 records; a chunk cut inside its last
+  record dropped it behind a misleading "clone record" notice; and a
+  conversion of chunks 1950, 2050, 2150 with 2050 missing wrote a
+  file with a 100-year hole. The engine indexes records by
+  arithmetic, so a lunar run inside the hole (2060) finished with
+  exit 0 and the spacecraft 4.4 km off after one hour, and one after
+  it (2170) crashed (`0xC0000005`). Now any unreadable, damaged or
+  missing chunk stops the conversion with exit 1 and a message naming
+  the chunk and the record. The conversion is written to
+  `de440.spody.tmp` and replaces `de440.spody` only when it has
+  succeeded, so a failed conversion leaves the previous file
+  untouched (before, it was emptied at the start). The engine and
+  `spopy` also refuse a `.spody` whose records are not contiguous,
+  such as one converted earlier with a chunk missing. Successful
+  conversions are byte-identical (one chunk, three chunks), and so is
+  every propagation in the regression set.
+
 - **A damaged `.spody` ephemeris is refused instead of crashing.**
   The engine trusted the file's header. A file cut inside the header,
   or with `bytes_per_record = 0`, crashed it with an integer division

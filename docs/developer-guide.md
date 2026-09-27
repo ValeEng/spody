@@ -1802,10 +1802,21 @@ Each entry: the rule, and the symptom you'll see if you break it.
   3 components x sets inside the record's coefficients;
   `bytes_per_record == 24 + 8 * number_coefficients_per_record`
   (exactly what the converter writes); the payload is a non-zero
-  whole number of records. A file that fails is refused, never
+  whole number of records; consecutive records join exactly
+  (`start[i] == end[i-1]`: the record lookup is `(et - start) /
+  seconds_per_record`, so a gap hands out a record from the wrong
+  century and indexes past the array after it). A file that fails
+  is refused, never
   loaded with a reduced coverage: a download cut mid-record is not a
   "subset file" (the converter always writes whole records). A new
-  header field used for indexing gets its check in both places.
+  header field used for indexing gets its check in both places. The
+  writer side, `spody_createfile_MappedEphemerisData`, keeps the
+  same promise: any missing, damaged or unwritable ASCII chunk stops
+  the conversion (never skipped, never read as end of file), and the
+  output goes to `de<NNN>.spody.tmp`, moved over the destination
+  only on success (`MoveFileExA` with `MOVEFILE_REPLACE_EXISTING` on
+  Windows, `rename` elsewhere) — a failed conversion must leave the
+  previous file untouched.
   *Symptom of breakage: a damaged file crashes the engine
   (`0xC0000094`, integer division by zero) or loads with its
   coverage silently shrunk, while the GUI refuses it.*

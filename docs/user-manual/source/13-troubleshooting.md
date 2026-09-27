@@ -46,10 +46,19 @@ the hood. The two common failures:
   invalid the conversion cannot run. Open **Settings &rsaquo;
   Paths**, set the path to `spody.exe` (it lives next to
   `spody-gui.exe` in the bundle), and reopen the wizard.
-- **`ephemeris: write failed on '...de440.spody': No space left on
-  device`**: the disk filled up while the binary was being written.
-  The file is incomplete; free some space and run the conversion
-  again.
+- **`ephemeris: write failed on '...de440.spody.tmp': No space left
+  on device`**: the disk filled up while the binary was being
+  written. Free some space and run the conversion again.
+- **`ephemeris: '...ascpNNNNN.440': file ends inside record ...`**,
+  **`... record N has M coefficients, header.440 says 1018`** or
+  **`... unreadable record header line`**: that ASCII chunk is
+  damaged, typically by an interrupted download. Delete it,
+  download it again and convert.
+In every failed case the message ends with *"conversion stopped at
+chunk ...; '...de440.spody' was not changed"*: the conversion is
+written to a temporary file and replaces `de440.spody` only when it
+succeeds, so the previous binary (if any) is still there and still
+good.
 
 ### Wizard reopens at every launch
 
@@ -140,7 +149,8 @@ diagnostic before exit. Common cases:
 - **`error: ephemeris.file: ENOENT`** &mdash; same for the
   ephemeris path.
 - **`ephemeris: '...' is too small ...`**, **`... has an inconsistent
-  header ...`** or **`... the file looks truncated`** &mdash; the
+  header ...`**, **`... the file looks truncated`** or **`... has a
+  gap after record N`** &mdash; the
   `.spody` ephemeris is damaged, typically by an interrupted copy or
   download. Regenerate it with the setup wizard or `spody convert
   ephemeris`; the Analysis tab refuses the same file with the same
