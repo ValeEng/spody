@@ -247,6 +247,15 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **Memory-mapped data files are released on unmap (Windows).** The
+  mapping helper behind the `.spody` ephemeris loader kept the
+  file-mapping handle open after mapping a file: one handle leaked
+  per load, and the file stayed in use &mdash; not
+  deletable or replaceable &mdash; for the rest of the process even
+  after it was unmapped. 1000 map/unmap cycles went from 1000 leaked
+  handles to none, and the file can be deleted right after the
+  unmap. Output is byte-identical.
+
 - **A DE440 conversion no longer succeeds with records missing.**
   `spody convert ephemeris` treated a damaged ASCII chunk as a clean
   end of file and a missing chunk as something to skip, and exited 0
