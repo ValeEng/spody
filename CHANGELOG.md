@@ -574,6 +574,23 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   Integer intervals give the same times as before; every other
   example and output is byte-identical.
 
+- **An output file named after a Windows device wrote nothing and
+  reported success.** `nul.bin`, `con.csv`, `NUL` as an `[output]`
+  file or as a converter's output made Windows open the device instead
+  of a file: `propagate` printed `done`, exited 0 and left no file
+  behind; `aux`, `COM1` and
+  `LPT9` failed with a bare "cannot open". Every `[output]` file
+  (`csv_file`, `bin_file`, `log_file`, `accelerations_file`,
+  `events_log`, for every dynamics model) and the output of
+  `convert harmonics_icgem`, `sp3`, `glonass`, `gps` and `oem` is now
+  checked against `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`,
+  `COM0`&ndash;`COM9` and `LPT0`&ndash;`LPT9`, in any case and with any
+  extension, and refused with a message that names the device. The
+  rule applies on every platform, so an input behaves the same
+  wherever it runs. Names that only begin like a device
+  (`console.bin`, `nullx.bin`, `com10.bin`, `prn_.bin`) are accepted,
+  and so is every bundled example; outputs are byte-identical.
+
 ## v0.4.1-beta &mdash; 2026-08-05
 
 ### Added

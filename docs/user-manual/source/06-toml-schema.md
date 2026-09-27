@@ -497,6 +497,14 @@ cadence. Required.
 | `accelerations_file`   | string (path) | none    | &ndash; | Per-force acceleration breakdown (`SPDYACC_` format). Empty = no breakdown produced. |
 | `events_log`           | string (path) | none    | &ndash; | Event records (`SPDYEVT_` format) for impacts and (if `[events]` is enabled) eclipses. |
 
+A file name that is a Windows device &mdash; `CON`, `PRN`, `AUX`,
+`NUL`, `CONIN$`, `CONOUT$`, `COM0`&ndash;`COM9`, `LPT0`&ndash;`LPT9`,
+in any case and with any extension, so `nul.bin` and `Con.csv` too
+&mdash; is refused at validation, on every platform. Windows opens the
+device instead of a file: the run would end normally and write
+nothing. Names that only start like one (`console.bin`, `com10.bin`)
+are ordinary files. The names the form derives never collide.
+
 Output paths in the form are not edited directly; the
 `[output]` block exposes five **on/off checkboxes** (csv, bin,
 accelerations, events, log) plus a single `output_dir` picker.

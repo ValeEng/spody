@@ -202,6 +202,11 @@ them produce reference binaries used in the diff-validation workflow
 (chapter 11); `gp` is the odd one out and writes no file at all &mdash;
 it prints the initial state a propagation starts from.
 
+The output name of `harmonics_icgem`, `sp3`, `glonass`, `gps` and
+`oem` is checked before any input is read: a Windows device name
+(`nul.bin`, `con.tab`, `COM1.bin`, ...) is refused, for the same
+reason as the `[output]` files (chapter 6).
+
 ### `spody convert ephemeris`
 
 ```
