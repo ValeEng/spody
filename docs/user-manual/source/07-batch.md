@@ -429,6 +429,13 @@ The other cases run normally and their results are unaffected. A
 batch with any skipped or failed case exits with status 1, and
 everything above lands in the batch log when `log_file` is set.
 
+The case's own lines &mdash; done, failed, skipped, and the notice of
+an impact that ends it
+(`  [3/10] c02: IMPACT: body NAIF=301, t=2855.614 s, ...`) &mdash; carry
+its `[i/n] <id>:` prefix. With `thread_number > 1` cases run side by
+side and their lines interleave, so the prefix is what ties each line
+to its case.
+
 The typical ways a case gets skipped are a delta that pushes a
 field out of range (a `mass_kg` delta larger than the base mass)
 and an `et_start_s` / `duration_s` column that moves the window

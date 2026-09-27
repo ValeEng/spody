@@ -108,6 +108,14 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Batch impact notices name their case.** The `IMPACT: body ...`
+  line a case prints when it hits the central body carried no case
+  id, so in a batch running several threads the notices interleaved
+  with other cases' progress and could not be told apart (seen on
+  `debris_impact_demo`, 4 threads). In a batch the line now starts
+  with the same `[i/n] <id>:` prefix as the case's other lines; a
+  single run prints it exactly as before.
+
 - **The run log now holds the engine's own diagnoses.** `log_file`
   copied everything the app printed but nothing printed inside
   spody-core, so a run that stopped on a damaged ephemeris saved
@@ -260,6 +268,16 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   Everything inside the table is byte-identical: GPS and GLONASS
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
+
+- **No data race on the first harmonics evaluation of a batch.**
+  The choice between the HPC and the reference harmonics kernel
+  (`SPODY_HG_NONHPC`) was cached in a static variable filled on the
+  first call, which every batch thread could write at once: harmless
+  in practice (they all wrote the same value) but undefined behaviour
+  in C. The choice is now made when the field is loaded, before any
+  thread starts, and the RHS only reads it. Output is byte-identical
+  with either kernel and the run time is unchanged (GPS 7-day, best of
+  9: 0.505 s before and after).
 
 - **Memory-mapped data files are released on unmap (Windows).** The
   mapping helper behind the `.spody` ephemeris loader kept the
