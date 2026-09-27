@@ -139,6 +139,12 @@ diagnostic before exit. Common cases:
   resolve. Remember the path is relative to the TOML's directory.
 - **`error: ephemeris.file: ENOENT`** &mdash; same for the
   ephemeris path.
+- **`ephemeris: '...' is too small ...`**, **`... has an inconsistent
+  header ...`** or **`... the file looks truncated`** &mdash; the
+  `.spody` ephemeris is damaged, typically by an interrupted copy or
+  download. Regenerate it with the setup wizard or `spody convert
+  ephemeris`; the Analysis tab refuses the same file with the same
+  message.
 - **`harmonics: line N: expected 'n, m, C, S'`** or **`harmonics:
   line N: degree/order n=... m=... outside 0 <= m <= n`** &mdash; row
   N of the harmonics `.tab` file is damaged (a truncated download, a

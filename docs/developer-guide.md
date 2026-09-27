@@ -1782,6 +1782,21 @@ Each entry: the rule, and the symptom you'll see if you break it.
   the end of `finals2000A.all` finishes with exit 0 and drifts by
   kilometres within hours of the boundary (47.9 km after 8 days in
   LEO); a converted reference is off by the whole ICRF–ITRF angle.*
+- **A `.spody` file is validated before any header field is used.**
+  `ephemeris_map_file` (C) and `Ephemeris._parse_header`
+  (`python/spopy/ephemeris.py`) apply the same rules, in the same
+  order, with the same messages: the file is at least one header
+  long; `seconds_per_record > 0`; every body slot in use fits its
+  3 components x sets inside the record's coefficients;
+  `bytes_per_record == 24 + 8 * number_coefficients_per_record`
+  (exactly what the converter writes); the payload is a non-zero
+  whole number of records. A file that fails is refused, never
+  loaded with a reduced coverage: a download cut mid-record is not a
+  "subset file" (the converter always writes whole records). A new
+  header field used for indexing gets its check in both places.
+  *Symptom of breakage: a damaged file crashes the engine
+  (`0xC0000094`, integer division by zero) or loads with its
+  coverage silently shrunk, while the GUI refuses it.*
 - **UT1 is interpolated on the TAI scale, not the UTC scale.**
   `UT1 - UTC` in `finals2000A.all` jumps by +1 s across every leap
   second; `UT1 - TAI` does not. `spody_interpolate_eop` (and its twin

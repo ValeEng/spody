@@ -220,6 +220,24 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   conversions, `gp`, the GPS 7-day and ISS 15-day propagations, a
   64-case Earth batch, LRO and CR3BP. Chapter 13 lists the messages.
 
+- **A damaged `.spody` ephemeris is refused instead of crashing.**
+  The engine trusted the file's header. A file cut inside the header,
+  or with `bytes_per_record = 0`, crashed it with an integer division
+  by zero (`0xC0000094`) and no message; one cut after that field
+  underflowed the payload size and failed with a generic setup
+  error; an inconsistent record size or body layout read the
+  coefficients shifted, up to past the end of the file; and a copy
+  interrupted mid-record ran with exit 0, its coverage silently
+  shrunk and reported as a "subset file", while the Analysis tab
+  refused the same file. The engine and `spopy` now check the header
+  before using it, with the same rules and messages: header size,
+  record size against the coefficient count, body layout, a whole
+  and non-zero number of records. All six damaged files tried are
+  refused with a message in both; the bundled DE440 files load
+  unchanged, and every propagation, conversion and batch in the
+  regression set, including the lunar `batch_demo`, is
+  byte-identical.
+
 - **Malformed rows in a harmonics file are refused, not misread.**
   The `.tab` loader trusted every data row. A row missing its
   coefficients crashed the MSVC build without a message
