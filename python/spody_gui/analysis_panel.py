@@ -141,7 +141,9 @@ _BIN_SCAN_SKIP_DIRS: frozenset[str] = frozenset({
 # Used by _refresh_tree to group output files by run instead of
 # listing them in a flat tree.
 import re as _re
-_RUN_FOLDER_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}T\d{6}Z$")
+# `-N` suffix: a run started in the same second as another gets
+# `<ts>-1`, `<ts>-2`, ... (spody_io_make_run_subdir).
+_RUN_FOLDER_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}T\d{6}Z(-\d+)?$")
 
 # Roles used to store the per-item full path on tree items, so we
 # don't have to re-resolve from display text.

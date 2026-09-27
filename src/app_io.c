@@ -59,8 +59,18 @@ int spody_io_make_run_subdir(const char *output_dir,
     strftime(ts, sizeof ts, "%Y-%m-%dT%H%M%SZ", tm);
     snprintf(run_subdir_out, out_sz, "%s/%s", output_dir, ts);
 
-    if (SPODY_MKDIR(run_subdir_out) == 0) return SPODY_OK;
-    if (errno == EEXIST) return SPODY_OK;   /* second-precision collision */
+    /* The timestamp has one-second resolution: a second run started in
+     * the same second (two jobs launched together, a script loop) must
+     * not land in the first one's folder -- same file names, one set of
+     * results silently overwritten. mkdir is atomic, so whoever creates
+     * a name owns it; on a clash try <ts>-1, <ts>-2, ... The loop ends:
+     * a folder holds finitely many entries. */
+    for (int k = 0; ; ++k) {
+        if (k > 0)
+            snprintf(run_subdir_out, out_sz, "%s/%s-%d", output_dir, ts, k);
+        if (SPODY_MKDIR(run_subdir_out) == 0) return SPODY_OK;
+        if (errno != EEXIST) break;
+    }
     spody_error_set(err, SPODY_ERR_IO,
             "cannot create run output dir '%s' (errno %d)",
             run_subdir_out, errno);
