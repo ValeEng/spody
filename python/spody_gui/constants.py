@@ -96,7 +96,7 @@ def const(name: str, fallback: float) -> float:
 # caught in dev checkouts, where the header always wins.
 # ----------------------------------------------------------------------
 MOON_RADIUS_KM   = const("MOON_RADIUS",   1737.4)
-MOON_MU_KM3_S2   = const("MOON_MU",       4902.8005821478)
+MOON_MU_KM3_S2   = const("MOON_MU",       4902.8001184575496)
 EARTH_RADIUS_KM  = const("EARTH_RADIUS",  6378.1366)
 EARTH_MU_KM3_S2  = const("EARTH_MU",      398600.4415)
 

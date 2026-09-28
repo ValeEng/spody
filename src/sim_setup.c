@@ -211,7 +211,8 @@ static void print_data_sources(const InputConfig *cfg,
         describe_file(cfg->harmonics_file, info, sizeof info);
         spody_log_printf("    gravity   : %s%s\n"
                          "                degree %d%s, R_ref %.4f km, "
-                         "GM %.10g km^3/s^2, %s kernel\n",
+                         "GM %.17g km^3/s^2 (also the central term), "
+                         "%s kernel\n",
                          cfg->harmonics_file, info, g->N,
                          cfg->harmonics_adaptive ? " (adaptive ceiling)" : "",
                          g->R_ref, g->GM,
@@ -762,7 +763,13 @@ int spody_build_worker(const InputConfig *cfg,
         goto fail;
     }
 
-    w->ctx.mu_central          = body->mu;
+    /* With a harmonics file the two-body term takes the file's GM:
+     * the normalized coefficients hold only with the GM they were
+     * estimated with (GRGM1200B differs from DE440 by 8e-10, from the
+     * old DE405 value by 9.4e-8 -- 160 m along-track in 6 days on
+     * LRO). Without harmonics the registry value applies. */
+    w->ctx.mu_central          = shared->init_hgd ? shared->hgd.GM
+                                                  : body->mu;
     w->ctx.R_central           = body->radius_km;
     w->ctx.naif_central        = body->naif;
     w->ctx.get_bf_rotation     = body->bf_rotation;
