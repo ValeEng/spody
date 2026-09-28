@@ -1888,6 +1888,22 @@ Each entry: the rule, and the symptom you'll see if you break it.
   batch case. *Symptom of breakage: two runs of the same case, or the
   same case alone and in a batch, no longer bit-identical; or a series
   evaluation count far from one per hour crossed plus four at start.*
+- **Text epochs never become a whole JD, and a file's time system is
+  read, not assumed.** Every calendar epoch read from a file (SP3,
+  RINEX TOC, OEM) goes through `spody_greg_to_sec_j2000`, the exact
+  day difference from J2000: a JD in one double resolves 40 us (a few
+  cm at GNSS speed). SP3 epochs are converted from the scale the
+  header's `%c` line declares; an unknown scale refuses the file, it
+  is never defaulted to GPS (UTC read as GPS is 18 s, ~100 km for
+  LAGEOS). New readers of timed data follow the same two rules.
+  *Symptom of breakage: converted labels scattered by tens of us
+  around the nominal grid; an SLR reference 18 s off its propagation.*
+- **Harmonics files are complete or refused.** The `.tab` loader stops
+  at the first row past the requested degree and then checks that
+  every (n, m) with 2 <= n <= N was seen exactly once. Do not relax it
+  into "missing means zero": a file out of order would load with
+  silent holes. *Symptom of breakage: a field that loads but gives a
+  different acceleration from its source file.*
 - **UT1 dates travel in two parts.** `spody_iau2006_era` and
   `spody_gmst1982` take `(jd1, jd2)` like SOFA; the Earth chain passes
   `(JD_MJD_EPOCH, MJD_UT1)` and the spopy twin `erfa.era00(MJD_OFFSET,

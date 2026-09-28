@@ -321,6 +321,16 @@ Arguments:
 - `--iau2006-dir <dir>` &mdash; path to the directory containing
   `tab5.2{a,b,d}.txt`.
 
+**Time system.** Each file's epochs are read in the time system
+its header declares (the first `%c` line): GPS time for IGS / MGEX
+products (Galileo, QZSS and NavIC time share it), BeiDou time (14 s
+behind GPS), TAI, UTC (the ILRS orbits of LAGEOS and ETALON are UTC,
+converted with the leap-second table) and GLONASS time (UTC + 3 h).
+SP3-a / SP3-b files, which predate that field, are GPS time. A file
+declaring anything else is **refused** rather than read in the wrong
+scale: 18 s of error on a LAGEOS epoch is about 100 km along track.
+The per-file summary line states the scale it used (`time UTC`).
+
 The time column of the emitted binary is **0-anchored** at the
 first record across all inputs (`t_record - t_first_overall`),
 matching the propagator's convention so a diff against a

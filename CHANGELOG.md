@@ -375,6 +375,35 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Fixed
 
+- **`spody convert sp3` reads the file's own time system.** It took
+  every SP3 epoch as GPS time. The ILRS orbits of LAGEOS and ETALON
+  are UTC: read as GPS they landed 18.000 s early, about 100 km along
+  a LAGEOS track, without any error. The converter now reads the
+  header's time system (GPS, GAL, QZS, IRN, BDT, TAI, UTC, GLO; SP3-a
+  and SP3-b are GPS by definition) and refuses any other value. The
+  same instant written in the seven scales converts to the same
+  epoch; the first LAGEOS-2 epoch of week 2298 now matches an
+  independent UTC to ET conversion to the microsecond. IGS / MGEX
+  files (GPS time) are read as before, apart from the next item.
+
+- **Converter epochs no longer pass through a whole Julian Date.**
+  `convert sp3`, `gps` and `glonass` built each epoch as one JD in a
+  double, which resolves only 40 &micro;s: the labels scattered by up
+  to 29 &micro;s around their nominal value, a few cm at GNSS speeds.
+  They now use the exact day difference from J2000 (as `convert oem`
+  already did); what is left between consecutive labels is the real
+  TDB&minus;TT drift (0.36 &micro;s over 15 min). Converted G11 and R03
+  states move by up to 5 cm (22&ndash;26 mm rms); propagations are
+  unchanged.
+
+- **Harmonics files are checked for completeness.** The loader stops
+  at the first row past the requested degree, which silently dropped
+  any coefficient listed out of order and accepted a missing or
+  duplicated one as zero or as the last value. Every coefficient from
+  degree 2 up to the requested one must now appear exactly once, or
+  the file is refused with the offending (n, m). The bundled fields
+  load unchanged.
+
 - **Batch summaries keep the whole error message, and an over-long
   `iau2006_dir` says so.** A case's error text (up to 511 characters)
   was stored with its "skipped by the pre-check:" / "setup:" prefix in
