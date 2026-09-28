@@ -207,6 +207,34 @@ The output name of `harmonics_icgem`, `sp3`, `glonass`, `gps` and
 (`nul.bin`, `con.tab`, `COM1.bin`, ...) is refused, for the same
 reason as the `[output]` files (chapter 6).
 
+**Conversion log.** Every conversion that writes a file writes
+`<output>.log` beside it (`sp3_g11.bin.log`, `de440.spody.log`,
+`eigen-6c4.tab.log`): the command line, the app and spody-core
+versions, the start time, every file read &mdash; inputs, and for the
+GNSS converters the EOP file and the three IAU 2006 tables &mdash; and
+the file written, each with its size and **SHA-256**, then everything
+the converter printed and the result (`OK`, or `FAILED` with the
+output marked not valid). The checksums tie the log to the exact bytes
+on disk: `sha256sum` (or `Get-FileHash`) on a file tells whether it is
+the one the log describes. If the log cannot be created the conversion
+does not start.
+
+The reference binaries (`sp3`, `glonass`, `gps`, `oem`) store time as
+seconds from their first record. Their log carries the **time anchor**
+at full precision:
+
+```
+sp3: time anchor t0 = ET 759067269.18447864 s past J2000 TDB [0x1.69f3942979cffp+29] = 2024-021T00:00:00.000000 UTC
+sp3: time column t = ET - t0; last record t = 604680.0001899004 s, ET 759671949.18466854 [0x1.6a3d64697a338p+29] = 2024-027T23:58:00.000000 UTC; 5040 records
+```
+
+The decimal value has 17 significant digits, enough to read back the
+exact double; the bracketed hexadecimal is the same double bit for
+bit (`float.fromhex` in Python, `strtod` in C). Every absolute epoch
+of the file is `ET = t0 + t`. The UTC reading (ISO 8601 ordinal date,
+day of year) is for people; the ET is the value to compute with.
+`convert gp` writes no file and no log.
+
 ### `spody convert ephemeris`
 
 ```

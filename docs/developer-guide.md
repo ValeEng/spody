@@ -1888,6 +1888,15 @@ Each entry: the rule, and the symptom you'll see if you break it.
   batch case. *Symptom of breakage: two runs of the same case, or the
   same case alone and in a batch, no longer bit-identical; or a series
   evaluation count far from one per hour crossed plus four at start.*
+- **No converter output without its log.** Each `spody convert`
+  branch in `main.c` opens `<output>.log` with `convlog_begin` before
+  reading anything, logs every input and auxiliary file through
+  `convlog_file` (size + SHA-256, `app_sha256.c`), and returns through
+  `convlog_end`, which hashes the output or marks it not valid. A
+  converter whose binary has a relative time column calls
+  `spody_log_time_anchor` on success. A new converter follows the
+  same three calls. *Symptom of breakage: an output with no `.log`
+  beside it, or a log whose output checksum does not match the file.*
 - **Text epochs never become a whole JD, and a file's time system is
   read, not assumed.** Every calendar epoch read from a file (SP3,
   RINEX TOC, OEM) goes through `spody_greg_to_sec_j2000`, the exact

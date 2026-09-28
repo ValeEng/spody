@@ -8,6 +8,22 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Every `spody convert` writes a log beside its output.**
+  `<output>.log` holds the command, the app and spody-core versions,
+  every file read and the file written with size and SHA-256 (for the
+  GNSS converters also the EOP file and the IAU 2006 tables), the
+  converter's own messages and the result; a failed conversion is
+  logged as `FAILED` with the output marked not valid, and a
+  conversion whose log cannot be created does not start. The reference
+  binaries of `sp3`, `glonass`, `gps` and `oem` keep time relative to
+  their first record: the log now gives that anchor as ET to 17
+  significant digits and as a hexadecimal float (the exact double),
+  with its UTC reading, so every absolute epoch is recoverable as
+  `ET = t0 + t`. The SHA-256 is SpOdy's own (FIPS 180-4), checked
+  against Python's `hashlib` on 18 files from 0 bytes to 252 MB. Data
+  written is unchanged. `convert gp` writes no file and stays without
+  a log for now.
+
 - **`frame = "central_body_fixed_rotating"` &mdash; initial states in
   a rotating body-fixed frame (ECEF-style).** `central_body_fixed`
   takes the velocity as the inertial one written on the body-fixed
