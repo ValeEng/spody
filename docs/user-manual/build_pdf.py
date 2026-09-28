@@ -40,6 +40,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import markdown
@@ -218,9 +220,17 @@ def _print_to_pdf(src_html: Path, dst_pdf: Path) -> int:
         )
         return 1
     print(f">>> printing via {browser}")
+    # A stale PDF must not pass for a fresh one: remove it first, so the
+    # check below sees only what this run wrote.
+    dst_pdf.unlink(missing_ok=True)
+    # Own throw-away profile: with the user's browser already open, a
+    # headless call on the default profile can hand the job to the
+    # running instance and return at once without printing anything.
+    profile = tempfile.mkdtemp(prefix="spody-pdf-")
     args = [
         browser,
-        "--headless",
+        "--headless=new",
+        f"--user-data-dir={profile}",
         "--disable-gpu",
         "--no-pdf-header-footer",          # let the CSS @page rules win
         # Build a sidebar outline of all h1..h6 tags in PDF readers
@@ -233,6 +243,18 @@ def _print_to_pdf(src_html: Path, dst_pdf: Path) -> int:
         src_html.as_uri(),
     ]
     proc = subprocess.run(args, capture_output=True, text=True)
+    # On Windows the browser executable is a launcher: it returns at
+    # once and a child process writes the PDF seconds later. Wait for
+    # the file to appear and its size to settle before judging.
+    deadline = time.monotonic() + 120.0
+    last = -1
+    while time.monotonic() < deadline:
+        size = dst_pdf.stat().st_size if dst_pdf.is_file() else -1
+        if size > 0 and size == last:
+            break
+        last = size
+        time.sleep(1.0)
+    shutil.rmtree(profile, ignore_errors=True)
     # Headless mode is chatty on stderr even on success; only surface
     # output when something actually failed.
     if proc.returncode != 0 or not dst_pdf.is_file():

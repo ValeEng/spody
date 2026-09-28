@@ -135,8 +135,8 @@ def cluster_altitudes(h_obs: np.ndarray) -> np.ndarray:
     as the threshold fallback when no snapshot lists the configured
     altitudes, and by the event-timeline plots to give each crossed
     altitude its own labelled row. Exact for refined triggers
-    (sub-microsecond localisation); best-effort for `refined = false`
-    ones.
+    (localised at the integrator's own accuracy, microseconds); best-
+    effort for `refined = false` ones.
 
     The cluster boundaries come out of one vectorised `diff` -- the
     only Python-level loop is over the (handful of) clusters, so a

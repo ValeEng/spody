@@ -210,12 +210,13 @@ _KNOWN_BODIES: dict[str, CentralBodySpec] = {
         radius_km=EARTH_RADIUS_KM,
         mu_km3_s2=EARTH_MU_KM3_S2,
         bf_frame_name="ITRF",
-        # Earth orientation via spopy.icrf_to_itrs (erfa.c2t06a + the
-        # wizard's finals2000A.all). Mirrors spody-core's
-        # spody_bf_rotation_earth at the SOFA precision floor. When
-        # the EOP file is missing under <data_dir>/eop/, the provider
-        # returns identity so the 3D scene still renders -- just with
-        # no Earth rotation animation.
+        # Earth orientation via spopy.icrf_to_itrs(_many) and the
+        # wizard's finals2000A.all: the chain of spody-core's
+        # spody_bf_rotation_earth (dX/dY, hourly X/Y/s nodes, two-part
+        # UT1), about 3 mm from it at GNSS radius. When the EOP file
+        # is missing under <data_dir>/eop/, the provider returns
+        # identity so the 3D scene still renders -- just with no
+        # Earth rotation animation.
         bf_orientation=_earth_orientation,
         bf_orientation_many=_earth_orientation_many,
     ),
