@@ -967,6 +967,8 @@ The registry is designed so this is three local edits on the C side
 4. Gravity field: ship/convert a harmonics file (`spody convert
    harmonics_icgem` for ICGEM `.gfc` sources) and wire the
    per-body file selection the way Moon/Earth do it.
+   The run's central term then takes the file's GM, not the registry
+   `mu` (§7, "The central GM comes with the gravity file").
 5. **GUI mirror**: one `CentralBodySpec` in
    `spody_gui/central_bodies.py` (name, `naif_id`, `radius_km`,
    `mu_km3_s2`, `bf_frame_name`, `bf_orientation`,
@@ -1913,6 +1915,21 @@ Each entry: the rule, and the symptom you'll see if you break it.
   into "missing means zero": a file out of order would load with
   silent holes. *Symptom of breakage: a field that loads but gives a
   different acceleration from its source file.*
+- **The central GM comes with the gravity file.** With a harmonics
+  file loaded, `sim_setup.c` sets `ctx.mu_central` to the file's GM,
+  not to the registry `mu`: normalized coefficients hold only with the
+  GM they were estimated with. The registry value (`MOON_MU`,
+  `EARTH_MU`) serves the no-harmonics case, the third bodies, CR3BP,
+  Keplerian initial states and the GUI's elements. Checklist when you
+  add a field or touch a GM:
+  1. Read the file's GM from its first line and compare it with the
+     registry constant; say the difference in the CHANGELOG.
+  2. Do not "fix" a mismatch by editing the registry constant to the
+     file's value: the next file would break it again.
+  3. The `gravity` line of the setup log prints the GM in use to 17
+     digits &mdash; that is where to look.
+  *Symptom of breakage: a lunar orbit drifting along-track linearly
+  (9.4e-8 of GM = 160 m in 6 days on LRO) with no other change.*
 - **UT1 dates travel in two parts.** `spody_iau2006_era` and
   `spody_gmst1982` take `(jd1, jd2)` like SOFA; the Earth chain passes
   `(JD_MJD_EPOCH, MJD_UT1)` and the spopy twin `erfa.era00(MJD_OFFSET,

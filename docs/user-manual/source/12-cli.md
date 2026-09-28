@@ -87,7 +87,7 @@ it once, for the base window):
     ephemeris : ../../data/DE440/de440.spody (102557632 bytes, modified 2026-06-03)
                 12556 records, coverage 1549-12-31 .. 2650-01-25 (TDB)
     gravity   : ../../data/EIGEN-6C4/eigen-6c4.tab (252139802 bytes, modified 2026-06-20)
-                degree 70, R_ref 6378.1365 km, GM 398600.4415 km^3/s^2, HPC kernel
+                degree 70, R_ref 6378.1365 km, GM 398600.44150000002 km^3/s^2 (also the central term), HPC kernel
     EOP       : ../../data/eop/finals2000A.all (3750412 bytes, modified 2026-06-20)
                 1973-01-02 .. 2027-06-26; Bulletin B to 2026-05-01, measured to 2026-06-18, IERS prediction after
                 run window: Bulletin B
@@ -115,8 +115,8 @@ log belongs to:
 
 ```
   cr3bp      : Earth + Moon  (L = 384400 km)
-  cr3bp GM   : mu1 = 398600.4415, mu2 = 4902.8005821478 km^3/s^2
-  cr3bp mu   : 0.0121505853505625  (omega = 2.66531440062302e-06 rad/s)
+  cr3bp GM   : mu1 = 398600.4415, mu2 = 4902.80011845755 km^3/s^2
+  cr3bp mu   : 0.0121505842153643  (omega = 2.66531439909159e-06 rad/s)
 ```
 
 `mu = mu2 / (mu1 + mu2)` and `omega = sqrt((mu1 + mu2) / L^3)` are

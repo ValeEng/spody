@@ -145,7 +145,8 @@ used in `[batch.columns]` for delta-mode column descriptors.
 as the zero of TDB-seconds time scale. [Chapter 6.]
 
 **`mu`.** &mdash; Gravitational parameter, in km&sup3;/s&sup2;. For
-the Moon: `4902.800066`. [Chapter 9.]
+the Moon: `4902.8001184575496` (DE440); a run with a gravity file
+uses the GM of the file for its central term. [Chapters 9, 10.]
 
 **Override mode.** &mdash; The batch column mapping mode in which
 the CSV cell value *replaces* the TOML's nominal value. The

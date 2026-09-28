@@ -239,13 +239,25 @@ gravitational parameter `mu` baked in:
 
 | Central body | `mu` (km&sup3;/s&sup2;)        | Source     |
 |--------------|---------------------------------|------------|
-| Moon         | 4902.800066                     | GRGM1200B  |
+| Moon         | 4902.8001184575496              | DE440      |
 | Earth        | 398600.4415                     | EIGEN-6C4  |
 
 Both constants live alongside the central-body radii in
 `spody_const.h` (single source of truth, shared between the C
-engine and the Python GUI), and are the same values used by the
-two-body reference acceleration at every step.
+engine and the Python GUI).
+
+The two-body term of a run **with a gravity file** does not use
+these: it takes the GM declared by the file, because normalized
+coefficients hold only with the GM they were estimated with. For
+the Earth the two coincide to the bit. For the Moon, GRGM1200B
+declares 4902.8001224453, 8e-10 from the DE440 value &mdash; two
+estimates of the same quantity, within the uncertainty of both.
+Orbital elements, at input (`kind = "keplerian"`) and in the
+plots, are a representation of the state: they are always read
+and shown with the body's GM from the table above, the same both
+ways, so what you type is what you get back. The field's GM is a
+parameter of the gravity model only. The run log prints the GM of
+the central term on its `gravity` line.
 
 ### Reference plane
 

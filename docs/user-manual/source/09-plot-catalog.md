@@ -147,8 +147,9 @@ orbit (`i ≈ 0`) the RAAN is set to 0 and its rotation is folded
 into the argument of periapsis. The thresholds are tight enough
 (`1e-8`) that any realistic propagated orbit is unaffected.
 
-The default central-body gravitational parameter is the Moon's
-(`mu = 4902.800066 km^3/s^2`).
+The gravitational parameter is the active central body's registry
+value (Moon: `mu = 4902.8001184575496 km^3/s^2`, DE440); see
+Chapter 10 for how it relates to the GM of the gravity file.
 
 #### Semi-major axis a
 

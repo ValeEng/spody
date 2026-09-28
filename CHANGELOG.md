@@ -148,6 +148,38 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **The central two-body term takes the GM of the gravity file; the
+  Moon's GM is DE440's.** Normalized spherical-harmonic coefficients
+  hold only with the GM they were estimated with, so a run with a
+  harmonics file now uses that file's GM for the central term too (the
+  setup log says so on the `gravity` line, to 17 digits). For the
+  Earth nothing changes: EIGEN-6C4's GM is `EARTH_MU` to the bit. For
+  the Moon the central term used `MOON_MU` = 4902.8005821478, the DE405
+  value GMAT still carries, against 4902.8001224453 in GRGM1200B: a
+  field inconsistent by 9.4e-8. `MOON_MU` itself becomes DE440's
+  4902.8001184575496 (GRAIL era, 8e-10 from GRGM1200B); it still
+  serves a Moon without harmonics, the Moon as a third body and the
+  Earth&ndash;Moon CR3BP. Measured effects:
+  - LRO, 6 days, degree 80: **161 m along-track** (0.4 m radial),
+    growing linearly; the same with degree 150. The 2009 SPICE
+    reference cannot arbitrate: at degree 150 it leaves a
+    &minus;99 m/day along-track drift of its own (initial state, SRP
+    off), which no physical GM could absorb. The choice rests on the
+    consistency of the field.
+  - Earth orbits (Moon as third body): GPS G11 7 days 1.6 mm, ISS
+    1.1 mm, the 64 batch cases under 0.05 mm.
+  - Earth&ndash;Moon CR3BP: mass ratio 0.0121505853505625 &rarr;
+    0.0121505842153643; the L4 example moves 6.5 m in 30 days, and a
+    periodic orbit rebuilt with the new ratio still closes to
+    3.0e-5 km, as scipy's DOP853 does.
+  - Converters, SGP4 and every other output: byte-identical.
+  Keplerian elements stay a representation of the state, read and
+  shown with the body's GM as the ephemeris defines it (`MOON_MU`,
+  DE440) both at input and in the GUI, so they round-trip exactly; the
+  file's GM is a parameter of the field model, not of the conversion.
+  The two estimates differ by 4e-6 km^3/s^2, below the uncertainty of
+  either.
+
 - **The GUI's Earth rotation follows the engine's chain, 20&times;
   faster.** Body-fixed (ITRS) plots, the impact latitude/longitude
   views and the animated ITRF triad rotated every sample with a
