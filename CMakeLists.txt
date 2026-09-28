@@ -59,6 +59,7 @@ add_executable(spody
     src/main.c
     src/app_diagnostics.c
     src/app_io.c
+    src/app_sha256.c
     src/atmosphere_nrlmsise00.c
     src/calibrate.c
     src/central_body.c

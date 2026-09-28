@@ -62,6 +62,7 @@
 #include "sim_setup.h"
 #include "sim_run.h"
 #include "calibrate.h"
+#include "app_sha256.h"
 
 /* Monotonic wall-clock seconds. Resolution + thread-safety: with
  * OpenMP linked in we get omp_get_wtime, the only portable wall-time
@@ -967,6 +968,87 @@ static int cmd_maxhgdegree(int argc, char **argv) {
  * validation rig can produce the binary / .tab assets without
  * shipping its own converter.
  */
+/* ---- conversion log ------------------------------------------------
+ *
+ * Every `spody convert` that writes a file also writes `<output>.log`
+ * beside it: the command, the versions, every file read and written
+ * with its size and SHA-256 (so the log names the exact bytes), and,
+ * through the log mirror, everything the converter printed -- for the
+ * state converters that includes the time anchor t0 of the relative
+ * time column at full precision. No output without its log: if the
+ * log cannot be opened the conversion does not start. */
+static double g_convlog_t0;
+
+static int convlog_begin(const char *output, const char *what,
+                         int argc, char **argv) {
+    char path[4096];
+    int n = snprintf(path, sizeof path, "%s.log", output);
+    if (n < 0 || (size_t)n >= sizeof path) {
+        fprintf(stderr, "%s: output path too long for its log\n", what);
+        return -1;
+    }
+    if (spody_log_open_mirror(path) != 0) {
+        fprintf(stderr, "%s: cannot open the conversion log '%s'\n",
+                what, path);
+        return -1;
+    }
+    g_convlog_t0 = now_seconds();
+    char stamp[32] = "?";
+    time_t now = time(NULL);
+    struct tm *utc = gmtime(&now);
+    if (utc) strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%SZ", utc);
+    spody_log_printf("conversion log : %s\n", path);
+    spody_log_printf("command        : spody");
+    for (int i = 0; i < argc; ++i)
+        spody_log_printf(strchr(argv[i], ' ') ? " \"%s\"" : " %s", argv[i]);
+    spody_log_printf("\nstarted (UTC)  : %s\n", stamp);
+    spody_log_printf("SpOdy app      : %s\n", SPODY_APP_VERSION);
+    spody_log_printf("spody-core     : %s  (git %s, built %s)\n",
+                     spody_version(), spody_git_hash(),
+                     spody_build_timestamp());
+    return 0;
+}
+
+/* One file of the conversion: its path as given, size and SHA-256.
+ * `read_path` is where to read it now, when that differs (a converter
+ * that changed directory); NULL means `shown`. */
+static void convlog_file(const char *role, const char *shown,
+                         const char *read_path) {
+    char hex[65];
+    long long size = 0;
+    if (spody_sha256_file(read_path ? read_path : shown, hex, &size) == 0)
+        spody_log_printf("%-14s : %s\n%17s%lld bytes, sha256 %s\n",
+                         role, shown, "", size, hex);
+    else
+        spody_log_printf("%-14s : %s  (cannot be read for its checksum)\n",
+                         role, shown);
+}
+
+/* The three IAU 2006 series tables the Earth rotation is built from. */
+static void convlog_iau2006(const char *dir) {
+    static const char *const tables[3] = {
+        "tab5.2a.txt", "tab5.2b.txt", "tab5.2d.txt" };
+    for (int i = 0; i < 3; ++i) {
+        char path[4096];
+        snprintf(path, sizeof path, "%s/%s", dir, tables[i]);
+        convlog_file("iau2006 table", path, NULL);
+    }
+}
+
+/* Output checksum (on success), result, elapsed time; closes the log.
+ * Returns the exit code of the subcommand. */
+static int convlog_end(const char *output, const char *read_path, int rc) {
+    if (rc == 0)
+        convlog_file("output", output, read_path);
+    else
+        spody_log_eprintf("output         : %s  NOT VALID (conversion failed)\n",
+                          output);
+    spody_log_printf("result         : %s\n", rc == 0 ? "OK" : "FAILED");
+    spody_log_printf("elapsed        : %.3f s\n", now_seconds() - g_convlog_t0);
+    spody_log_close_mirror();
+    return rc == 0 ? 0 : 1;
+}
+
 static int cmd_convert(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr,
@@ -992,6 +1074,18 @@ static int cmd_convert(int argc, char **argv) {
         int n_files        = argc - 4;
         const char **dates = (const char **)(argv + 4);
 
+        char out_path[4096], in_path[4096], out_local[64];
+        snprintf(out_path, sizeof out_path, "%s/de%s.spody", folder, de);
+        snprintf(out_local, sizeof out_local, "de%s.spody", de);
+        if (convlog_begin(out_path, "convert ephemeris", argc, argv) != 0)
+            return 1;
+        snprintf(in_path, sizeof in_path, "%s/header.%s", folder, de);
+        convlog_file("input", in_path, NULL);
+        for (int i = 0; i < n_files; ++i) {
+            snprintf(in_path, sizeof in_path, "%s/ascp%s.%s",
+                     folder, dates[i], de);
+            convlog_file("input", in_path, NULL);
+        }
         spody_log_printf("spody convert ephemeris: %s (DE%s, %d chunk%s)\n",
             folder, de, n_files, n_files == 1 ? "" : "s");
         for (int i = 0; i < n_files; ++i) {
@@ -1005,19 +1099,19 @@ static int cmd_convert(int argc, char **argv) {
          * chdir'ing INTO the folder and passing "." -- works for both
          * relative and absolute inputs without touching spody-core. */
         if (spody_chdir(folder) != 0) {
-            fprintf(stderr,
+            spody_log_eprintf(
                 "convert ephemeris: cannot enter folder '%s'\n", folder);
-            return 1;
+            return convlog_end(out_path, NULL, 1);
         }
         int rc = spody_createfile_MappedEphemerisData(".", dates, n_files, de);
-        if (rc != 0) {
-            fprintf(stderr,
+        if (rc != 0)
+            spody_log_eprintf(
                 "convert ephemeris: spody_createfile_MappedEphemerisData "
                 "returned %d\n", rc);
-            return 1;
-        }
-        spody_log_printf("OK -- wrote %s/de%s.spody\n", folder, de);
-        return 0;
+        else
+            spody_log_printf("OK -- wrote %s/de%s.spody\n", folder, de);
+        /* The checksum is read from here: the chdir above moved us. */
+        return convlog_end(out_path, out_local, rc);
     }
 
     /* ---- harmonics_icgem ----------------------------------------- */
@@ -1053,18 +1147,20 @@ static int cmd_convert(int argc, char **argv) {
             spody_error_print(&name_err);
             return 1;
         }
+        if (convlog_begin(output_tab, "convert harmonics_icgem",
+                          argc, argv) != 0) return 1;
+        convlog_file("input", input_gfc, NULL);
         spody_log_printf("spody convert harmonics_icgem: %s -> %s%s\n",
             input_gfc, output_tab,
             max_degree > 0 ? " (truncated)" : "");
         int rc = spody_convert_icgem_to_tab(input_gfc, output_tab, max_degree);
-        if (rc != 0) {
-            fprintf(stderr,
+        if (rc != 0)
+            spody_log_eprintf(
                 "convert harmonics_icgem: spody_convert_icgem_to_tab "
                 "returned %d\n", rc);
-            return 1;
-        }
-        spody_log_printf("OK -- wrote %s\n", output_tab);
-        return 0;
+        else
+            spody_log_printf("OK -- wrote %s\n", output_tab);
+        return convlog_end(output_tab, NULL, rc);
     }
 
     /* ---- glonass ------------------------------------------------- */
@@ -1127,20 +1223,24 @@ static int cmd_convert(int argc, char **argv) {
             spody_error_print(&name_err);
             return 1;
         }
+        if (convlog_begin(output_bin, "convert glonass", argc, argv) != 0)
+            return 1;
+        for (int i = 0; i < n_inputs; ++i)
+            convlog_file("input", input_rnx_paths[i], NULL);
+        convlog_file("eop", eop_file, NULL);
+        convlog_iau2006(iau2006_dir);
         spody_log_printf("spody convert glonass: %d file%s -> %s (sat=%s)\n",
             n_inputs, n_inputs == 1 ? "" : "s", output_bin, sat_id);
         int rc = spody_convert_glonass_to_state_icrf(n_inputs,
                                                      input_rnx_paths,
                                                      output_bin, sat_id,
                                                      eop_file, iau2006_dir);
-        if (rc != 0) {
-            fprintf(stderr,
-                "convert glonass: spody_convert_glonass_to_state_icrf "
-                "returned %d\n", rc);
-            return 1;
-        }
-        spody_log_printf("OK -- wrote %s\n", output_bin);
-        return 0;
+        if (rc != 0)
+            spody_log_eprintf("convert glonass: spody_convert_glonass_to_state_icrf "
+                              "returned %d\n", rc);
+        else
+            spody_log_printf("OK -- wrote %s\n", output_bin);
+        return convlog_end(output_bin, NULL, rc);
     }
 
     /* ---- gps ----------------------------------------------------- */
@@ -1204,20 +1304,24 @@ static int cmd_convert(int argc, char **argv) {
             spody_error_print(&name_err);
             return 1;
         }
+        if (convlog_begin(output_bin, "convert gps", argc, argv) != 0)
+            return 1;
+        for (int i = 0; i < n_inputs; ++i)
+            convlog_file("input", input_rnx_paths[i], NULL);
+        convlog_file("eop", eop_file, NULL);
+        convlog_iau2006(iau2006_dir);
         spody_log_printf("spody convert gps: %d file%s -> %s (sat=%s)\n",
             n_inputs, n_inputs == 1 ? "" : "s", output_bin, sat_id);
         int rc = spody_convert_gps_to_state_icrf(n_inputs,
                                                  input_rnx_paths,
                                                  output_bin, sat_id,
                                                  eop_file, iau2006_dir);
-        if (rc != 0) {
-            fprintf(stderr,
-                "convert gps: spody_convert_gps_to_state_icrf "
-                "returned %d\n", rc);
-            return 1;
-        }
-        spody_log_printf("OK -- wrote %s\n", output_bin);
-        return 0;
+        if (rc != 0)
+            spody_log_eprintf("convert gps: spody_convert_gps_to_state_icrf "
+                              "returned %d\n", rc);
+        else
+            spody_log_printf("OK -- wrote %s\n", output_bin);
+        return convlog_end(output_bin, NULL, rc);
     }
 
     /* ---- sp3 ----------------------------------------------------- */
@@ -1276,20 +1380,24 @@ static int cmd_convert(int argc, char **argv) {
             spody_error_print(&name_err);
             return 1;
         }
+        if (convlog_begin(output_bin, "convert sp3", argc, argv) != 0)
+            return 1;
+        for (int i = 0; i < n_inputs; ++i)
+            convlog_file("input", input_sp3_paths[i], NULL);
+        convlog_file("eop", eop_file, NULL);
+        convlog_iau2006(iau2006_dir);
         spody_log_printf("spody convert sp3: %d file%s -> %s (sat=%s)\n",
             n_inputs, n_inputs == 1 ? "" : "s", output_bin, sat_id);
         int rc = spody_convert_sp3_to_state_icrf(n_inputs,
                                                  input_sp3_paths,
                                                  output_bin, sat_id,
                                                  eop_file, iau2006_dir);
-        if (rc != 0) {
-            fprintf(stderr,
-                "convert sp3: spody_convert_sp3_to_state_icrf "
-                "returned %d\n", rc);
-            return 1;
-        }
-        spody_log_printf("OK -- wrote %s\n", output_bin);
-        return 0;
+        if (rc != 0)
+            spody_log_eprintf("convert sp3: spody_convert_sp3_to_state_icrf "
+                              "returned %d\n", rc);
+        else
+            spody_log_printf("OK -- wrote %s\n", output_bin);
+        return convlog_end(output_bin, NULL, rc);
     }
 
     /* ---- oem ------------------------------------------------------ */
@@ -1318,19 +1426,21 @@ static int cmd_convert(int argc, char **argv) {
             spody_error_print(&name_err);
             return 1;
         }
+        if (convlog_begin(output_bin, "convert oem", argc, argv) != 0)
+            return 1;
+        for (int i = 0; i < n_inputs; ++i)
+            convlog_file("input", input_oem_paths[i], NULL);
         spody_log_printf("spody convert oem: %d file%s -> %s\n",
             n_inputs, n_inputs == 1 ? "" : "s", output_bin);
         int rc = spody_convert_oem_to_state_icrf(n_inputs,
                                                  input_oem_paths,
                                                  output_bin);
-        if (rc != 0) {
-            fprintf(stderr,
-                "convert oem: spody_convert_oem_to_state_icrf "
-                "returned %d\n", rc);
-            return 1;
-        }
-        spody_log_printf("OK -- wrote %s\n", output_bin);
-        return 0;
+        if (rc != 0)
+            spody_log_eprintf("convert oem: spody_convert_oem_to_state_icrf "
+                              "returned %d\n", rc);
+        else
+            spody_log_printf("OK -- wrote %s\n", output_bin);
+        return convlog_end(output_bin, NULL, rc);
     }
 
     /* ---- gp ------------------------------------------------------ */
