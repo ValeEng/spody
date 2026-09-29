@@ -302,6 +302,9 @@ typedef struct {
      * tide model itself (Love numbers, tide-raising bodies) belongs to
      * the central body's registry row. */
     int              solid_tides;          /* SpodySolidTideSystem */
+    /* general_relativity: OPTIONAL bool, default false -- the
+     * Schwarzschild term of the central body (IERS 2010 eq. 10.12). */
+    int              enable_general_relativity;
     /* Earth-only assets. Required (and validated to exist) when
      * central_body == Earth, ignored otherwise. The GUI writes these
      * fields ONLY for Earth; for Moon-or-other they stay empty strings.

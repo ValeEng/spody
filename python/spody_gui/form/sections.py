@@ -529,6 +529,8 @@ class SectionBuildersMixin:
         # roundtrip drops the key.
         self._add_enum(f, "force_model.solid_tides", "solid_tides",
                        ("off", "tide_free", "zero_tide"))
+        self._add_bool(f, "force_model.general_relativity",
+                       "general_relativity")
 
         # Earth-only fields. Visible (and written to TOML) only when
         # central_body == "Earth"; for the Moon (and any other body

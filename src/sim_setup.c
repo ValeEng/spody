@@ -236,6 +236,13 @@ static void print_data_sources(const InputConfig *cfg,
                              td->k_re[2][0], td->raiser_naif[0], td->raiser_naif[1]);
         }
     }
+    if (cfg->enable_general_relativity
+            && cfg->dynamics_model != SPODY_DYN_CR3BP) {
+        const SpodyCentralBodySpec *cb = spody_central_body_get(cfg->central_body);
+        spody_log_printf("    relativity: general relativity, Schwarzschild term of "
+                         "%s (IERS 2010 eq. 10.12, beta = gamma = 1)\n",
+                         cb ? cb->name : "?");
+    }
     if (shared->init_eop) {
         const MappedEOPData *e = &shared->eop_data;
         describe_file(cfg->eop_file, info, sizeof info);
@@ -867,6 +874,7 @@ int spody_build_worker(const InputConfig *cfg,
     } else {
         w->ctx.tides       = NULL;
     }
+    w->ctx.enable_relativity   = cfg->enable_general_relativity;
     w->ctx.et0                 = cfg->et_start_s;
 
     /* Integrator. Map cfg options onto IntegratorOptions and bind the

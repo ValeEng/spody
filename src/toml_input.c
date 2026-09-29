@@ -844,6 +844,20 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
         }
     }
 
+    /* general_relativity: optional bool, default false, so every
+     * existing TOML reproduces bit for bit. A non-boolean value is
+     * refused rather than read as "off". */
+    cfg->enable_general_relativity = 0;
+    if (toml_key_exists(t, "general_relativity")) {
+        toml_datum_t d = toml_bool_in(t, "general_relativity");
+        if (!d.ok) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.general_relativity must be true or false");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        cfg->enable_general_relativity = d.u.b ? 1 : 0;
+    }
+
     /* drag: optional, default false -- pre-drag TOMLs parse unchanged. */
     cfg->enable_drag = 0;
     {

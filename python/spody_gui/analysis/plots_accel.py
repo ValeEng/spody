@@ -71,7 +71,8 @@ def _perturbation_channels(d: np.ndarray, ctx: "PlotContext | None"
     legend entry invites the reader to conclude the force is
     negligible, when in fact it was never modelled."""
     channels = [("harmonics", _norm3(d["acc_sphericalharmonics"])),
-                ("solid tide", _norm3(d["acc_solidtides"]))]
+                ("solid tide", _norm3(d["acc_solidtides"])),
+                ("relativity", _norm3(d["acc_relativity"]))]
     for i, name in enumerate(_third_body_labels(d, ctx)):
         channels.append((name, _norm3(d["acc_thirdbody"][:, i, :])))
     channels.append(("SRP",  _norm3(d["acc_srp"])))
