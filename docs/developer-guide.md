@@ -1389,6 +1389,23 @@ regret ignoring this":
    by the Moon" and "eclipsed by the Earth" are separate events with
    their own thresholds. Do not "fix" the disagreement between the
    event fraction and the force fraction during a double eclipse.
+7. **An event never roots a flat function.** The lit fraction is
+   exactly 0 through the umbra and exactly 1 through sunlight, so
+   "fraction − 0" and "fraction − 1" are flat on one side of their
+   root: a bracketing solver stops on any probe of the flat side
+   (threshold 0 once logged every contact inside the umbra, up to one
+   step late) and "fraction − 1" never changes sign at all (threshold
+   1 logged nothing). `spody_get_eclipse_residual` switches to the
+   angular contacts `c − (b − a)` and `c − (a + b)` at those two ends.
+   The same trap waits for any future event whose predicate saturates
+   (a visibility mask, a lit/unlit flag): give the root finder a
+   signed distance, not a clipped quantity. Check a new event against
+   every external detector available, on the same trajectory (here
+   Orekit to 0.3 µs, GMAT's `EclipseLocator` and Tudat's shadow
+   function to their 1 ms resolution), not only against itself, and
+   match the body shapes first: GMAT's locator takes the Earth
+   ellipsoid from its SPICE PCK and ignores the script's radius, which
+   alone shifts LEO contacts by up to 18 s.
 
 **Adding a body that can occult** is therefore nothing but making it
 available as a third body (recipe 5.6 / the app-side `BODY_TABLE`);

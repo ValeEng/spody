@@ -362,6 +362,23 @@ separate mechanism that watches **one** occulting body at a time, so
 during a double eclipse the logged event fraction and the fraction
 used by the force are different numbers on purpose.
 
+**The shape of the shadow.** Every body is a sphere of the radius in
+`spody_const.h` (the Earth's equatorial radius), with no atmosphere,
+and the Sun is taken at its geometric position. The real Earth is
+flatter at the poles: where the satellite sees the Earth's edge at
+high latitude, the true shadow starts later and ends earlier. Measured
+with Orekit's ellipsoidal Earth on the same trajectories, the contact
+times move by 7.5 s on a polar low orbit, up to 18 s on the ISS
+(grazing entries stretch the difference), about 4 s on GPS and under
+0.1 s in GEO. For SRP with A/m = 0.01 m&sup2;/kg this is about 30 m
+of along-track position after 7 days on the ISS orbit. With the Sun
+near the orbit plane the later entry and the earlier exit push in
+opposite directions and cancel: under half a metre on the polar orbit,
+a few centimetres on GPS and GEO. The atmosphere, which bends and dims the
+grazing sunlight, makes the real shadow longer instead; it is not
+modelled and its size is not quantified here (Vokrouhlick&yacute;,
+Farinella & Mignard 1993 give the full theory).
+
 ### Choosing a harmonics degree
 
 The right degree depends on the central body, the altitude, and the
@@ -745,7 +762,16 @@ its own form checkbox:
 
 | Key                  | Type  | Default | Range    | Description |
 |----------------------|-------|---------|----------|-------------|
-| `eclipse_threshold`  | float | &mdash; | `[0, 1]` | Sunlight-fraction crossing that fires an eclipse event. `0` = enter umbra (start of total eclipse); `1` = full sunlight (end of any eclipse); `0.5` = penumbra midpoint. |
+| `eclipse_threshold`  | float | &mdash; | `[0, 1]` | Sunlight-fraction crossing that fires an eclipse event. `0` = umbra contact (start and end of the total eclipse); `1` = penumbra contact (first and last sunlight lost); `0.5` = penumbra midpoint. Each value logs both the entry and the exit. |
+
+The two contacts (`0` and `1`) are located on the angular separation
+between the Sun and the occulting body, as seen from the satellite,
+rather than on the fraction, which is flat on one side of them; any
+other value is located on the fraction inside the penumbra. On the
+same trajectories the times agree with Orekit (to a microsecond), GMAT
+and Tudat (to the millisecond those checks resolve). The Earth is a sphere of its equatorial radius, with no
+atmosphere: a real shadow on a low orbit starts and ends up to about
+18 s off these times (see *Which bodies cast a shadow*).
 
 Rejected under `dynamics_model = "cr3bp"` (no Sun in the model).
 

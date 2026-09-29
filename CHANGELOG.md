@@ -504,6 +504,28 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Fixed
 
+- **Eclipse events at `eclipse_threshold = 0` and `1` fire at the
+  contact.** The event looked for the root of "lit fraction minus
+  threshold", but the fraction is exactly 0 all through the umbra and
+  exactly 1 all through sunlight. With threshold 0 the root finder
+  stopped on the first probe inside the umbra, anywhere up to one
+  integrator step past the true contact: up to 7 s late in LEO, 54 s
+  on GPS and 32 s in GEO, every entry and exit logged inside the
+  umbra. With threshold 1 the predicate never changed sign and no
+  event was ever logged. The two contacts are now found on the
+  angular separation, `c - (b - a)` for the umbra and `c - (a + b)`
+  for the penumbra (the same boundaries the lit-fraction computation
+  already branches on); intermediate thresholds keep "fraction minus
+  threshold", which crosses inside the penumbra. Checked on the same
+  trajectories (ISS, a polar LEO, GPS and GEO; spherical Earth of the
+  same radius in every tool) against three independent detectors:
+  Orekit 13.1.8 `EclipseDetector` geometry, 386 contacts at thresholds
+  0, 0.5 and 1, agree to 0.3 &micro;s; GMAT R2025a `EclipseLocator`
+  (SPICE `gfoclt`), 282 umbra and penumbra contacts, to 0.5 ms, the
+  millisecond of its report; Tudat's shadow function sampled every
+  millisecond, 282 contacts, to 0.5 ms. The SRP force is untouched:
+  runs without `[events]` are byte-identical.
+
 - **`spody convert sp3` reads the file's own time system.** It took
   every SP3 epoch as GPS time. The ILRS orbits of LAGEOS and ETALON
   are UTC: read as GPS they landed 18.000 s early, about 100 km along
