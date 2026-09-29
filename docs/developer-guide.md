@@ -92,7 +92,7 @@ All little-endian, 8-byte magic + version/dim header:
 | Magic | Contents | Writer | Reader |
 |---|---|---|---|
 | `SPDYOUT_` | trajectory records `(t, x, y, z, vx, vy, vz)`; `t` is seconds since the run's `et_start_s` | `sim_run.c`, GNSS/SP3 converters | `spody_io/traj.py` |
-| `SPDYACC_` | per-force acceleration breakdown (v2: `acc_solidtides` appended, 384 B; v1 360 B still read) | `sim_run.c` | `spody_io/accel.py` |
+| `SPDYACC_` | per-force acceleration breakdown (v3: `acc_relativity` appended, 408 B; v2 adds `acc_solidtides`, 384 B; v1 360 B; all still read) | `sim_run.c` | `spody_io/accel.py` |
 | `SPDYEVT_` | per-run events | `sim_run.c` | `spody_io/events.py` |
 | `SPDYEVTB` | batch-aggregated events (extra `case_idx`) | `sim_run.c` | `spody_io/events.py` |
 | `SPDYEPET` | compiled DE440 ephemeris (`.spody`) | offline generator | spody-core + `spopy/ephemeris.py` |
@@ -1109,7 +1109,19 @@ Worked example of a body-driven force: the solid tide
 numbers ride on `ctx->tides`, filled in `sim_setup.c` from the
 registry row plus the gravity file. Its breakdown slot was *appended*
 to `ForceBreakdown`, which bumped `SPDYACC_` to v2 with a reader that
-still takes v1 (§1.2) &mdash; the pattern for the next force.
+still takes v1 (§1.2) &mdash; the pattern for the next force, and the
+one general relativity followed right after (`acc_relativity`, v3).
+The simplest shape of a force is `spody_force_relativity`: no
+ephemeris, no rotation, only `r`, `v` and `mu_central`, switched by a
+plain `ctx->enable_relativity` flag.
+
+**Cross-checking a force against Orekit: run it at more than one
+tolerance.** With `NumericalPropagator.tolerances(1e-5 m)` a 7-day
+LEO difference "force on minus off" came out 10 % off (GRACE-FO
+relativity 19.9 m); at 1e-3 m and 1e-7 m Orekit gives 17.83 and
+17.87 m, SpOdy 17.89 m. The cause of the odd one out was not
+isolated. Check a comparison at two tolerances before blaming either
+tool.
 
 **Break risk:** missing breakdown slot; force evaluated in the wrong
 frame (everything in the RHS is ICRF, body-fixed only via the

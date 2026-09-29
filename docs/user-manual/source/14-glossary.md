@@ -104,6 +104,10 @@ TDB seconds past J2000. [Chapter 6.]
 **Form.** &mdash; The Run tab's left pane: one widget per TOML
 field, with range checks and live preview. [Chapter 5.]
 
+**General relativity.** &mdash; In SpOdy, the Schwarzschild
+correction to the central body's gravity (IERS 2010 eq. 10.12), set
+by `force_model.general_relativity`. [Chapter 6.]
+
 **`GRGM1200B`.** &mdash; The recommended lunar spherical-harmonic
 gravity coefficient set, derived from the NASA GRAIL mission's
 observations. SpOdy reads the PDS-distributed `.tab` file at

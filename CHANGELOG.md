@@ -8,6 +8,22 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **General relativity** (`force_model.general_relativity = true`):
+  the Schwarzschild term of the central body, IERS Conventions 2010
+  sec. 10.3 eq. 10.12 first line, with `beta = gamma = 1` and the GM
+  of the central term. Off by default; every existing run is
+  byte-identical (75/75 regression files); a non-boolean value is
+  refused. Checks: acceleration against the formula evaluated to 40
+  digits, 8.4e-16 relative at most; effect (on minus off) after 1 /
+  7 days: ISS 2.59 / 18.1 m (Orekit 2.59 / 18.1), GRACE-FO 2.53 /
+  17.9 m (Orekit 2.53 / 17.9), GPS 0.33 / 2.33 m and GEO 0.17 /
+  1.17 m (Orekit identical to the centimetre), LRO 0.03 / 0.19 m
+  (Tudat identical). The Lense-Thirring and de Sitter lines of the
+  same equation (1e-11..1e-12 of gravity) are not modelled. The
+  accelerations file gains `acc_relativity` (`SPDYACC_` version 3,
+  408-byte records; versions 1 and 2 still read). Form: a
+  `general_relativity` box; plots: a "relativity" line.
+
 - **Solid-body tides** (`force_model.solid_tides`). The Moon and the
   Sun deform the Earth, the Earth and the Sun deform the Moon, and
   the deformed body pulls a satellite differently from the rigid field
@@ -30,10 +46,13 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
     1.6e-9 relative on the ISS, 6.5e-10 on LRO, 1.3e-9 / 2.0e-9 with
     the tide capped at degree 2 / 3;
   - effect over 7 days (tide on minus off): ISS 22.5 m after 1 day,
-    211 m after 7 (Orekit 21.4 / 205 m), GPS 0.31 / 2.1 m (Orekit
+    211 m after 7 (Orekit 21.4 / 203 m), GPS 0.31 / 2.1 m (Orekit
     0.33 / 2.4 m), LRO 73 / 256 m (Tudat 73.0 / 255.6 m). Orekit also
     applies the frequency-dependent corrections and the pole tide,
-    which this step leaves out: that is the 3&ndash;10 % gap;
+    which this step leaves out: that is the 3&ndash;10 % gap (Orekit
+    figures at a 1e-7 m position tolerance; at 1e-5 m some of its LEO
+    week differences came out up to 10 % off, at 1e-3 and 1e-7 m they
+    agree);
   - a zero-tide copy of EIGEN-6C4 run as `"zero_tide"` matches the
     tide-free file run as `"tide_free"` to 0.3 mm over 7 days;
   - GRGM1200B's label gives k2 but not the tide system: fits of the

@@ -318,6 +318,7 @@ Forces the propagator integrates against. Required.
 | `harmonics_degree`   | int             | &mdash; | `0` or `[2, 2200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. The effective upper bound is whatever the chosen `harmonics_file` declares (1200 for GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); the `2200` cap is the absolute schema ceiling. **`0` switches the gravity field off entirely**: the central body stays a point mass, so together with `third_bodies` the run becomes an ephemeris-driven restricted N-body problem (see *Turning the gravity field off* below). Degree `1` is rejected &mdash; it would only move the origin to the centre of mass, which the central-body convention already assumes. See *Choosing a harmonics degree* below for guidance. |
 | `harmonics_adaptive` | bool            | `false` | &ndash; | Let the engine lower the degree per integrator step based on the satellite's distance, using `harmonics_degree` as the ceiling. Off by default; see *Letting the degree follow the orbit* below. Requires `harmonics_degree >= 2` &mdash; at degree `0` there is no expansion to truncate. |
 | `solid_tides`        | string          | none    | `"tide_free"`, `"zero_tide"` | Solid-body tide of the central body; the value is the tide system of the gravity file. Absent = no tide. Requires `harmonics_degree >= 2`; `"zero_tide"` is Earth only. See *Solid-body tides* below. |
+| `general_relativity` | bool            | `false` | &ndash; | General relativity: the Schwarzschild term of the central body (IERS 2010 eq. 10.12). See *General relativity* below. |
 | `eop_file`           | string (path)   | &mdash; (Earth only) | &ndash; | Path to the IERS Earth-orientation file (`finals2000A.all` from the IERS Rapid Service). Required when `central_body = "Earth"`, omitted otherwise. The form exposes this row as a wizard-populated dropdown that only appears when Earth is selected. |
 | `iau2006_dir`        | string (path)   | &mdash; (Earth only) | &ndash; | Path to the directory containing the IAU 2006 X / Y / s+XY/2 conventions tables (`tab5.2a.txt`, `tab5.2b.txt`, `tab5.2d.txt`). Required when `central_body = "Earth"`. Wizard-managed; same conditional form row as `eop_file`. |
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
@@ -552,13 +553,45 @@ does not switch on and off along the orbit.
 
 | orbit | effect | cross-check |
 |---|---|---|
-| ISS, 400 km | 22.5 m after 1 day, 211 m after 7 | Orekit 21.4 / 205 m |
+| ISS, 400 km | 22.5 m after 1 day, 211 m after 7 | Orekit 21.4 / 203 m |
 | GPS | 0.31 / 2.1 m | Orekit 0.33 / 2.4 m |
 | LRO, low lunar orbit | 73 / 256 m | Tudat 73.0 / 255.6 m |
 
 Orekit also applies the IERS frequency-dependent corrections and the
 pole tide, which SpOdy does not: that is the 3&ndash;10 % gap on the
 Earth rows. The cost is 2&ndash;4 % of run time.
+
+### General relativity
+
+Newton's gravity is the first approximation of general relativity.
+`general_relativity = true` adds the leading correction for the
+central body, its Schwarzschild field (IERS Conventions 2010,
+sec. 10.3, eq. 10.12, first line):
+
+```
+a = GM/(c^2 r^3) * [ (2(beta+gamma) GM/r - gamma v.v) r + 2(1+gamma) (r.v) v ]
+```
+
+with `r`, `v` the satellite's position and velocity relative to the
+central body and `beta = gamma = 1` (general relativity). `GM` is the
+one the central term uses, i.e. the gravity file's when there is one.
+It works the same for the Earth and the Moon; its main effect is a
+slow advance of the perigee.
+
+| orbit | 1 day | 7 days | cross-check |
+|---|---|---|---|
+| ISS | 2.59 m | 18.1 m | Orekit 2.59 / 18.1 m |
+| GRACE-FO (490 km) | 2.53 m | 17.9 m | Orekit 2.53 / 17.9 m |
+| GPS | 0.33 m | 2.3 m | Orekit 0.33 / 2.3 m |
+| GEO | 0.17 m | 1.2 m | Orekit 0.17 / 1.2 m |
+| LRO | 0.03 m | 0.19 m | Tudat 0.03 / 0.19 m |
+
+The other two lines of eq. 10.12, Lense&ndash;Thirring (the rotating
+Earth dragging the orbital plane) and de Sitter (the Earth's motion
+around the Sun), are 1e-11 to 1e-12 of gravity and are not modelled:
+about 0.1 m and 1 cm in a week on a low orbit. Leaving the key out,
+or `false`, reproduces earlier runs bit for bit; any value that is
+not a boolean is refused.
 
 ## `[ephemeris]`
 

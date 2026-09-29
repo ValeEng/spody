@@ -44,6 +44,8 @@ PyInstaller bundle.
 - **Solid-body tides** of the central body (IERS 2010 for the Earth,
   GRAIL's k2 for the Moon), switched on by naming the gravity file's
   tide system; checked against Orekit and Tudat.
+- **General relativity**: the Schwarzschild term of the central body
+  (IERS 2010 eq. 10.12), checked against Orekit and Tudat.
 - **Multi-occulter SRP eclipse**: every third body can shade the
   satellite, overlapping shadows combined by inclusion&ndash;exclusion,
   so the Earth darkens a lunar orbiter.
