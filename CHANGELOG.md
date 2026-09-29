@@ -8,6 +8,33 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Earth radiation pressure** (`force_model.earth_radiation_pressure
+  = true`): sunlight reflected by the Earth (albedo, dayside only) and
+  its thermal infrared, with the latitude- and season-dependent albedo
+  and emissivity of Knocke, Ries & Tapley (1988) (the original paper
+  could not be consulted; coefficients as quoted by the literature and
+  Orekit). Each surface element is a Lambertian emitter, weighted by
+  the angle between its normal and the satellite (NASA TM 104596);
+  the sum runs over 72 directions seen from the satellite (6
+  Gauss-Legendre nodes in the cosine of the nadir angle x 12
+  azimuths), since `cos(theta) dA / d^2` is the element's solid
+  angle. Earth only: any other central body is refused, and the form
+  shows the box only for the Earth. Uses the `[spacecraft.srp]` area
+  and `Cr`. Off by default; every existing run is byte-identical
+  (75/75). Checks: a uniformly bright sphere gives the exact
+  `M (R/r)^2`; against an independent 20 000-ray quadrature of the
+  same model, 1e-4..4e-4 median and 2e-3 worst relative difference at ISS,
+  GRACE-FO, GPS and GEO. Effect after 1 / 7 days (Cr 1.3): ISS 0.54 /
+  4.0 m, GRACE-FO 0.84 / 4.5 m, GPS 1.17 / 8.4 m, GEO 0.76 / 5.4 m.
+  Cost about 15 % of run time. Not cross-checked against Orekit 13.1,
+  whose `KnockeRediffusedForceModel` integrates over a cap of
+  `asin(R/r)` instead of `acos(R/r)` (fixed upstream in 2026, issue
+  852) and weights elements by the geocentric angle: those two choices
+  reproduce exactly the 2.8 / 0.10 / 0.034 ratios Orekit 13.1 shows
+  against SpOdy in LEO / GPS / GEO. The accelerations file gains
+  `acc_earthradiation` (`SPDYACC_` version 4, 432-byte records;
+  versions 1-3 still read).
+
 - **General relativity** (`force_model.general_relativity = true`):
   the Schwarzschild term of the central body, IERS Conventions 2010
   sec. 10.3 eq. 10.12 first line, with `beta = gamma = 1` and the GM

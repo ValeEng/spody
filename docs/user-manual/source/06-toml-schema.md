@@ -324,6 +324,7 @@ Forces the propagator integrates against. Required.
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
 | `srp`                | bool            | `false` | &ndash; | Enable cannonball SRP. When `true` a `[spacecraft.srp]` block must be present (in Spacecraft mode) or `am_srp` must be set in `[debris]` (in Debris mode). The bodies that can eclipse the Sun are the central body plus every entry of `third_bodies` (see *Which bodies cast a shadow* below); there is no separate key. |
 | `drag`               | bool            | `false` | &ndash; | Enable atmospheric drag (cannonball, NRLMSISE-00 density in the storm-time 3-hour-Ap mode). Requires a central body with a registered atmosphere model (`Earth` in this release), a `[spacecraft.drag]` block (or the `am_drag`/`Cd` pair in `[debris]`) and `space_weather_file`. The form shows this row only when the central body has an atmosphere. |
+| `earth_radiation_pressure` | bool | `false` | &ndash; | Earth albedo + infrared on the spacecraft (Knocke et al. 1988). Earth only; uses the `[spacecraft.srp]` area and `Cr`. The form shows this row only for the Earth. See *Earth radiation pressure* below. |
 | `space_weather_file` | string (path)   | &mdash; (drag only) | &ndash; | Path to the CelesTrak combined space-weather CSV (`SW-All.csv`: daily F10.7 + 3-hour Ap, 1957 to a ~45-day prediction tail plus monthly long-range rows). Required when `drag = true`. The run window must start at least 3 days after the table's first row (the Ap history looks back 57 h) and end by the end of the last **daily** row &mdash; about 45 days after the file was downloaded. The monthly long-range rows after it carry no 3-hour Ap and cannot drive NRLMSISE-00. The engine refuses the run otherwise (in a batch, per case) and points at the update URL, `https://celestrak.org/SpaceData/SW-All.csv`. Wizard-managed (*Space weather* card) with the same daily startup freshness probe as `eop_file`. |
 | `density_scale`      | float           | `1.0` (drag only) | `> 0` | Constant density calibration factor: the drag force uses `k × rho(NRLMSISE-00)`. Empirical thermosphere models carry a bias of 20&ndash;40% at 400&ndash;500 km around solar maximum (chapter 11, *Drag validation and ballistic calibration*); this key applies the calibrated correction without misdeclaring the physical `Cd`. Mutually exclusive with `density_scale_file`; requires `drag = true`. Batch-targetable as `force_model.density_scale`. |
 | `density_scale_file` | string (path)   | &mdash; (drag only) | &ndash; | Path to a time-varying calibration table: plain text, one `mjd,k` pair per line (UTC MJD, strictly ascending; `k > 0`; `#` starts a comment). The factor is linearly interpolated between nodes and **held at the end values outside the node span** (the engine prints a warning when the run window extends past the nodes). A single-node file is equivalent to the constant key. Mutually exclusive with `density_scale`; requires `drag = true`. `spody calibrate` (chapter 12) fits and writes this file automatically from a reference trajectory. |
@@ -592,6 +593,75 @@ around the Sun), are 1e-11 to 1e-12 of gravity and are not modelled:
 about 0.1 m and 1 cm in a week on a low orbit. Leaving the key out,
 or `false`, reproduces earlier runs bit for bit; any value that is
 not a boolean is refused.
+
+### Earth radiation pressure
+
+The Sun lights the Earth, and the Earth sends part of that energy
+back to the satellite: sunlight reflected by clouds, oceans and ice
+(**albedo**, only from the lit part of the Earth in view) and heat
+(**infrared**, from all of it, day and night).
+`earth_radiation_pressure = true` adds the push of both.
+
+**The model.** The part of the Earth the satellite sees is split into
+surface elements, each a Lambertian emitter of exitance
+
+```
+M = a F cos(zeta_sun)   (albedo, only where the Sun is up)
+  + e F / 4             (infrared)
+```
+
+with `F` the solar flux at the Earth (the same flux the SRP force
+uses) and `zeta_sun` the Sun's angle from the local vertical. An
+element of area `dA` at distance `d` gives the satellite an
+irradiance `(M/pi) cos(theta) dA / d^2`, where `theta` is the angle
+between the element's normal and the direction to the satellite
+(NASA TM 104596). Albedo `a` and emissivity `e` follow the latitude
+and the season as in Knocke, Ries & Tapley (1988):
+
+```
+a = 0.34 + 0.10 cos(w t) P1(sin phi) + 0.29 P2(sin phi)
+e = 0.68 - 0.07 cos(w t) P1(sin phi) - 0.18 P2(sin phi)
+```
+
+with `t` counted from 1981-12-22 and `w = 2 pi / year`. The original
+paper could not be consulted; the coefficients are the ones quoted
+by the literature and by Orekit. The acceleration is `Cr (A/m) E / c`,
+with the area and `Cr` of `[spacecraft.srp]` (a sphere, like SRP).
+
+**How it is integrated.** `cos(theta) dA / d^2` is the solid angle
+under which the satellite sees the element, so the engine sums over
+directions seen from the satellite: 6 Gauss-Legendre nodes in the
+cosine of the nadir angle times 12 azimuths, 72 rays over the disk.
+A uniformly bright sphere comes out exact (`M (R/r)^2`); the real
+albedo, with the day/night line in view, to 1e-4..4e-4 (median) and
+2e-3 (worst) against a 20 000-ray reference, at every altitude.
+
+**What it is worth** (on minus off, 7 days, cannonball `Cr = 1.3`):
+
+| orbit | A/m | 1 day | 7 days |
+|---|---|---|---|
+| ISS | 0.0031 m&sup2;/kg | 0.54 m | 4.0 m |
+| GRACE-FO | 0.0033 m&sup2;/kg | 0.84 m | 4.5 m |
+| GPS | 0.012 m&sup2;/kg | 1.17 m | 8.4 m |
+| GEO | 0.010 m&sup2;/kg | 0.76 m | 5.4 m |
+
+On GNSS and GEO orbits this is larger than the solid tide and general
+relativity. The cost is about 15 % of run time.
+
+**Not cross-checked against Orekit, on purpose.** Orekit 13.1's
+`KnockeRediffusedForceModel` sums over a cap of angle `asin(R/r)`
+instead of the visible cap `acos(R/r)` (fixed upstream in 2026,
+Orekit issue 852), and weights each element with the geocentric angle
+instead of `theta`. Reproducing those two choices on a uniformly
+bright sphere gives exactly the ratios Orekit 13.1 shows against
+SpOdy (2.8 in LEO, 0.10 on GPS, 0.034 in GEO); the second choice alone
+still overestimates by 2.0 / 1.3 / 1.2. The validation is the exact
+uniform-sphere result and an independent fine quadrature.
+
+The force needs `central_body = "Earth"` (any other body is refused:
+the model is the Earth's) and `[spacecraft.srp]` (or the debris
+`am_srp` / `Cr`). Leaving the key out, or `false`, reproduces earlier
+runs bit for bit.
 
 ## `[ephemeris]`
 

@@ -92,7 +92,7 @@ All little-endian, 8-byte magic + version/dim header:
 | Magic | Contents | Writer | Reader |
 |---|---|---|---|
 | `SPDYOUT_` | trajectory records `(t, x, y, z, vx, vy, vz)`; `t` is seconds since the run's `et_start_s` | `sim_run.c`, GNSS/SP3 converters | `spody_io/traj.py` |
-| `SPDYACC_` | per-force acceleration breakdown (v3: `acc_relativity` appended, 408 B; v2 adds `acc_solidtides`, 384 B; v1 360 B; all still read) | `sim_run.c` | `spody_io/accel.py` |
+| `SPDYACC_` | per-force acceleration breakdown (v4: `acc_earthradiation` appended, 432 B; v3 adds `acc_relativity`, 408 B; v2 `acc_solidtides`, 384 B; v1 360 B; all still read) | `sim_run.c` | `spody_io/accel.py` |
 | `SPDYEVT_` | per-run events | `sim_run.c` | `spody_io/events.py` |
 | `SPDYEVTB` | batch-aggregated events (extra `case_idx`) | `sim_run.c` | `spody_io/events.py` |
 | `SPDYEPET` | compiled DE440 ephemeris (`.spody`) | offline generator | spody-core + `spopy/ephemeris.py` |
@@ -1114,6 +1114,24 @@ one general relativity followed right after (`acc_relativity`, v3).
 The simplest shape of a force is `spody_force_relativity`: no
 ephemeris, no rotation, only `r`, `v` and `mu_central`, switched by a
 plain `ctx->enable_relativity` flag.
+
+A body-restricted force: `spody_force_earthradiation` (albedo +
+infrared). The model belongs to one body, so the registry row carries
+a flag (`earth_radiation`, set only on the Earth row), the validator
+refuses the key for any body without it, and the form hides the row
+through the same central-body hook as drag (`_on_central_body_changed`
+in `form/sections.py`, plus the pop in `form/roundtrip.py` for other
+bodies). An integral over the visible Earth goes in solid angle seen
+from the satellite (Gauss-Legendre in cos(nadir) x azimuth): exact on
+a uniform sphere, cost independent of altitude.
+
+**An external reference can be wrong: check it against an exact case
+first.** Orekit 13.1's Knocke model gave 19x SpOdy in LEO and 0.03x in
+GEO; reproducing its two choices (cap `asin(R/r)`, geocentric cosine)
+on a uniformly bright sphere, whose irradiance is exactly `M (R/r)^2`,
+matched its ratios to the percent. Checklist before accepting or
+rejecting a cross-check: (1) a closed-form case; (2) an independent
+fine quadrature; (3) only then the other tool, with its source read.
 
 **Cross-checking a force as "on minus off": both runs must share
 their integration errors.** Each run of a 7-day LEO carries metres of

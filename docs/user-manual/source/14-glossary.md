@@ -76,6 +76,10 @@ of the plot tree. Subtracts trajectory B from trajectory A
 sample-by-sample (with cubic Hermite interpolation when the
 grids do not match). [Chapter 9, chapter 11.]
 
+**Earth radiation pressure.** &mdash; The push of sunlight reflected by
+the Earth (albedo) and of its thermal infrared on the satellite, set
+by `force_model.earth_radiation_pressure`. [Chapter 6.]
+
 **Eccentricity (`e`).** &mdash; The classical orbital element
 measuring how non-circular the orbit is. `e = 0` for circular,
 `0 < e < 1` for elliptical, `e = 1` for parabolic, `e > 1` for
