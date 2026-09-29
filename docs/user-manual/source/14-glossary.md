@@ -144,6 +144,11 @@ used in `[batch.columns]` for delta-mode column descriptors.
 **J2000.** &mdash; The standard epoch 2000-01-01 12:00:00 TT, used
 as the zero of TDB-seconds time scale. [Chapter 6.]
 
+**Love number (`k_nm`).** &mdash; How strongly a body's gravity
+field answers a tide: the deformation adds `k` times the tidal
+potential, seen from the surface. Earth `k2` &asymp; 0.30 (IERS 2010),
+Moon `k2` = 0.024116 (GRAIL). [Chapter 6, *Solid-body tides*.]
+
 **`mu`.** &mdash; Gravitational parameter, in km&sup3;/s&sup2;. For
 the Moon: `4902.8001184575496` (DE440); a run with a gravity file
 uses the GM of the file for its central term. [Chapters 9, 10.]
@@ -212,6 +217,12 @@ SPICE-derived trajectory of the same epochs. [Chapter 11.]
 cannonball model: a single A/m and Cr, with eclipse cuts when
 enabled. [Chapter 6.]
 
+**Solid tide.** &mdash; The extra gravity of a central body
+deformed by the Moon and the Sun (or, for the Moon, by the Earth
+and the Sun), set by `force_model.solid_tides`. Not the direct pull
+of those bodies on the satellite, which is the third-body force.
+[Chapter 6.]
+
 **Step mode.** &mdash; The `output.mode = "step"` value: one
 output record per accepted RKDP step, irregular sampling. Opposed
 to fixed-step output. [Chapter 6.]
@@ -223,6 +234,11 @@ batch column can override. E.g. `spacecraft.mass_kg`,
 **TDB.** &mdash; Barycentric Dynamical Time, the time scale the
 DE440 ephemeris is expressed in. SpOdy's `et_start_s` is in TDB
 seconds past J2000. [Chapter 6.]
+
+**Tide-free / zero-tide.** &mdash; Where a gravity file keeps the
+permanent part of the tide: nowhere (tide-free, add the whole tide)
+or inside its coefficients (zero-tide, add only the rest). The value
+of `force_model.solid_tides`. [Chapter 6.]
 
 **Third body.** &mdash; A celestial body whose gravity perturbs
 the central-body two-body solution but which is not itself

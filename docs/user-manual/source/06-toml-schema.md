@@ -317,6 +317,7 @@ Forces the propagator integrates against. Required.
 | `harmonics_file`     | string (path)   | &mdash; (required unless `harmonics_degree = 0`) | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for GRGM1200B / Moon; `eigen-6c4.tab` for EIGEN-6C4 / Earth, produced by the wizard from the upstream `.gfc`). In the form this row is a **dropdown of harmonics files the wizard has downloaded**, filtered by `central_body`. A **Browse...** button next to the combo adds an out-of-data-dir file as a one-off `(custom)` entry, so legacy TOMLs pointing at e.g. `external/spody-core/raw_data/...` keep round-tripping. Relative paths resolve against the TOML's directory. Optional when `harmonics_degree = 0`, since nothing reads it. |
 | `harmonics_degree`   | int             | &mdash; | `0` or `[2, 2200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. The effective upper bound is whatever the chosen `harmonics_file` declares (1200 for GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); the `2200` cap is the absolute schema ceiling. **`0` switches the gravity field off entirely**: the central body stays a point mass, so together with `third_bodies` the run becomes an ephemeris-driven restricted N-body problem (see *Turning the gravity field off* below). Degree `1` is rejected &mdash; it would only move the origin to the centre of mass, which the central-body convention already assumes. See *Choosing a harmonics degree* below for guidance. |
 | `harmonics_adaptive` | bool            | `false` | &ndash; | Let the engine lower the degree per integrator step based on the satellite's distance, using `harmonics_degree` as the ceiling. Off by default; see *Letting the degree follow the orbit* below. Requires `harmonics_degree >= 2` &mdash; at degree `0` there is no expansion to truncate. |
+| `solid_tides`        | string          | none    | `"tide_free"`, `"zero_tide"` | Solid-body tide of the central body; the value is the tide system of the gravity file. Absent = no tide. Requires `harmonics_degree >= 2`; `"zero_tide"` is Earth only. See *Solid-body tides* below. |
 | `eop_file`           | string (path)   | &mdash; (Earth only) | &ndash; | Path to the IERS Earth-orientation file (`finals2000A.all` from the IERS Rapid Service). Required when `central_body = "Earth"`, omitted otherwise. The form exposes this row as a wizard-populated dropdown that only appears when Earth is selected. |
 | `iau2006_dir`        | string (path)   | &mdash; (Earth only) | &ndash; | Path to the directory containing the IAU 2006 X / Y / s+XY/2 conventions tables (`tab5.2a.txt`, `tab5.2b.txt`, `tab5.2d.txt`). Required when `central_body = "Earth"`. Wizard-managed; same conditional form row as `eop_file`. |
 | `third_bodies`       | array of strings | `[]`   | one of `Sun`, `Mercury`, `Venus`, `Earth`, `Moon`, `Mars`, `Jupiter`, `Saturn`, `Uranus`, `Neptune` (excluding the central body) | Perturbing bodies whose point-mass gravity is added at every step. |
@@ -482,6 +483,82 @@ Degree `1` is rejected rather than accepted-and-ignored: it would
 only shift the origin to the centre of mass, which the central-body
 convention already assumes, so a TOML asking for it has almost
 certainly confused degree with something else.
+
+### Solid-body tides
+
+The Moon and the Sun stretch the Earth, and the Earth stretches the
+Moon. The deformed body attracts the satellite a little differently
+from the rigid one the gravity file describes; `solid_tides` adds
+that difference. (The *direct* pull of the Moon and the Sun on the
+satellite is a separate thing: it is the third-body force, already in
+`third_bodies`.)
+
+```toml
+[force_model]
+solid_tides = "tide_free"   # or "zero_tide"; leave the key out for no tide
+```
+
+**What the value means.** It is not an on/off switch: it states the
+*tide system of your gravity file*, because the file decides how much
+of the tide is already inside its coefficients.
+
+| value | the gravity file... | the engine adds |
+|---|---|---|
+| (key absent) | &ndash; | nothing: runs reproduce earlier ones bit for bit |
+| `"tide_free"` | holds no tide at all | the whole tide, including its permanent part |
+| `"zero_tide"` | already holds the permanent deformation | the tide minus that permanent part (Earth only) |
+
+Any other value, `true` and `false` included, is refused. Read the
+value off the file: an ICGEM `.gfc` says it in its header
+(`tide_system tide_free` for EIGEN-6C4). GRGM1200B's label does not
+say; fitting the NASA LRO orbits over ten arcs showed it is
+tide-free (the full tide cuts the cross-track residual in 9 arcs out
+of 10), so use `"tide_free"` with it. `"zero_tide"` is refused for
+the Moon: there is no permanent-tide convention for it.
+
+**The model** (IERS Conventions 2010, sec. 6.2.1, frequency-independent
+step). At every evaluation the positions of the tide-raising bodies,
+in the body-fixed frame, give corrections to the normalized
+coefficients
+
+```
+dC_nm - i dS_nm = k_nm/(2n+1) * sum_j (GM_j/GM) (R/r_j)^(n+1) Pbar_nm(sin phi_j) exp(-i m lambda_j)
+```
+
+and the engine adds the acceleration of that small field. The
+numbers depend on the central body and come with it:
+
+| | Earth | Moon |
+|---|---|---|
+| degrees | 2, 3, and 4 through the `k(+)` coupling of a flattened, rotating body | 2 |
+| Love numbers | IERS 2010 Table 6.3 (`k20 = 0.30190`, `k21`, `k22` with their anelastic parts, `k3m = 0.093..0.094`) | `k2 = 0.024116` (GRAIL, GRGM1200B label) |
+| tide-raising bodies | Moon, Sun | Earth, Sun |
+
+The planets are left out on purpose: Venus at its closest raises
+7e-5 of the Moon's tide on the Earth, about a centimetre in a week
+on the ISS. A gravity field is required (`harmonics_degree >= 2`):
+the corrections are normalized with the file's GM and radius.
+
+**The tide stops at the field's degree.** The tide corrects the
+field's coefficients, so it never reaches past them: with
+`harmonics_degree = 2` only the degree-2 tide is added, the degree-3
+tide needs 3 and the `k(+)` terms need 4 (each is about 0.5 % of the
+Earth's tide on the ISS). The setup log says so (`capped by
+harmonics_degree`). With `harmonics_adaptive = true` the limit is
+`harmonics_degree`, not the degree picked step by step, so the tide
+does not switch on and off along the orbit.
+
+**What it is worth** (tide on minus tide off, 7 days):
+
+| orbit | effect | cross-check |
+|---|---|---|
+| ISS, 400 km | 22.5 m after 1 day, 211 m after 7 | Orekit 21.4 / 205 m |
+| GPS | 0.31 / 2.1 m | Orekit 0.33 / 2.4 m |
+| LRO, low lunar orbit | 73 / 256 m | Tudat 73.0 / 255.6 m |
+
+Orekit also applies the IERS frequency-dependent corrections and the
+pole tide, which SpOdy does not: that is the 3&ndash;10 % gap on the
+Earth rows. The cost is 2&ndash;4 % of run time.
 
 ## `[ephemeris]`
 

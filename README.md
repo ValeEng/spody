@@ -41,6 +41,9 @@ PyInstaller bundle.
 
 - Spherical-harmonic gravity with an optional adaptive truncation
   degree that follows the orbit radius at bit-identical output.
+- **Solid-body tides** of the central body (IERS 2010 for the Earth,
+  GRAIL's k2 for the Moon), switched on by naming the gravity file's
+  tide system; checked against Orekit and Tudat.
 - **Multi-occulter SRP eclipse**: every third body can shade the
   satellite, overlapping shadows combined by inclusion&ndash;exclusion,
   so the Earth darkens a lunar orbiter.

@@ -8,6 +8,43 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Solid-body tides** (`force_model.solid_tides`). The Moon and the
+  Sun deform the Earth, the Earth and the Sun deform the Moon, and
+  the deformed body pulls a satellite differently from the rigid field
+  in the gravity file. One key both switches the force on and states
+  the gravity file's tide system: `"tide_free"` adds the whole tide,
+  `"zero_tide"` leaves out the permanent part the file already holds
+  (Earth only); absent = no tide, and every existing run is
+  byte-identical (75/75 regression files). The model is IERS 2010
+  sec. 6.2.1, frequency-independent step: Earth degrees 2&ndash;3 with
+  the anelastic Table 6.3 Love numbers and the degree-4 `k(+)` terms,
+  raised by Moon and Sun; Moon degree 2 with `k2 = 0.024116` (GRAIL,
+  GRGM1200B label), raised by Earth and Sun. The model is a property
+  of the central body's registry row, the force is one body-agnostic
+  function. The tide stops at the field's degree: degree 3 needs
+  `harmonics_degree >= 3`, the `k(+)` terms need 4 (about 0.5 % of
+  the Earth's tide each on the ISS); a run without harmonics is
+  refused. Checks:
+  - acceleration against an independent implementation (tide
+    potential summed term by term, gradient by differences):
+    1.6e-9 relative on the ISS, 6.5e-10 on LRO, 1.3e-9 / 2.0e-9 with
+    the tide capped at degree 2 / 3;
+  - effect over 7 days (tide on minus off): ISS 22.5 m after 1 day,
+    211 m after 7 (Orekit 21.4 / 205 m), GPS 0.31 / 2.1 m (Orekit
+    0.33 / 2.4 m), LRO 73 / 256 m (Tudat 73.0 / 255.6 m). Orekit also
+    applies the frequency-dependent corrections and the pole tide,
+    which this step leaves out: that is the 3&ndash;10 % gap;
+  - a zero-tide copy of EIGEN-6C4 run as `"zero_tide"` matches the
+    tide-free file run as `"tide_free"` to 0.3 mm over 7 days;
+  - GRGM1200B's label gives k2 but not the tide system: fits of the
+    NASA LRO orbit (initial state and SRP coefficient estimated) over
+    ten arcs of 2016 and 2024 cut the cross-track residual with the
+    full tide in 9 of 10, so the lunar field is used tide-free.
+  Cost: 2&ndash;4 % of run time. The accelerations file gains an
+  `acc_solidtides` column (`SPDYACC_` version 2, 384-byte records);
+  version-1 files still read, with a zero tide column. The form has a
+  `solid_tides` choice, the per-force plots a "solid tide" line.
+
 - **Every `spody convert` writes a log beside its output.**
   `<output>.log` holds the command, the app and spody-core versions,
   every file read and the file written with size and SHA-256 (for the

@@ -92,7 +92,7 @@ All little-endian, 8-byte magic + version/dim header:
 | Magic | Contents | Writer | Reader |
 |---|---|---|---|
 | `SPDYOUT_` | trajectory records `(t, x, y, z, vx, vy, vz)`; `t` is seconds since the run's `et_start_s` | `sim_run.c`, GNSS/SP3 converters | `spody_io/traj.py` |
-| `SPDYACC_` | per-force acceleration breakdown | `sim_run.c` | `spody_io/accel.py` |
+| `SPDYACC_` | per-force acceleration breakdown (v2: `acc_solidtides` appended, 384 B; v1 360 B still read) | `sim_run.c` | `spody_io/accel.py` |
 | `SPDYEVT_` | per-run events | `sim_run.c` | `spody_io/events.py` |
 | `SPDYEVTB` | batch-aggregated events (extra `case_idx`) | `sim_run.c` | `spody_io/events.py` |
 | `SPDYEPET` | compiled DE440 ephemeris (`.spody`) | offline generator | spody-core + `spopy/ephemeris.py` |
@@ -969,6 +969,12 @@ The registry is designed so this is three local edits on the C side
    per-body file selection the way Moon/Earth do it.
    The run's central term then takes the file's GM, not the registry
    `mu` (§7, "The central GM comes with the gravity file").
+   Solid tides: point `.tides` at a `SpodySolidTides` template (Love
+   numbers, max degree, `kplus`, tide-raising bodies with their GM)
+   and set `.tide_a0h0` if the body has a permanent-tide convention
+   (0 = only tide-free fields accepted). Leave `.tides` NULL and
+   `force_model.solid_tides` is refused for the body (§7, "The tide
+   model is the body's, the tide system is the file's").
 5. **GUI mirror**: one `CentralBodySpec` in
    `spody_gui/central_bodies.py` (name, `naif_id`, `radius_km`,
    `mu_km3_s2`, `bf_frame_name`, `bf_orientation`,
@@ -1097,6 +1103,13 @@ ch. 7; CHANGELOG.
    spot check before trusting a full run: per-force magnitude at a
    known state, then a short propagation against an independently
    computed arc.
+
+Worked example of a body-driven force: the solid tide
+(`spody_force_solidtides`). The engine function knows no body; the
+numbers ride on `ctx->tides`, filled in `sim_setup.c` from the
+registry row plus the gravity file. Its breakdown slot was *appended*
+to `ForceBreakdown`, which bumped `SPDYACC_` to v2 with a reader that
+still takes v1 (§1.2) &mdash; the pattern for the next force.
 
 **Break risk:** missing breakdown slot; force evaluated in the wrong
 frame (everything in the RHS is ICRF, body-fixed only via the
@@ -1930,6 +1943,31 @@ Each entry: the rule, and the symptom you'll see if you break it.
      digits &mdash; that is where to look.
   *Symptom of breakage: a lunar orbit drifting along-track linearly
   (9.4e-8 of GM = 160 m in 6 days on LRO) with no other change.*
+- **The tide model is the body's, the tide system is the file's.**
+  Love numbers, degrees and tide-raising bodies sit on the central
+  body's registry row (`central_body.c`, `SpodySolidTides`);
+  `force_model.solid_tides` only says where the gravity file keeps the
+  permanent tide. `sim_setup.c` completes the template with the file's
+  GM and radius (the corrections are normalized with them) and, for
+  `"zero_tide"`, `dc20_perm = tide_a0h0 * k20`. Checklist:
+  1. A new Love number or body goes in `spody_const.h` + the registry
+     row, never in `spody_forcemodels.c`.
+  2. Read the tide system from the gravity file's header or label
+     before choosing the value; if the file does not say, measure it
+     (the Moon: fits of the NASA LRO orbit, see the CHANGELOG) and write it in the
+     manual.
+  3. The force is off unless the key is present: any change must keep
+     runs without it byte-identical.
+  4. The tide never reaches past the field: `sim_setup.c` caps
+     `max_degree` at `harmonics_degree` and zeroes `kplus` below 4
+     (the static ceiling, not the adaptive `N_eval`). A body with a
+     higher-degree tide inherits the rule for free.
+  5. Validate a change against an independent computation of the
+     potential (not against the same recursion) and against Orekit
+     (Earth) / Tudat (Moon).
+  *Symptom of breakage: a zero-tide file run as "zero_tide" no longer
+  matching the tide-free file run as "tide_free" (they agree to
+  0.3 mm in 7 days on the ISS).*
 - **UT1 dates travel in two parts.** `spody_iau2006_era` and
   `spody_gmst1982` take `(jd1, jd2)` like SOFA; the Earth chain passes
   `(JD_MJD_EPOCH, MJD_UT1)` and the spopy twin `erfa.era00(MJD_OFFSET,

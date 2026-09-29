@@ -346,7 +346,8 @@ because OD and conjunction budgets traditionally quote it.
 
 The accelerations binary records the per-force accelerations at
 every record, alongside the total. These plots break the
-contributions down.
+contributions down. Files written before the solid tide existed
+(format version 1) read with a zero tide column.
 
 Third bodies are named individually rather than summed into one
 `3rd-body` series. The binary stores only how many third bodies
@@ -377,8 +378,8 @@ the harmonics contribution (smaller by an order of magnitude).
 
 #### Per-force breakdown (log y)
 
-Each of the active force contributions (two-body, harmonics, each
-third body by name, SRP, drag) is plotted as its own line on a
+Each of the active force contributions (two-body, harmonics, solid
+tide, each third body by name, SRP, drag) is plotted as its own line on a
 logarithmic y axis with a legend. A force that is switched off for
 the run is omitted rather than drawn flat at the axis, so an empty
 legend slot never gets mistaken for a negligible contribution.
