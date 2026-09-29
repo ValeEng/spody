@@ -126,6 +126,10 @@ typedef struct {
      * lookup cache, so one per worker like MappedEOP). */
     MappedSpaceWeather sw;
     Spacecraft         sat;
+    /* The body's registry tide model completed with the gravity
+     * file's GM, radius and permanent term; ctx.tides points here
+     * when force_model.solid_tides is set. */
+    SpodySolidTides    tides;
     ForceModelContext  ctx;
     IntegratorAllData  integ;
 

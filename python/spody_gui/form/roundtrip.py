@@ -156,6 +156,10 @@ class RoundTripMixin:
             flat.pop("force_model.density_scale",      None)
             flat.pop("force_model.density_scale_file", None)
 
+        # solid_tides: "off" is the form's name for the absent key.
+        if flat.get("force_model.solid_tides") == "off":
+            flat.pop("force_model.solid_tides", None)
+
         # output.interval_s only applies to mode == "fixed"; in step
         # mode the field is hidden in the UI but the underlying widget
         # may still hold a stale value -- drop it from the emitted TOML

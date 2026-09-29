@@ -217,6 +217,24 @@ static void print_data_sources(const InputConfig *cfg,
                          cfg->harmonics_adaptive ? " (adaptive ceiling)" : "",
                          g->R_ref, g->GM,
                          g->use_reference_kernel ? "reference" : "HPC");
+        const SpodyCentralBodySpec *cb = spody_central_body_get(cfg->central_body);
+        if (cfg->solid_tides != SPODY_TIDES_OFF && cb && cb->tides) {
+            const SpodySolidTides *td = cb->tides;
+            int n_field = cfg->harmonics_degree;
+            int deg     = td->max_degree < n_field ? td->max_degree : n_field;
+            int kplus   = td->kplus[0] != 0.0 && n_field >= 4;
+            int capped  = deg < td->max_degree || (td->kplus[0] != 0.0 && !kplus);
+            spody_log_printf("    tides     : solid, %s field -> %s; degree 2..%d%s%s, "
+                             "k20 %.5f, raised by NAIF %d + %d\n",
+                             cfg->solid_tides == SPODY_TIDES_ZERO_TIDE
+                                 ? "zero-tide" : "tide-free",
+                             cfg->solid_tides == SPODY_TIDES_ZERO_TIDE
+                                 ? "permanent part left out" : "full tide added",
+                             deg,
+                             kplus ? " + degree 4 via k(+)" : "",
+                             capped ? " (capped by harmonics_degree)" : "",
+                             td->k_re[2][0], td->raiser_naif[0], td->raiser_naif[1]);
+        }
     }
     if (shared->init_eop) {
         const MappedEOPData *e = &shared->eop_data;
@@ -826,6 +844,29 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.space_weather       = w->init_sw_w ? &w->sw : NULL;
     w->ctx.density_scale       = shared->init_ds ? &shared->ds_data : NULL;
     w->ctx.body_spin_rad_s     = body->spin_rad_s;
+    /* Solid tide: the body's model, normalized with the gravity file
+     * (spody_validate_input guarantees both exist). A zero-tide file
+     * already holds the permanent part, so the correction leaves out
+     * (dC20)perm = A0 H0 k20. */
+    if (cfg->solid_tides != SPODY_TIDES_OFF && body->tides && shared->init_hgd) {
+        /* The tide corrects the field's coefficients, so it stops at
+         * the field's degree: degree 3 only from harmonics_degree 3,
+         * the k(+) terms only from 4. The ceiling is harmonics_degree,
+         * not the adaptive per-step degree, so the tide does not
+         * switch on and off along the orbit. */
+        w->tides           = *body->tides;
+        if (w->tides.max_degree > cfg->harmonics_degree)
+            w->tides.max_degree = cfg->harmonics_degree;
+        if (cfg->harmonics_degree < 4)
+            w->tides.kplus[0] = w->tides.kplus[1] = w->tides.kplus[2] = 0.0;
+        w->tides.gm        = shared->hgd.GM;
+        w->tides.r_ref     = shared->hgd.R_ref;
+        w->tides.dc20_perm = cfg->solid_tides == SPODY_TIDES_ZERO_TIDE
+                           ? body->tide_a0h0 * w->tides.k_re[2][0] : 0.0;
+        w->ctx.tides       = &w->tides;
+    } else {
+        w->ctx.tides       = NULL;
+    }
     w->ctx.et0                 = cfg->et_start_s;
 
     /* Integrator. Map cfg options onto IntegratorOptions and bind the

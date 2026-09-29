@@ -219,6 +219,8 @@ def info_rows_accel(data: np.ndarray
             math.sqrt(float((_mag('acc_2body') ** 2).mean())))),
         ("Harmonics",    fmt_num(
             math.sqrt(float((_mag('acc_sphericalharmonics') ** 2).mean())))),
+        ("Solid tide",   fmt_num(
+            math.sqrt(float((_mag('acc_solidtides') ** 2).mean())))),
         ("3rd-body",     fmt_num(
             math.sqrt(float((_mag('acc_thirdbody_total') ** 2).mean())))),
         ("SRP",          fmt_num(

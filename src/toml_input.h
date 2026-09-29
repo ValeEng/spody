@@ -49,6 +49,13 @@ typedef enum {
     SPODY_INTEG_TYPE_RKDP45 = 0
 } SpodyIntegratorType;
 
+/* force_model.solid_tides: the tide system of the gravity file. */
+typedef enum {
+    SPODY_TIDES_OFF       = 0,   /* key absent: no solid tide            */
+    SPODY_TIDES_TIDE_FREE = 1,   /* file holds no tide: add all of it    */
+    SPODY_TIDES_ZERO_TIDE = 2    /* file holds the permanent deformation */
+} SpodySolidTideSystem;
+
 typedef enum {
     SPODY_FRAME_CENTRAL_INERTIAL  = 0,  /* HF: ICRF-aligned, central body
                                          * at origin */
@@ -290,6 +297,11 @@ typedef struct {
      * (or debris drag keys) and a space_weather_file -- all enforced
      * by spody_validate_input. */
     int              enable_drag;
+    /* solid_tides: OPTIONAL key naming the tide system of the gravity
+     * file ("tide_free" | "zero_tide"); absent = no solid tide. The
+     * tide model itself (Love numbers, tide-raising bodies) belongs to
+     * the central body's registry row. */
+    int              solid_tides;          /* SpodySolidTideSystem */
     /* Earth-only assets. Required (and validated to exist) when
      * central_body == Earth, ignored otherwise. The GUI writes these
      * fields ONLY for Earth; for Moon-or-other they stay empty strings.

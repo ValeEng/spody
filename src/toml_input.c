@@ -821,6 +821,29 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
     if ((rc = req_bool(t, "force_model", "srp",
                        &cfg->enable_srp, err))) return rc;
 
+    /* solid_tides: optional. The key is the switch and states the
+     * tide system of the gravity file at once; absent = no tide, so
+     * every existing TOML reproduces bit for bit. A value that is not
+     * one of the two names (a boolean included) is refused rather than
+     * read as "off". */
+    cfg->solid_tides = SPODY_TIDES_OFF;
+    if (toml_key_exists(t, "solid_tides")) {
+        char sys[32] = {0};
+        int has = 0;
+        if ((rc = opt_string(t, "solid_tides", sys, sizeof sys, &has))) return rc;
+        if (has && strcmp(sys, "tide_free") == 0)
+            cfg->solid_tides = SPODY_TIDES_TIDE_FREE;
+        else if (has && strcmp(sys, "zero_tide") == 0)
+            cfg->solid_tides = SPODY_TIDES_ZERO_TIDE;
+        else {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.solid_tides must be \"tide_free\" or "
+                    "\"zero_tide\" (the tide system of the gravity file); "
+                    "leave the key out for no solid tide");
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+
     /* drag: optional, default false -- pre-drag TOMLs parse unchanged. */
     cfg->enable_drag = 0;
     {
@@ -2318,6 +2341,37 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                     "space_weather_file not found: %s",
                     cfg->space_weather_file);
             return SPODY_ERR_FILE_NOT_FOUND;
+        }
+    }
+
+    /* Solid tide: needs a tide model on the central body's registry
+     * row, a gravity file (the key states that file's tide system, and
+     * the corrections are normalized with its GM and radius), and for
+     * zero_tide a permanent-tide term defined for the body. */
+    if (cfg->solid_tides != SPODY_TIDES_OFF) {
+        const SpodyCentralBodySpec *cb =
+                spody_central_body_get(cfg->central_body);
+        if (!cb || !cb->tides) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.solid_tides is set but central body '%s' "
+                    "has no solid-tide model registered (today: 'Earth', "
+                    "'Moon')", cb ? cb->name : "?");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->harmonics_degree < 2) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.solid_tides needs a gravity field "
+                    "(harmonics_degree >= 2): the key states the tide "
+                    "system of that file");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (cfg->solid_tides == SPODY_TIDES_ZERO_TIDE
+                && cb->tide_a0h0 == 0.0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.solid_tides = \"zero_tide\" is not defined "
+                    "for central body '%s' (no permanent-tide convention); "
+                    "use \"tide_free\"", cb->name);
+            return SPODY_ERR_BAD_VALUE;
         }
     }
 

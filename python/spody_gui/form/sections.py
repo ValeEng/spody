@@ -523,6 +523,13 @@ class SectionBuildersMixin:
         self._add_bool(f, "force_model.harmonics_adaptive",
                        "harmonics_adaptive")
 
+        # Solid tide: off, or the tide system of the gravity file above
+        # (the engine refuses zero_tide where no permanent-tide
+        # convention exists, today the Moon). "off" is not a TOML value:
+        # roundtrip drops the key.
+        self._add_enum(f, "force_model.solid_tides", "solid_tides",
+                       ("off", "tide_free", "zero_tide"))
+
         # Earth-only fields. Visible (and written to TOML) only when
         # central_body == "Earth"; for the Moon (and any other body
         # without an EOP / IAU 2006 dependency) the engine schema

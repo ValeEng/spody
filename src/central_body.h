@@ -70,6 +70,17 @@ typedef struct {
                                        * this body (Earth: NRLMSISE-00);
                                        * NULL = no atmosphere, drag is
                                        * rejected at validation */
+    /* Solid-body tide model: Love numbers, degrees and tide-raising
+     * bodies (IERS 2010 for the Earth, GRAIL's k2 for the Moon). NULL
+     * = no model registered, and force_model.solid_tides is refused.
+     * gm, r_ref and dc20_perm are left 0 here: they belong to the
+     * gravity file and are filled in by sim_setup. */
+    const SpodySolidTides *tides;
+    /* A0*H0 of the permanent degree-2 zonal tide, (dC20)perm =
+     * tide_a0h0 * k20 -- what a zero-tide field already holds. 0 =
+     * the permanent part is not defined for this body, so only a
+     * tide-free field is accepted. */
+    double               tide_a0h0;
 } SpodyCentralBodySpec;
 
 /* Look up the full spec for a central-body tag. Returns NULL only for

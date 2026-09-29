@@ -133,7 +133,10 @@ static int emit_trajectory(FILE *csv, FILE *bin, double t, const double y[6]) {
  * -------------------------------------------------------------------------- */
 
 #define SPODY_ACC_MAGIC   "SPDYACC_"
-#define SPODY_ACC_VERSION 1u
+/* v2 (2026-09): acc_solidtides[3] appended after eclipse_fraction
+ * (record 360 -> 384 bytes). v1 records are the same layout without
+ * it; spody_io reads both. */
+#define SPODY_ACC_VERSION 2u
 
 static int write_acc_header(FILE *fp) {
     if (fwrite(SPODY_ACC_MAGIC, 1, 8, fp) != 8) return -1;

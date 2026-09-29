@@ -13,8 +13,9 @@
 # limitations under the License.
 """Reader for the SPDYACC_ per-force acceleration breakdown binary.
 
-One record = one `ForceBreakdown` C struct (360 bytes on x86_64 with
-`SPODY_FM_MAX_THIRD = 8`). Layout mirrors `spody_forcemodels.h`:
+One record = one `ForceBreakdown` C struct (v2: 384 bytes on x86_64
+with `SPODY_FM_MAX_THIRD = 8`; v1: 360, without the last field).
+Layout mirrors `spody_forcemodels.h`:
 
     double t                       sim time [s]
     double acc_total[3]            sum of all forces  [km/s^2]
@@ -27,6 +28,10 @@ One record = one `ForceBreakdown` C struct (360 bytes on x86_64 with
     double acc_srp[3]
     double acc_drag[3]             atmospheric drag (zero when drag off)
     double eclipse_fraction        1=full sun, 0=full umbra
+    double acc_solidtides[3]       solid-body tide (v2 only; zero when off)
+
+A v1 file is returned with the v2 dtype and `acc_solidtides` = 0: it
+was written before the force existed, so zero is what it modelled.
 """
 from __future__ import annotations
 
@@ -43,7 +48,7 @@ SPODY_FM_MAX_THIRD = 8
 # between `n_third` (int32) and the following `acc_thirdbody[8][3]`
 # (which requires 8-byte alignment). The resulting itemsize must equal
 # the sizeof(ForceBreakdown) recorded in the header at write time.
-ACCEL_DTYPE = np.dtype({
+_V1_FIELDS = {
     "names": [
         "t",
         "acc_total",
@@ -68,9 +73,17 @@ ACCEL_DTYPE = np.dtype({
         ("<f8", 3),
         "<f8",
     ],
+}
+ACCEL_DTYPE_V1 = np.dtype(_V1_FIELDS, align=True)
+ACCEL_DTYPE = np.dtype({
+    "names": _V1_FIELDS["names"] + ["acc_solidtides"],
+    "formats": _V1_FIELDS["formats"] + [("<f8", 3)],
 }, align=True)
-assert ACCEL_DTYPE.itemsize == 360, (
-    f"ForceBreakdown size drift: dtype is {ACCEL_DTYPE.itemsize}, expected 360"
+assert ACCEL_DTYPE_V1.itemsize == 360, (
+    f"ForceBreakdown v1 size drift: dtype is {ACCEL_DTYPE_V1.itemsize}, expected 360"
+)
+assert ACCEL_DTYPE.itemsize == 384, (
+    f"ForceBreakdown size drift: dtype is {ACCEL_DTYPE.itemsize}, expected 384"
 )
 
 
@@ -85,11 +98,19 @@ def read_accelerations(path: str | Path) -> np.ndarray:
     path = _resolve_path(path)
     with path.open("rb") as fp:
         version, record_size = read_header(fp, SPODY_ACC_MAGIC)
-        if version != 1:
+        dtypes = {1: ACCEL_DTYPE_V1, 2: ACCEL_DTYPE}
+        if version not in dtypes:
             raise ValueError(f"{path}: unsupported accelerations format v{version}")
-        if record_size != ACCEL_DTYPE.itemsize:
+        dtype = dtypes[version]
+        if record_size != dtype.itemsize:
             raise ValueError(
                 f"{path}: record_size={record_size} but reader expects "
-                f"{ACCEL_DTYPE.itemsize} -- spody-core ABI may have changed"
+                f"{dtype.itemsize} for v{version} -- spody-core ABI may have changed"
             )
-        return np.fromfile(fp, dtype=ACCEL_DTYPE)
+        data = np.fromfile(fp, dtype=dtype)
+    if version == 2:
+        return data
+    out = np.zeros(len(data), dtype=ACCEL_DTYPE)
+    for name in ACCEL_DTYPE_V1.names:
+        out[name] = data[name]
+    return out
