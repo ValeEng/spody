@@ -227,6 +227,8 @@ def info_rows_accel(data: np.ndarray
             math.sqrt(float((_mag('acc_thirdbody_total') ** 2).mean())))),
         ("SRP",          fmt_num(
             math.sqrt(float((_mag('acc_srp') ** 2).mean())))),
+        ("Earth radiation", fmt_num(
+            math.sqrt(float((_mag('acc_earthradiation') ** 2).mean())))),
         ("Drag",         fmt_num(
             math.sqrt(float((_mag('acc_drag') ** 2).mean())))),
     ]

@@ -135,9 +135,10 @@ static int emit_trajectory(FILE *csv, FILE *bin, double t, const double y[6]) {
 #define SPODY_ACC_MAGIC   "SPDYACC_"
 /* v2 (2026-09): acc_solidtides[3] appended after eclipse_fraction
  * (record 360 -> 384 bytes). v3 (2026-09): acc_relativity[3] appended
- * after it (408 bytes). Older records are the same layout cut short;
- * spody_io reads all three. */
-#define SPODY_ACC_VERSION 3u
+ * after it (408 bytes). v4 (2026-09): acc_earthradiation[3] (432
+ * bytes). Older records are the same layout cut short; spody_io reads
+ * all four. */
+#define SPODY_ACC_VERSION 4u
 
 static int write_acc_header(FILE *fp) {
     if (fwrite(SPODY_ACC_MAGIC, 1, 8, fp) != 8) return -1;

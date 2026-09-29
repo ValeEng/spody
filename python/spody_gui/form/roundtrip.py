@@ -143,6 +143,7 @@ class RoundTripMixin:
             flat.pop("force_model.eop_file",    None)
             flat.pop("force_model.iau2006_dir", None)
             flat.pop("force_model.drag",        None)
+            flat.pop("force_model.earth_radiation_pressure", None)
             flat.pop("force_model.space_weather_file", None)
             flat.pop("force_model.density_scale",      None)
             flat.pop("force_model.density_scale_file", None)

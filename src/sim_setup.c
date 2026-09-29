@@ -243,6 +243,12 @@ static void print_data_sources(const InputConfig *cfg,
                          "%s (IERS 2010 eq. 10.12, beta = gamma = 1)\n",
                          cb ? cb->name : "?");
     }
+    if (cfg->enable_earth_radiation_pressure
+            && cfg->dynamics_model != SPODY_DYN_CR3BP) {
+        spody_log_printf("    Earth rad : albedo + infrared, Knocke et al. (1988), "
+                         "Lambertian, %d x %d rays over the visible disk\n",
+                         EARTHRAD_N_NADIR, EARTHRAD_N_AZIMUTH);
+    }
     if (shared->init_eop) {
         const MappedEOPData *e = &shared->eop_data;
         describe_file(cfg->eop_file, info, sizeof info);
@@ -875,6 +881,7 @@ int spody_build_worker(const InputConfig *cfg,
         w->ctx.tides       = NULL;
     }
     w->ctx.enable_relativity   = cfg->enable_general_relativity;
+    w->ctx.enable_earthradiation = cfg->enable_earth_radiation_pressure;
     w->ctx.et0                 = cfg->et_start_s;
 
     /* Integrator. Map cfg options onto IntegratorOptions and bind the

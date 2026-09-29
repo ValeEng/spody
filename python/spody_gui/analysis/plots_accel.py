@@ -76,6 +76,7 @@ def _perturbation_channels(d: np.ndarray, ctx: "PlotContext | None"
     for i, name in enumerate(_third_body_labels(d, ctx)):
         channels.append((name, _norm3(d["acc_thirdbody"][:, i, :])))
     channels.append(("SRP",  _norm3(d["acc_srp"])))
+    channels.append(("Earth radiation", _norm3(d["acc_earthradiation"])))
     channels.append(("drag", _norm3(d["acc_drag"])))
     return [(name, v) for name, v in channels if np.any(v > 0.0)]
 

@@ -66,6 +66,7 @@ static const SpodyCentralBodySpec _registry[] = {
         .atmosphere  = NULL,
         .tides       = &tides_moon,
         .tide_a0h0   = 0.0,   /* no permanent-tide convention: tide-free fields only */
+        .earth_radiation = 0, /* Knocke is an Earth model; lunar albedo/IR is future */
     },
     {
         .body        = SPODY_CENTRAL_EARTH,
@@ -78,6 +79,7 @@ static const SpodyCentralBodySpec _registry[] = {
         .atmosphere  = &spody_atmosphere_nrlmsise00,
         .tides       = &tides_earth,
         .tide_a0h0   = TIDE_EARTH_A0H0,
+        .earth_radiation = 1,
     },
 };
 static const size_t _registry_n = sizeof _registry / sizeof _registry[0];

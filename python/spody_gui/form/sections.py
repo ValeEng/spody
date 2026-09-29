@@ -594,6 +594,9 @@ class SectionBuildersMixin:
         self._add_bool (f, "force_model.srp", "srp")
         self._fm_drag_row = f.rowCount()
         self._add_bool (f, "force_model.drag", "drag")
+        self._fm_erp_row = f.rowCount()
+        self._add_bool (f, "force_model.earth_radiation_pressure",
+                        "earth_radiation_pressure")
 
         # Hook visibility of the Earth-only rows to the central_body
         # combo. Initial sync uses the combo's current value (set by
@@ -630,7 +633,8 @@ class SectionBuildersMixin:
         # Mars atmosphere lands this becomes a per-body capability
         # lookup instead of a name check.
         for row in (self._fm_eop_row, self._fm_iau_row, self._fm_sw_row,
-                    self._fm_ds_row, self._fm_dsf_row, self._fm_drag_row):
+                    self._fm_ds_row, self._fm_dsf_row, self._fm_drag_row,
+                    self._fm_erp_row):
             self._fm_force_form.setRowVisible(row, is_earth)
 
         if is_earth and self._store is not None:

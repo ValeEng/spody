@@ -305,6 +305,10 @@ typedef struct {
     /* general_relativity: OPTIONAL bool, default false -- the
      * Schwarzschild term of the central body (IERS 2010 eq. 10.12). */
     int              enable_general_relativity;
+    /* earth_radiation_pressure: OPTIONAL bool, default false -- Earth
+     * albedo + infrared on the spacecraft (Knocke et al. 1988). Earth
+     * central body and SRP surface data required. */
+    int              enable_earth_radiation_pressure;
     /* Earth-only assets. Required (and validated to exist) when
      * central_body == Earth, ignored otherwise. The GUI writes these
      * fields ONLY for Earth; for Moon-or-other they stay empty strings.

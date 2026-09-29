@@ -81,6 +81,10 @@ typedef struct {
      * the permanent part is not defined for this body, so only a
      * tide-free field is accepted. */
     double               tide_a0h0;
+    /* 1 = the Knocke albedo + infrared model describes this body
+     * (Earth); force_model.earth_radiation_pressure is refused for any
+     * body with 0. */
+    int                  earth_radiation;
 } SpodyCentralBodySpec;
 
 /* Look up the full spec for a central-body tag. Returns NULL only for

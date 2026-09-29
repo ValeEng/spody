@@ -858,6 +858,19 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
         cfg->enable_general_relativity = d.u.b ? 1 : 0;
     }
 
+    /* earth_radiation_pressure: optional bool, default false; a
+     * non-boolean value is refused rather than read as "off". */
+    cfg->enable_earth_radiation_pressure = 0;
+    if (toml_key_exists(t, "earth_radiation_pressure")) {
+        toml_datum_t d = toml_bool_in(t, "earth_radiation_pressure");
+        if (!d.ok) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.earth_radiation_pressure must be true or false");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        cfg->enable_earth_radiation_pressure = d.u.b ? 1 : 0;
+    }
+
     /* drag: optional, default false -- pre-drag TOMLs parse unchanged. */
     cfg->enable_drag = 0;
     {
@@ -2385,6 +2398,27 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                     "force_model.solid_tides = \"zero_tide\" is not defined "
                     "for central body '%s' (no permanent-tide convention); "
                     "use \"tide_free\"", cb->name);
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+
+    /* Earth radiation pressure: an Earth model (registry flag) that
+     * uses the spacecraft's SRP surface (area, Cr). Debris mode always
+     * carries am_srp / Cr. */
+    if (cfg->enable_earth_radiation_pressure) {
+        const SpodyCentralBodySpec *cb =
+                spody_central_body_get(cfg->central_body);
+        if (!cb || !cb->earth_radiation) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.earth_radiation_pressure = true needs "
+                    "central_body = \"Earth\" (got '%s'): the albedo and "
+                    "infrared model is the Earth's", cb ? cb->name : "?");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (!cfg->has_srp_block) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.earth_radiation_pressure = true needs the "
+                    "radiation surface of [spacecraft.srp] (area_m2, Cr)");
             return SPODY_ERR_BAD_VALUE;
         }
     }

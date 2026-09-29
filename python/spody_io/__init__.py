@@ -24,7 +24,7 @@ encodes a version and a payload value whose meaning depends on the
 file kind:
 
     SPDYOUT_  payload = state dimension (always 6 in v0)
-    SPDYACC_  payload = sizeof(ForceBreakdown) record in bytes (v3 408, v2 384, v1 360)
+    SPDYACC_  payload = sizeof(ForceBreakdown) record in bytes (v4 432, v3 408, v2 384, v1 360)
     SPDYEVT_  payload = sizeof(EventRecord)   record in bytes  (80)
 
 The on-disk format matches the C structs verbatim (no padding tricks
