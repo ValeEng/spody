@@ -50,9 +50,7 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
     0.33 / 2.4 m), LRO 73 / 256 m (Tudat 73.0 / 255.6 m). Orekit also
     applies the frequency-dependent corrections and the pole tide,
     which this step leaves out: that is the 3&ndash;10 % gap (Orekit
-    figures at a 1e-7 m position tolerance; at 1e-5 m some of its LEO
-    week differences came out up to 10 % off, at 1e-3 and 1e-7 m they
-    agree);
+    run as one propagation at a 1e-7 m position tolerance);
   - a zero-tide copy of EIGEN-6C4 run as `"zero_tide"` matches the
     tide-free file run as `"tide_free"` to 0.3 mm over 7 days;
   - GRGM1200B's label gives k2 but not the tide system: fits of the

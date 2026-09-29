@@ -1115,13 +1115,21 @@ The simplest shape of a force is `spody_force_relativity`: no
 ephemeris, no rotation, only `r`, `v` and `mu_central`, switched by a
 plain `ctx->enable_relativity` flag.
 
-**Cross-checking a force against Orekit: run it at more than one
-tolerance.** With `NumericalPropagator.tolerances(1e-5 m)` a 7-day
-LEO difference "force on minus off" came out 10 % off (GRACE-FO
-relativity 19.9 m); at 1e-3 m and 1e-7 m Orekit gives 17.83 and
-17.87 m, SpOdy 17.89 m. The cause of the odd one out was not
-isolated. Check a comparison at two tolerances before blaming either
-tool.
+**Cross-checking a force as "on minus off": both runs must share
+their integration errors.** Each run of a 7-day LEO carries metres of
+integration error along track, far above the tolerance you set
+(Orekit `tolerances(1e-5 m)`: 9.6 m; SpOdy `rel_tol = 1e-9`: 1.3 m).
+The difference of two runs is clean only because those errors are
+nearly the same in both and cancel. Anything that breaks the step
+sequence breaks the cancellation: sampling Orekit with one
+`propagate()` call per output epoch restarts the integrator every
+sample, and turned the GRACE-FO relativity effect into 19.9 m instead
+of 17.9 m. Checklist:
+  1. One propagation per run; read the samples from the dense output
+     (Orekit `getEphemerisGenerator()`, SpOdy fixed output mode).
+  2. Tolerance tight enough that the single run is converged (Orekit
+     1e-7 m, SpOdy 1e-11 for a LEO week).
+  3. Repeat at a second tolerance; the effect must not move.
 
 **Break risk:** missing breakdown slot; force evaluated in the wrong
 frame (everything in the RHS is ICRF, body-fixed only via the
