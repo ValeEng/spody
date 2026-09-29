@@ -567,6 +567,14 @@ Moon texture when present (NASA SVS LROC color, chapter 3);
 points fall back to a flat-grey background when the texture
 is missing.
 
+**Latitude.** On a body that is a spheroid (the Earth) and a run with
+`force_model.body_shape = "ellipsoid"`, the latitude is **geodetic**,
+the latitude of a map, measured from the spheroid's normal where the
+engine found the ground; the axis label says so. Otherwise (the Moon,
+a sphere; or `"equatorial_sphere"`, or a run older than the key) it
+is the geocentric `asin(z/r)` of earlier releases. On the Earth the
+two differ by up to 0.19 deg at 45 deg latitude.
+
 Marker colour is `time of flight [days]` via the `turbo`
 colormap, with a colorbar on the right. The same colour
 encoding is reused on the 3D impact view so a fragment can be

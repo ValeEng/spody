@@ -249,6 +249,12 @@ static void print_data_sources(const InputConfig *cfg,
                          "Lambertian, %d x %d rays over the visible disk\n",
                          EARTHRAD_N_NADIR, EARTHRAD_N_AZIMUTH);
     }
+    if (cfg->dynamics_model != SPODY_DYN_CR3BP) {
+        spody_log_printf("    shapes    : %s (shadow, impact, altitude)\n",
+                         cfg->body_shape == SPODY_BODY_SHAPE_EQUATORIAL_SPHERE
+                         ? "equatorial spheres"
+                         : "pck00011 spheroids, geodetic altitude");
+    }
     if (shared->init_eop) {
         const MappedEOPData *e = &shared->eop_data;
         describe_file(cfg->eop_file, info, sizeof info);
@@ -829,21 +835,28 @@ int spody_build_worker(const InputConfig *cfg,
      * they are already a subset of the third bodies the RHS queries at
      * the same epoch, so they add no ephemeris work, and the per-step
      * screening inside spody_get_satlitfraction rejects them in a
-     * dozen flops. Radii come from the app-side body table. */
+     * dozen flops. Shapes come from the app-side body table
+     * (force_model.body_shape): the spin axes are taken at mid-run,
+     * where precession over the whole run moves the Earth's limb by
+     * well under a metre a year. */
+    double et_shape = cfg->et_start_s + 0.5 * cfg->duration_s;
     int n_occ = 0;
-    w->ctx.srp_occulter_naif  [n_occ] = body->naif;
-    w->ctx.srp_occulter_radius[n_occ] = body->radius_km;
+    if (spody_lookup_body_shape(body->naif, cfg->body_shape, et_shape,
+                                &w->ctx.srp_occulter_shape[n_occ]) != 0) {
+        w->ctx.srp_occulter_shape[n_occ].r_eq  = body->radius_km;   /* defensive */
+        w->ctx.srp_occulter_shape[n_occ].r_pol = 0.0;
+    }
+    w->ctx.srp_occulter_naif[n_occ] = body->naif;
     n_occ++;
     for (int i = 0; i < w->n_third; ++i) {
-        double occ_r_km = 0.0;
         if (w->third_naif[i] == SUN_NAIF)   continue;
         if (w->third_naif[i] == body->naif) continue;   /* defensive */
-        if (spody_lookup_body_by_naif(w->third_naif[i], NULL, NULL,
-                                      &occ_r_km) != 0 || occ_r_km <= 0.0) {
+        if (spody_lookup_body_shape(w->third_naif[i], cfg->body_shape, et_shape,
+                                    &w->ctx.srp_occulter_shape[n_occ]) != 0
+            || w->ctx.srp_occulter_shape[n_occ].r_eq <= 0.0) {
             continue;                                   /* defensive */
         }
-        w->ctx.srp_occulter_naif  [n_occ] = w->third_naif[i];
-        w->ctx.srp_occulter_radius[n_occ] = occ_r_km;
+        w->ctx.srp_occulter_naif[n_occ] = w->third_naif[i];
         n_occ++;
     }
     w->ctx.srp_n_occulters     = n_occ;

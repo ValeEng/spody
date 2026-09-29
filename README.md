@@ -52,6 +52,10 @@ PyInstaller bundle.
 - **Multi-occulter SRP eclipse**: every third body can shade the
   satellite, overlapping shadows combined by inclusion&ndash;exclusion,
   so the Earth darkens a lunar orbiter.
+- **Oblate body shapes**: the `pck00011` spheroids (Earth, Mars,
+  giant planets) for shadows, impacts and geodetic altitudes, checked
+  against GMAT/SPICE and Orekit; the equatorial sphere of earlier
+  releases stays one key away.
 - **Atmospheric drag** around the Earth: native NRLMSISE-00 with
   CelesTrak space weather, plus an engine-side density-scale
   calibration against a reference ephemeris.

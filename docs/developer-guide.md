@@ -1337,8 +1337,15 @@ Checklist for a new 3D capability:
 ### 5.13 Touching the eclipse / occulter model
 
 **Files:** spody-core `spody_eclipse.{h,c}` (geometry),
-`spody_forcemodels.{h,c}` (`srp_lit_fraction` + the two call sites),
-`spody_events.c` (the eclipse event); `src/sim_setup.c` (the list).
+`spody_math.{h,c}` (`SpodyBodyShape`, `spody_iau_pole`,
+`spody_body_shape_distance`), `spody_forcemodels.{h,c}`
+(`srp_lit_fraction` + the two call sites), `spody_events.c` (the
+eclipse event, IMPACT and altitude against the shape);
+`src/sim_setup.c` (the list), `src/sim_run.c` (`set_event_body_shape`),
+`src/toml_input.c` (`BODY_TABLE` radii + poles,
+`spody_lookup_body_shape`, the required `body_shape` key); GUI
+`spody_gui/analysis/derived.py` (impact latitude) with its twin
+`spopy/geodesy.py`.
 
 The split to respect:
 
@@ -1406,10 +1413,39 @@ regret ignoring this":
    match the body shapes first: GMAT's locator takes the Earth
    ellipsoid from its SPICE PCK and ignores the script's radius, which
    alone shifts LEO contacts by up to 18 s.
+8. **One shape per body, everywhere** (`force_model.body_shape`,
+   required): shadow, IMPACT and altitude read the same
+   `SpodyBodyShape`, as in Orekit. GMAT mixes a sphere for its SRP with
+   an ellipsoid for its altitude and locator, and that mismatch is the
+   thing to avoid. `r_pol <= 0` or `== r_eq` is a sphere and must take
+   the exact code path of old: the `"equatorial_sphere"` regression
+   (every trajectory AND events file byte-identical to the previous
+   release) is the contract.
+9. **Compute the spheroid only where it can change the answer.** The
+   spheroid lies between its polar and equatorial spheres, so the limb
+   angle lies between their two `asin(R/d)` and the geodetic altitude
+   between `d − r_eq` and `d − r_pol`. Outside that band the sphere
+   already decides (lit / total shadow; above / below the target
+   altitude) and a bound with the right sign is returned. This is what
+   keeps the always-on IMPACT check, run at every step, at one sqrt:
+   without it the Bowring iteration cost +6 to +11 % of run time.
+   The eclipse *residual* is the exception (limb always computed) so
+   that Brent sees a continuous function; logged values
+   (`distance_at_trigger`, life markers) always use the exact
+   `spody_event_body_distance`.
+10. **The limb is found in the plane (satellite, centre, Sun).** The
+   affine stretch of the polar axis by `r_eq/r_pol` maps the spheroid
+   to a sphere and keeps planes, lines and tangency; the tangent point
+   comes in closed form and is mapped back. Off-plane contact points
+   are second order over the Sun's 0.27 deg (GMAT/SPICE, the exact
+   ellipsoid, agrees to 1.1 ms on LEO contacts).
 
 **Adding a body that can occult** is therefore nothing but making it
 available as a third body (recipe 5.6 / the app-side `BODY_TABLE`);
-there is no eclipse-specific registration and no TOML key.
+there is no eclipse-specific registration. Give its row the polar
+radius and the four IAU pole elements from `pck00011` (constants in
+`spody_const.h`, recipe 5.1) when the kernel models it as a spheroid;
+leave them 0 for a sphere.
 
 **Verify:** the two local tvb tests are the contract —
 `test_eclipse_multibody` checks the combination against an independent
@@ -1418,8 +1454,18 @@ about lenses or three-circle areas), `test_eclipse_legacy_parity`
 sweeps ~2.6M configurations against a frozen copy of the pre-2026-07
 implementation demanding *exact* equality. Then §6.1 bit-identity on
 `gps_g11_validation`, and a cislunar arc through a lunar eclipse for
-the multi-occulter path itself. **Document:** manual ch. 6 (*Which
-bodies cast a shadow*), CHANGELOG with the measured effect.
+the multi-occulter path itself. For the shapes: the regression with
+every input switched to `"equatorial_sphere"` must be byte-identical
+(trajectories and events); eclipse contacts against GMAT's
+`EclipseLocator` (default PCK = exact ellipsoid; a copied PCK with
+equal radii, passed via `--startup_file`, for the sphere) and Orekit's
+`OccultationEngine` on a `OneAxisEllipsoid`; geodetic altitudes of
+trigger states against SPICE `recgeo` in the frame of the same pole
+(round-off) and Orekit `OneAxisEllipsoid.transform` (ITRF, 0.3 m from
+nutation). Tudat cannot check the ellipsoidal shadow: its occultation
+takes a sphere of the mean radius even for an oblate shape.
+**Document:** manual ch. 6 (*Which bodies cast a shadow*, *Body
+shapes*), CHANGELOG with the measured effect.
 
 ### 5.14 New `[initial_state]` frame
 

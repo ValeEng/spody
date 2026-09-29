@@ -56,6 +56,7 @@ velocity_kms = [-3.76331237308345, -6.58017659889217, 1.01601021932383]
 
 [force_model]
 central_body       = "Earth"
+body_shape         = "ellipsoid"                # pck00011 spheroids; "equatorial_sphere" = earlier releases
 harmonics_file     = "../../data/EIGEN-6C4/eigen-6c4.tab"
 harmonics_degree   = 70              # LEO standard; gravity is not the residual driver here
 eop_file           = "../../data/eop/finals2000A.all"

@@ -30,12 +30,17 @@ preamble (see `headers.py`):
                           none)
       int32  naif_id      body involved in the trigger
       double radius_km    threshold used for the predicate (for
-                          ALT_CROSSING: the body's physical radius --
+                          ALT_CROSSING: the body's equatorial radius --
                           the crossed altitude is
                           distance_km - radius_km)
       double distance_km  observed value at trigger (distance in km
                           for IMPACT / ALT_CROSSING, eclipse fraction
-                          for ECLIPSE)
+                          for ECLIPSE). With force_model.body_shape =
+                          "ellipsoid" and a spheroidal body the
+                          "distance" is radius_km + geodetic altitude,
+                          so distance_km - radius_km is the altitude
+                          either way; the true distance is |y[0:3]|
+                          for the central body
       double y[6]         interpolated state at trigger (km, km/s)
 
 - **SPDYEVTB** (v1) -- aggregated log written by `spody batch` when

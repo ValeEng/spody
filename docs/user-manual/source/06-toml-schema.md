@@ -314,6 +314,7 @@ Forces the propagator integrates against. Required.
 | Key                  | Type            | Default | Range | Description |
 |----------------------|-----------------|---------|-------|-------------|
 | `central_body`       | string          | &mdash; | `Moon`, `Earth` | Central body of the propagation. Two bodies are supported in this release. The choice drives the gravity-model coefficient set, the body-fixed rotation provider (lunar PA libration angles from DE440 for Moon, IAU 2006/2010 + IERS EOP for Earth), and the list of valid `third_bodies`. |
+| `body_shape`         | string          | &mdash; (required) | `"ellipsoid"`, `"equatorial_sphere"` | Shape of every body for the shadow, IMPACT and altitude crossings: the `pck00011` spheroid with geodetic altitude, or the sphere of the equatorial radius of earlier releases. No default: every input states the shape it runs; a TOML without the key is refused, and `"equatorial_sphere"` reproduces what it used to run. See *Body shapes* below. |
 | `harmonics_file`     | string (path)   | &mdash; (required unless `harmonics_degree = 0`) | &ndash; | Path to a spherical-harmonic gravity coefficients file (`gggrx_1200b_sha.tab` for GRGM1200B / Moon; `eigen-6c4.tab` for EIGEN-6C4 / Earth, produced by the wizard from the upstream `.gfc`). In the form this row is a **dropdown of harmonics files the wizard has downloaded**, filtered by `central_body`. A **Browse...** button next to the combo adds an out-of-data-dir file as a one-off `(custom)` entry, so legacy TOMLs pointing at e.g. `external/spody-core/raw_data/...` keep round-tripping. Relative paths resolve against the TOML's directory. Optional when `harmonics_degree = 0`, since nothing reads it. |
 | `harmonics_degree`   | int             | &mdash; | `0` or `[2, 2200]` | Truncation degree of the harmonic gravity expansion. Higher = more accurate but more expensive. The effective upper bound is whatever the chosen `harmonics_file` declares (1200 for GRGM1200B, 2190 for EIGEN-6C4 / EGM2008); the `2200` cap is the absolute schema ceiling. **`0` switches the gravity field off entirely**: the central body stays a point mass, so together with `third_bodies` the run becomes an ephemeris-driven restricted N-body problem (see *Turning the gravity field off* below). Degree `1` is rejected &mdash; it would only move the origin to the centre of mass, which the central-body convention already assumes. See *Choosing a harmonics degree* below for guidance. |
 | `harmonics_adaptive` | bool            | `false` | &ndash; | Let the engine lower the degree per integrator step based on the satellite's distance, using `harmonics_degree` as the ceiling. Off by default; see *Letting the degree follow the orbit* below. Requires `harmonics_degree >= 2` &mdash; at degree `0` there is no expansion to truncate. |
@@ -362,22 +363,69 @@ separate mechanism that watches **one** occulting body at a time, so
 during a double eclipse the logged event fraction and the fraction
 used by the force are different numbers on purpose.
 
-**The shape of the shadow.** Every body is a sphere of the radius in
-`spody_const.h` (the Earth's equatorial radius), with no atmosphere,
-and the Sun is taken at its geometric position. The real Earth is
-flatter at the poles: where the satellite sees the Earth's edge at
-high latitude, the true shadow starts later and ends earlier. Measured
-with Orekit's ellipsoidal Earth on the same trajectories, the contact
-times move by 7.5 s on a polar low orbit, up to 18 s on the ISS
-(grazing entries stretch the difference), about 4 s on GPS and under
-0.1 s in GEO. For SRP with A/m = 0.01 m&sup2;/kg this is about 30 m
-of along-track position after 7 days on the ISS orbit. With the Sun
-near the orbit plane the later entry and the earlier exit push in
-opposite directions and cancel: under half a metre on the polar orbit,
-a few centimetres on GPS and GEO. The atmosphere, which bends and dims the
-grazing sunlight, makes the real shadow longer instead; it is not
-modelled and its size is not quantified here (Vokrouhlick&yacute;,
-Farinella & Mignard 1993 give the full theory).
+### Body shapes: `body_shape`
+
+`body_shape` sets the shape of the central body and of every third
+body wherever a shape matters: the shadow (SRP force and eclipse
+events), IMPACT, and the altitude of `[[events.altitude_crossing]]`.
+
+The key is required (the form starts new scenarios on the ellipsoid,
+and loads a TOML without it as `"equatorial_sphere"`, what it ran):
+
+- `"ellipsoid"`: the oblate spheroid of the NAIF kernel
+  `pck00011`, equatorial x polar radius, about the body's spin axis
+  (IAU pole, taken at mid-run). Earth 6378.1366 x 6356.7519 km, Mars
+  3396.19 x 3376.20 km; Mercury and the giant planets too. The Moon,
+  Venus and the Sun are spheres in the kernel and stay spheres.
+  Altitudes are **geodetic**: the height above the spheroid along its
+  normal, as Orekit, GMAT and Tudat report it; the impact maps of the
+  Analysis tab use the geodetic latitude too (chapter 9). A circular polar orbit
+  therefore does not keep a constant altitude: 500 km over the equator
+  is about 521 km over the poles, where the ground is 21 km lower.
+- `"equatorial_sphere"`: a sphere of the equatorial radius, altitude =
+  distance from the centre minus that radius. This is the model of
+  earlier releases and reproduces their runs bit for bit, except
+  around Mars, whose radius was the polar one and is now the
+  equatorial one like every other body's.
+
+**What the ellipsoid changes.** Where the satellite sees the Earth's
+edge at high latitude, the real shadow starts later and ends earlier
+than the sphere's: the contacts move by 7.5 s on a polar low orbit, up
+to 18 s on the ISS (grazing entries stretch the difference), about 4 s
+on GPS and under 0.1 s in GEO. For SRP with A/m = 0.01 m&sup2;/kg this
+is about 28 m of along-track position after 7 days on the ISS orbit;
+with the Sun near the orbit plane the later entry and the earlier exit
+push in opposite directions and cancel, under half a metre on a polar
+orbit and a few centimetres on GPS and GEO. Over the poles an IMPACT or
+an altitude crossing moves by up to 21 km of height: with the sphere,
+an object passing 6 km above the North Pole was declared impacted.
+Laser-station photometry of Envisat entering and leaving the shadow
+(Adhya, Sibthorpe, Ziebart & Cross, J. Spacecraft Rockets 41(1),
+2004) fits an ellipsoidal Earth to 2.6 s rms against 6.4 s for the
+equatorial sphere.
+
+**How it is computed.** The spheroid enters the shadow model with the
+angular radius of its edge, seen from the satellite, in the plane that
+contains the satellite, the body centre and the Sun; stretching the
+polar axis by R_eq / R_pol turns the spheroid into a sphere and keeps
+tangency, so that edge comes in closed form. Geodetic altitude uses
+Bowring's method, the one that already gives the atmosphere model its
+altitude. Both are evaluated only where the two spheres (polar and
+equatorial) disagree about the answer, so the cost is within the
+run-to-run noise (0 to 3 %).
+
+**Checks.** On the same trajectories (ISS, polar LEO, GPS, GEO):
+shadow contacts within 1.1 ms of GMAT's `EclipseLocator` (SPICE,
+exact ellipsoid) and 0.6 ms of Orekit; geodetic altitudes of every
+crossing and impact within 2e-6 mm of SPICE `recgeo` on the same pole
+and 0.27 m of Orekit's ITRF ellipsoid (the IAU pole leaves out
+nutation). With `"equatorial_sphere"` every event and trajectory file
+is identical to the previous release.
+
+The atmosphere, which bends and dims the grazing sunlight, makes the
+real shadow longer; it is not modelled (Vokrouhlick&yacute;, Farinella
+& Mignard 1993 give the full theory), and the Sun is taken at its
+geometric position.
 
 ### Choosing a harmonics degree
 
@@ -786,7 +834,7 @@ radial velocity at trigger (`v_trigger · r̂_trigger`).
 | Key            | Type   | Default | Range    | Description |
 |----------------|--------|---------|----------|-------------|
 | `body`         | string | &mdash; | &ndash;  | Body to measure altitude from. HF: the central body or any entry in `force_model.third_bodies`. CR3BP: one of `cr3bp.primary_1` / `cr3bp.primary_2`. |
-| `altitude_km`  | float  | &mdash; | `> 0`    | Target altitude above the body's mean radius (km). Use the always-on IMPACT detector for surface contact (`altitude_km = 0` is rejected). |
+| `altitude_km`  | float  | &mdash; | `> 0`    | Target altitude above the body's surface (km): geodetic height above the spheroid with `force_model.body_shape = "ellipsoid"`, distance minus the equatorial radius with `"equatorial_sphere"` (see *Body shapes*). CR3BP primaries are spheres of their equatorial radius. Use the always-on IMPACT detector for surface contact (`altitude_km = 0` is rejected). |
 | `action`       | string | `"log"` | `"log"`, `"stop"`, `"log_and_stop"` | Behaviour on trigger. `log` keeps the propagation going (the natural choice for monitoring several bands); `stop` ends the run silently; `log_and_stop` does both. |
 | `refined`      | bool   | `true`  | &mdash;  | When `true` (default), Brent + dense-output localises the trigger inside the accepted step at the integrator's own accuracy (8 &micro;s at `rel_tol` 1e-9 on a lunar impact, 0.03 &micro;s at 1e-11). When `false`, the trigger lands at the end of the accepted step (step-size precision). Refinement is essentially free in steady state &mdash; Brent only runs at the actual sign-change step &mdash; but the toggle is exposed for catalog-style runs with many bands. |
 

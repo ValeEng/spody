@@ -531,6 +531,11 @@ class SectionBuildersMixin:
                        ("off", "tide_free", "zero_tide"))
         self._add_bool(f, "force_model.general_relativity",
                        "general_relativity")
+        # Shape of every body for shadow, impact and altitude. Required
+        # by the engine; a new form starts on the ellipsoid, a TOML
+        # without the key loads as equatorial_sphere (roundtrip.py).
+        self._add_enum(f, "force_model.body_shape", "body_shape",
+                       ("ellipsoid", "equatorial_sphere"))
 
         # Earth-only fields. Visible (and written to TOML) only when
         # central_body == "Earth"; for the Moon (and any other body

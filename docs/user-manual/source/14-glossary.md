@@ -28,6 +28,11 @@ periapsis, in the orbital plane. [Chapter 9.]
 **Batch.** &mdash; A multi-case parameter sweep, driven by a CSV
 file and a column-to-target mapping. [Chapter 7.]
 
+**Body shape.** &mdash; The shape every body has for shadows, impacts
+and altitudes, set by the required `force_model.body_shape`: the
+`pck00011` spheroid (`"ellipsoid"`, geodetic altitude) or the sphere of
+the equatorial radius (`"equatorial_sphere"`). [Chapter 6.]
+
 **Cases file.** &mdash; The CSV file describing one case per row,
 referenced from `batch.cases_file`. [Chapter 7.]
 
@@ -116,6 +121,12 @@ by `force_model.general_relativity`. [Chapter 6.]
 gravity coefficient set, derived from the NASA GRAIL mission's
 observations. SpOdy reads the PDS-distributed `.tab` file at
 runtime. [Chapter 3.]
+
+**Geodetic altitude / latitude.** &mdash; Height above a spheroid
+along its surface normal, and the angle of that normal from the
+equator: the altitude and latitude of a map. What
+`body_shape = "ellipsoid"` uses for IMPACT, altitude crossings and
+the impact maps. [Chapter 6.]
 
 **Hard run-guard.** &mdash; The runtime check that refuses to
 launch the engine if any required data file is missing. It also

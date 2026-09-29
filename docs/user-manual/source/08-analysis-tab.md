@@ -301,7 +301,8 @@ Four export types today:
   the file has at least one IMPACT and the central body has a
   body-fixed frame. One row per impact: `case_id`, body-fixed
   `lat_deg` / `lon_deg` (the same projection as the impact lat/lon
-  maps) and time of flight (`tof_s`, `tof_days`), rows ascending by
+  maps: geodetic latitude for an ellipsoid run on the Earth, as the
+  `# latitude` header line states) and time of flight (`tof_s`, `tof_days`), rows ascending by
   case id.
 - **Band snapshot (per object, at one instant)** &mdash; the
   instantaneous companion of the cumulative bands table, enabled once
@@ -439,7 +440,9 @@ Column layout follows the file's dtype:
   trigger metric in a `distance_km` slot, but the slot is a
   *jolly* (impact distance for IMPACT, eclipse fraction for
   ECLIPSE, satellite-to-body distance for ALT_CROSSING &mdash;
-  subtract `radius_km` for the attained altitude), so the table
+  subtract `radius_km` for the attained altitude; with
+  `body_shape = "ellipsoid"` the slot holds `radius_km` plus the
+  geodetic altitude, so the subtraction still gives the altitude), so the table
   header surfaces it as `trigger_value`. The TOML schema and the
   engine's on-disk format are unchanged &mdash; only the column
   label differs.

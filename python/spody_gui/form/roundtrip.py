@@ -370,6 +370,15 @@ class RoundTripMixin:
                 batch_in.pop("output_dir", None)
                 data = {**data, "batch": batch_in}
 
+            # force_model.body_shape is required by the engine. A TOML
+            # written before the key existed ran on equatorial spheres:
+            # load it as that, so saving it again keeps what it ran
+            # instead of silently switching to the form's ellipsoid.
+            fm_in = data.get("force_model")
+            if isinstance(fm_in, dict) and "body_shape" not in fm_in:
+                data = {**data, "force_model": {**fm_in,
+                                                "body_shape": "equatorial_sphere"}}
+
             # Normalise [output]: the five stream paths in the TOML
             # become booleans (presence -> True). If the TOML doesn't
             # carry `output.output_dir`, derive a best-guess from the

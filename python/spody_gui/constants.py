@@ -98,6 +98,7 @@ def const(name: str, fallback: float) -> float:
 MOON_RADIUS_KM   = const("MOON_RADIUS",   1737.4)
 MOON_MU_KM3_S2   = const("MOON_MU",       4902.8001184575496)
 EARTH_RADIUS_KM  = const("EARTH_RADIUS",  6378.1366)
+EARTH_RADIUS_POLAR_KM = const("EARTH_RADIUS_POLAR", 6356.7519)
 EARTH_MU_KM3_S2  = const("EARTH_MU",      398600.4415)
 
 # CR3BP primary-pair mean separation (mirrors lookup_cr3bp_pair in
@@ -120,7 +121,7 @@ BODY_RADIUS_KM: dict[str, float] = {
     "Venus":   const("VENUS_RADIUS",   6051.8),
     "Earth":   EARTH_RADIUS_KM,
     "Moon":    MOON_RADIUS_KM,
-    "Mars":    const("MARS_RADIUS",    3376.20),
+    "Mars":    const("MARS_RADIUS",    3396.19),
     "Jupiter": const("JUPITER_RADIUS", 71492.0),
     "Saturn":  const("SATURN_RADIUS",  60268.0),
     "Uranus":  const("URANUS_RADIUS",  25559.0),

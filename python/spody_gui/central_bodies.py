@@ -71,6 +71,7 @@ import numpy as np
 from .constants import (
     EARTH_MU_KM3_S2,
     EARTH_RADIUS_KM,
+    EARTH_RADIUS_POLAR_KM,
     MOON_MU_KM3_S2,
     MOON_RADIUS_KM,
 )
@@ -102,11 +103,18 @@ class CentralBodySpec:
     place instead of hardcoding Moon-isms."""
     name:           str
     naif_id:        int
-    radius_km:      float
+    radius_km:      float          # equatorial
     mu_km3_s2:      float
     bf_frame_name:  str
     bf_orientation: BfOrientationFn | None
     bf_orientation_many: BfOrientationManyFn | None
+    # Polar radius of the pck00011 spheroid (force_model.body_shape =
+    # "ellipsoid"); equal to radius_km for a body the kernel models as
+    # a sphere.
+    radius_polar_km: float = 0.0
+
+    def is_spheroid(self) -> bool:
+        return 0.0 < self.radius_polar_km != self.radius_km
 
 
 # ----------------------------------------------------------------------
@@ -203,6 +211,7 @@ _KNOWN_BODIES: dict[str, CentralBodySpec] = {
         bf_frame_name="PA",
         bf_orientation=_moon_orientation,
         bf_orientation_many=_moon_orientation_many,
+        radius_polar_km=MOON_RADIUS_KM,
     ),
     "Earth": CentralBodySpec(
         name="Earth",
@@ -219,6 +228,7 @@ _KNOWN_BODIES: dict[str, CentralBodySpec] = {
         # Earth rotation animation.
         bf_orientation=_earth_orientation,
         bf_orientation_many=_earth_orientation_many,
+        radius_polar_km=EARTH_RADIUS_POLAR_KM,
     ),
 }
 

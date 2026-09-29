@@ -389,7 +389,12 @@ def impact_latlon(events: np.ndarray, info: dict, central_body
         et    = sim.et_start_s + row.t
         R     = central_body.bf_orientation_many(et, eph)  (ICRF -> BF)
         r_bf  = R @ row.y[0:3]
-        lat   = asin(z/|r|),  lon = atan2(y, x)
+        lon   = atan2(y, x)
+        lat   = geodetic latitude on the body's spheroid when the run
+                used force_model.body_shape = "ellipsoid" (the latitude
+                of a map, where the engine found the ground: spopy's twin
+                of spody_bf_to_geodetic); asin(z/|r|) on the equatorial
+                sphere otherwise, and for a body that is a sphere
 
     The body's orientation evolves (lunar libration on a ~day scale,
     Earth GMST on a ~rev/day one) so each impact needs its own rotation
@@ -400,8 +405,16 @@ def impact_latlon(events: np.ndarray, info: dict, central_body
     Body-agnostic via the CentralBodySpec orientation callback -- Moon
     (DE440 librations) and Earth (IAU 2006) today."""
     key = cache_key("latlon", events, int(central_body.naif_id),
-                    float(info["et_start_s"]), str(info["ephemeris_path"]))
+                    float(info["et_start_s"]), str(info["ephemeris_path"]),
+                    str(info.get("body_shape", "equatorial_sphere")))
     return cached(key, lambda: _impact_latlon_impl(events, info, central_body))
+
+
+def impact_lat_is_geodetic(info: dict, central_body) -> bool:
+    """True when impact latitudes are geodetic: an ellipsoid run on a
+    body that is a spheroid in pck00011."""
+    return (info.get("body_shape") == "ellipsoid"
+            and central_body.is_spheroid())
 
 
 def _impact_latlon_impl(events, info, central_body):
@@ -420,9 +433,15 @@ def _impact_latlon_impl(events, info, central_body):
                else np.zeros(n, dtype=int))   # per-run file: single object
     Rs = central_body.bf_orientation_many(et_start + t_sim, eph)
     r_bf = np.einsum("nij,nj->ni", Rs, r_icrf)
-    norm = np.linalg.norm(r_bf, axis=1)
-    lat_deg = np.degrees(np.arcsin(r_bf[:, 2] / norm))
     lon_deg = np.degrees(np.arctan2(r_bf[:, 1], r_bf[:, 0]))
+    if impact_lat_is_geodetic(info, central_body):
+        from spopy import bf_to_geodetic
+        a = central_body.radius_km
+        lat, _lon, _alt = bf_to_geodetic(r_bf, a, a / (a - central_body.radius_polar_km))
+        lat_deg = np.degrees(lat)
+    else:
+        norm = np.linalg.norm(r_bf, axis=1)
+        lat_deg = np.degrees(np.arcsin(r_bf[:, 2] / norm))
     return lat_deg, lon_deg, t_sim / 86400.0, case_id
 
 

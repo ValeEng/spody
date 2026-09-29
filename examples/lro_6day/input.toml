@@ -25,6 +25,7 @@ velocity_kms = [    0.648832282,   -0.519033001,    1.440002498]
 
 [force_model]
 central_body     = "Moon"
+body_shape       = "ellipsoid"                # pck00011 spheroids; "equatorial_sphere" = earlier releases
 harmonics_file   = "../../external/spody-core/raw_data/GRGM1200B/gggrx_1200b_sha.tab"
 harmonics_degree = 80
 third_bodies     = ["Earth", "Sun"]

@@ -133,6 +133,10 @@ static void print_config_summary(const InputConfig *cfg) {
     }
     spody_log_printf("  central body     : %s\n",
            spody_central_body_name(cfg->central_body));
+    if (cfg->dynamics_model != SPODY_DYN_CR3BP)
+        spody_log_printf("  body shape       : %s\n",
+               cfg->body_shape == SPODY_BODY_SHAPE_EQUATORIAL_SPHERE
+               ? "equatorial_sphere" : "ellipsoid");
     spody_log_printf("  harmonics file   : %s  (N=%d%s)\n",
            cfg->harmonics_file, cfg->harmonics_degree,
            cfg->harmonics_adaptive ? ", adaptive" : "");

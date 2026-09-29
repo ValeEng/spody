@@ -36,6 +36,9 @@ Today the package covers:
   `src/spody_time.c` bit-for-bit; on top sit the datetime-level
   `utc_to_et` / `et_to_utc` and the ISO 8601 parse/format helpers
   the GUI's ET <-> UTC fields use.
+- `geodesy.bf_to_geodetic`: body-fixed cartesian -> geodetic latitude /
+  longitude / altitude on a spheroid, twin of `spody_bf_to_geodetic`
+  in `src/spody_math.c` (same Bowring passes).
 
 Together these let the GUI compute, for any ET instant, the ICRF
 positions of Sun/Earth/Moon and the ICRF<->body-fixed rotation
@@ -61,6 +64,7 @@ from .kepler import (
     keplerian_to_cartesian, cartesian_to_keplerian,
 )
 from .cr3bp import inertial_to_synodic, synodic_to_inertial
+from .geodesy import bf_to_geodetic
 from .time import (
     utc_to_et, et_to_utc, parse_utc_iso, format_utc_iso,
 )
@@ -75,5 +79,6 @@ __all__ = [
     "kepler_solve_E", "mean_to_true_anom", "true_to_mean_anom",
     "keplerian_to_cartesian", "cartesian_to_keplerian",
     "inertial_to_synodic", "synodic_to_inertial",
+    "bf_to_geodetic",
     "utc_to_et", "et_to_utc", "parse_utc_iso", "format_utc_iso",
 ]

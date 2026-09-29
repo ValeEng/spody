@@ -242,6 +242,7 @@ arc at degree 70).
 ```toml
 [force_model]
 central_body     = "Moon"
+body_shape       = "ellipsoid"
 harmonics_file   = "../../external/spody-core/raw_data/GRGM1200B/gggrx_1200b_sha.tab"
 harmonics_degree = 80
 third_bodies     = ["Earth", "Sun"]
@@ -253,6 +254,7 @@ An Earth run with drag needs the full asset set:
 ```toml
 [force_model]
 central_body       = "Earth"
+body_shape         = "ellipsoid"
 harmonics_file     = "../../data/EIGEN-6C4/eigen-6c4.tab"
 harmonics_degree   = 70
 eop_file           = "../../data/eop/finals2000A.all"

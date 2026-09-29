@@ -76,6 +76,7 @@ velocity_kms = [    0.269061980,    2.230834330,    3.151614451]
 
 [force_model]
 central_body     = "Earth"
+body_shape       = "ellipsoid"                # pck00011 spheroids; "equatorial_sphere" = earlier releases
 harmonics_file   = "../../data/EIGEN-6C4/eigen-6c4.tab"
 harmonics_degree = 70                # standard for GNSS-altitude propagation
 eop_file         = "../../data/eop/finals2000A.all"

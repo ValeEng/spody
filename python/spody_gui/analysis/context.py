@@ -209,6 +209,10 @@ def resolve_run_context(events_path: Path) -> dict | None:
                              acceleration views rely on that to label
                              each third-body channel with its body name;
                              the binary itself carries only `n_third`.
+        body_shape         : "ellipsoid" | "equatorial_sphere" -- the
+                             snapshot's force_model.body_shape; a
+                             snapshot without the key predates it and
+                             ran on equatorial spheres.
         altitude_crossings : list of {"body": str, "altitude_km": float,
                              "action": str} -- one per configured
                              [[events.altitude_crossing]] entry (empty
@@ -267,6 +271,7 @@ def resolve_run_context(events_path: Path) -> dict | None:
         "duration_s":     float(sim.get("duration_s", 0.0)),
         "ephemeris_path": resolve_ephemeris_path(eph.get("file", ""), toml_path),
         "central_body":   str(force.get("central_body", "")),
+        "body_shape":     str(force.get("body_shape", "equatorial_sphere")),
         "cases_file":     cases_path,
         "toml_path":      toml_path,
         "third_bodies":   third_bodies,

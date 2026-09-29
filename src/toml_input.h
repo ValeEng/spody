@@ -30,6 +30,7 @@
 #include <stddef.h>
 
 #include "app_diagnostics.h"   /* SpodyError, SpodyErrorCode */
+#include "spody_math.h"        /* SpodyBodyShape */
 #include "central_body.h"      /* SpodyCentralBody + registry helpers */
 #include "dynamics_model.h"    /* SpodyDynamicsModel + registry helpers */
 
@@ -55,6 +56,13 @@ typedef enum {
     SPODY_TIDES_TIDE_FREE = 1,   /* file holds no tide: add all of it    */
     SPODY_TIDES_ZERO_TIDE = 2    /* file holds the permanent deformation */
 } SpodySolidTideSystem;
+
+/* force_model.body_shape: shape of every body for shadow, IMPACT and
+ * altitude. */
+typedef enum {
+    SPODY_BODY_SHAPE_ELLIPSOID         = 0,  /* pck00011 spheroid           */
+    SPODY_BODY_SHAPE_EQUATORIAL_SPHERE = 1   /* sphere of equatorial radius */
+} SpodyBodyShapeModel;
 
 typedef enum {
     SPODY_FRAME_CENTRAL_INERTIAL  = 0,  /* HF: ICRF-aligned, central body
@@ -309,6 +317,13 @@ typedef struct {
      * albedo + infrared on the spacecraft (Knocke et al. 1988). Earth
      * central body and SRP surface data required. */
     int              enable_earth_radiation_pressure;
+    /* body_shape: REQUIRED (HF), "ellipsoid" | "equatorial_sphere".
+     * The shape of the central body and of every third body wherever a
+     * shape matters: the shadow of the SRP force and of the eclipse
+     * event, IMPACT, and the altitude of altitude crossings (geodetic
+     * above the spheroid, or distance minus equatorial radius). Bodies
+     * that are spheres in pck00011 are the same either way. */
+    int              body_shape;           /* SpodyBodyShapeModel */
     /* Earth-only assets. Required (and validated to exist) when
      * central_body == Earth, ignored otherwise. The GUI writes these
      * fields ONLY for Earth; for Moon-or-other they stay empty strings.
@@ -437,8 +452,8 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err);
 
 /*
  * Resolve a third-body name (e.g. "Earth", "Sun") to its NAIF id, the
- * matching gravitational parameter (km^3/s^2) and the mean body radius
- * (km, used as the impact threshold). Each out-pointer may be NULL.
+ * matching gravitational parameter (km^3/s^2) and the equatorial body
+ * radius (km). Each out-pointer may be NULL.
  * Returns 0 on success or -1 if the name is unknown. Used by sim_setup
  * to populate the ForceModelContext, by the validator to catch bad
  * names early, and by sim_run to build the always-on IMPACT event list.
@@ -454,6 +469,17 @@ int spody_lookup_third_body(const char *name, int *naif_id,
  */
 int spody_lookup_body_by_naif(int naif_id, const char **name,
                               double *mu, double *radius_km);
+
+/*
+ * Shape of body `naif_id` under force_model.body_shape (a
+ * SpodyBodyShapeModel): the equatorial radius, plus -- for the
+ * ellipsoid and a body pck00011 models as a spheroid -- the polar
+ * radius and the spin axis in ICRF at `et` (IAU WGCCRE elements).
+ * Otherwise r_pol = 0: a sphere of the equatorial radius. Returns 0,
+ * or -1 for an unknown id.
+ */
+int spody_lookup_body_shape(int naif_id, int body_shape, double et,
+                            SpodyBodyShape *shape);
 
 #ifdef __cplusplus
 }

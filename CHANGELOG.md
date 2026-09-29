@@ -8,6 +8,39 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Body shapes: `force_model.body_shape` (required),
+  `"ellipsoid"` or `"equatorial_sphere"`.** With `"ellipsoid"` every
+  body the NAIF kernel `pck00011` models as an oblate spheroid (Earth
+  6378.1366 x 6356.7519 km, Mars, Mercury, the giant planets) has that
+  shape, about its IAU spin axis taken at mid-run, for: the shadow of
+  the SRP force and of the eclipse event (the limb in the plane of
+  satellite, body centre and Sun, found in closed form by stretching
+  the polar axis into a sphere, the construction of Adhya et al., J.
+  Spacecraft Rockets 41(1), 2004, extended to the lit fraction); IMPACT
+  (contact with the spheroid); altitude crossings (geodetic altitude,
+  Bowring, the same routine as the atmosphere model). The Moon, Venus
+  and the Sun are spheres in the kernel and do not change.
+  `"equatorial_sphere"` is the sphere of the equatorial radius of
+  earlier releases, bit for bit. Effect on the Earth: shadow contacts
+  move by up to 18 s on the ISS, 7.5 s on a polar LEO, 4 s on GPS,
+  < 0.1 s in GEO; SRP with A/m = 0.01 m^2/kg drifts 28 m along track
+  in 7 days on the ISS orbit (< 0.3 m on a polar orbit with the Sun in
+  its plane, cm on GPS); IMPACT and altitudes move by up to 21 km of
+  height over the poles (an object 6 km above the North Pole was
+  declared impacted). Checks, same trajectories: shadow contacts
+  within 1.1 ms of GMAT's `EclipseLocator` (SPICE, exact ellipsoid)
+  and 0.6 ms of Orekit 13.1.8; geodetic altitudes of every crossing
+  and impact within 2e-6 mm of SPICE `recgeo` on the same pole and
+  0.27 m of Orekit's ITRF ellipsoid (the IAU pole has no nutation).
+  Cost within run-to-run noise (0-3 %): limb and geodetic altitude are
+  computed only where the polar and the equatorial sphere disagree.
+  The accelerations and trajectory files are unchanged in format; in
+  the events file `distance_km - radius_km` is the geodetic altitude
+  with the ellipsoid. GUI: `body_shape` row in `[force_model]`; the
+  impact maps and CSV give the geodetic latitude for an ellipsoid run
+  on the Earth (`spopy.bf_to_geodetic`, twin of the engine's routine,
+  agrees with SPICE to 4e-16 rad); `spody validate` prints the shape.
+
 - **Earth radiation pressure** (`force_model.earth_radiation_pressure
   = true`): sunlight reflected by the Earth (albedo, dayside only) and
   its thermal infrared, with the latitude- and season-dependent albedo
@@ -228,6 +261,22 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   window, since both move the epoch. Chapter 13 lists the message.
 
 ### Changed
+
+- **`force_model.body_shape` is required.** It changes shadows,
+  impacts and altitudes, so every input states which shape it runs; a
+  TOML without it is refused with a message naming the two values.
+  `body_shape = "equatorial_sphere"` reproduces an existing scenario
+  bit for bit (see the next item for Mars). The bundled examples now
+  say `"ellipsoid"`; their results do not change (no SRP near the
+  Earth, the Moon is a sphere). The form starts new scenarios on the
+  ellipsoid and loads a TOML without the key as `"equatorial_sphere"`,
+  what it ran.
+
+- **`MARS_RADIUS` is the equatorial radius, 3396.19 km** (was the
+  polar 3376.20, the only body not on its equatorial one), with
+  `MARS_RADIUS_POLAR` for the spheroid. With `"equatorial_sphere"` an
+  object at the Martian equator was declared impacted 20 km below the
+  surface; now the sphere is the equatorial one, as for every body.
 
 - **The central two-body term takes the GM of the gravity file; the
   Moon's GM is DE440's.** Normalized spherical-harmonic coefficients

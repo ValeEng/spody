@@ -97,20 +97,29 @@ typedef struct {
     const char *name;
     int         naif_id;
     double      mu;
-    double      radius_km;   /* mean equatorial radius from spody_const.h */
+    double      radius_km;        /* equatorial radius (spody_const.h)   */
+    double      radius_polar_km;  /* 0 = a sphere in pck00011            */
+    double      pole_ra0, pole_ra1, pole_dec0, pole_dec1;   /* deg, deg/cy */
 } BodyEntry;
 
 static const BodyEntry BODY_TABLE[] = {
-    { "Sun",     10,  SUN_MU,     SUN_RADIUS     },
-    { "Mercury", 199, MERCURY_MU, MERCURY_RADIUS },
-    { "Venus",   299, VENUS_MU,   VENUS_RADIUS   },
-    { "Earth",   399, EARTH_MU,   EARTH_RADIUS   },
-    { "Moon",    301, MOON_MU,    MOON_RADIUS    },
-    { "Mars",    499, MARS_MU,    MARS_RADIUS    },
-    { "Jupiter", 599, JUPITER_MU, JUPITER_RADIUS },
-    { "Saturn",  699, SATURN_MU,  SATURN_RADIUS  },
-    { "Uranus",  799, URANUS_MU,  URANUS_RADIUS  },
-    { "Neptune", 899, NEPTUNE_MU, NEPTUNE_RADIUS }
+    { "Sun",     10,  SUN_MU,     SUN_RADIUS,     0.0, 0.0, 0.0, 0.0, 0.0 },
+    { "Mercury", 199, MERCURY_MU, MERCURY_RADIUS, MERCURY_RADIUS_POLAR,
+      MERCURY_POLE_RA0, MERCURY_POLE_RA1, MERCURY_POLE_DEC0, MERCURY_POLE_DEC1 },
+    { "Venus",   299, VENUS_MU,   VENUS_RADIUS,   0.0, 0.0, 0.0, 0.0, 0.0 },
+    { "Earth",   399, EARTH_MU,   EARTH_RADIUS,   EARTH_RADIUS_POLAR,
+      EARTH_POLE_RA0, EARTH_POLE_RA1, EARTH_POLE_DEC0, EARTH_POLE_DEC1 },
+    { "Moon",    301, MOON_MU,    MOON_RADIUS,    0.0, 0.0, 0.0, 0.0, 0.0 },
+    { "Mars",    499, MARS_MU,    MARS_RADIUS,    MARS_RADIUS_POLAR,
+      MARS_POLE_RA0, MARS_POLE_RA1, MARS_POLE_DEC0, MARS_POLE_DEC1 },
+    { "Jupiter", 599, JUPITER_MU, JUPITER_RADIUS, JUPITER_RADIUS_POLAR,
+      JUPITER_POLE_RA0, JUPITER_POLE_RA1, JUPITER_POLE_DEC0, JUPITER_POLE_DEC1 },
+    { "Saturn",  699, SATURN_MU,  SATURN_RADIUS,  SATURN_RADIUS_POLAR,
+      SATURN_POLE_RA0, SATURN_POLE_RA1, SATURN_POLE_DEC0, SATURN_POLE_DEC1 },
+    { "Uranus",  799, URANUS_MU,  URANUS_RADIUS,  URANUS_RADIUS_POLAR,
+      URANUS_POLE_RA0, URANUS_POLE_RA1, URANUS_POLE_DEC0, URANUS_POLE_DEC1 },
+    { "Neptune", 899, NEPTUNE_MU, NEPTUNE_RADIUS, NEPTUNE_RADIUS_POLAR,
+      NEPTUNE_POLE_RA0, NEPTUNE_POLE_RA1, NEPTUNE_POLE_DEC0, NEPTUNE_POLE_DEC1 }
 };
 static const int N_BODY_TABLE = (int)(sizeof BODY_TABLE / sizeof BODY_TABLE[0]);
 
@@ -137,6 +146,24 @@ int spody_lookup_body_by_naif(int naif_id, const char **name,
             if (radius_km) *radius_km = BODY_TABLE[i].radius_km;
             return 0;
         }
+    }
+    return -1;
+}
+
+int spody_lookup_body_shape(int naif_id, int body_shape, double et,
+                            SpodyBodyShape *shape) {
+    for (int i = 0; i < N_BODY_TABLE; ++i) {
+        const BodyEntry *b = &BODY_TABLE[i];
+        if (b->naif_id != naif_id) continue;
+        shape->r_eq  = b->radius_km;
+        shape->r_pol = 0.0;
+        shape->pole[0] = shape->pole[1] = shape->pole[2] = 0.0;
+        if (body_shape == SPODY_BODY_SHAPE_ELLIPSOID && b->radius_polar_km > 0.0) {
+            shape->r_pol = b->radius_polar_km;
+            spody_iau_pole(b->pole_ra0, b->pole_ra1, b->pole_dec0,
+                           b->pole_dec1, et, shape->pole);
+        }
+        return 0;
     }
     return -1;
 }
@@ -840,6 +867,34 @@ static int parse_force_model(toml_table_t *root, const char *toml_dir,
                     "force_model.solid_tides must be \"tide_free\" or "
                     "\"zero_tide\" (the tide system of the gravity file); "
                     "leave the key out for no solid tide");
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+
+    /* body_shape: REQUIRED, no default -- the shape changes shadows,
+     * impacts and altitudes, so every input states which one it runs.
+     * A TOML written before the key existed is refused with a message
+     * that names the value reproducing it ("equatorial_sphere"). */
+    {
+        char shape[32] = {0};
+        int has = 0;
+        if ((rc = opt_string(t, "body_shape", shape, sizeof shape, &has))) return rc;
+        if (!has) {
+            spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                    "missing key force_model.body_shape: \"ellipsoid\" "
+                    "(pck00011 spheroids, geodetic altitude) or "
+                    "\"equatorial_sphere\" (the model of releases before "
+                    "the key existed)");
+            return SPODY_ERR_MISSING_KEY;
+        }
+        if (strcmp(shape, "ellipsoid") == 0)
+            cfg->body_shape = SPODY_BODY_SHAPE_ELLIPSOID;
+        else if (strcmp(shape, "equatorial_sphere") == 0)
+            cfg->body_shape = SPODY_BODY_SHAPE_EQUATORIAL_SPHERE;
+        else {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "force_model.body_shape must be \"ellipsoid\" or "
+                    "\"equatorial_sphere\"");
             return SPODY_ERR_BAD_VALUE;
         }
     }

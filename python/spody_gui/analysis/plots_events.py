@@ -46,6 +46,7 @@ from .context import PlotContext, ctx_missing_message, resolve_run_context
 from .derived import (
     decimate_for_display,
     events_digest,
+    impact_lat_is_geodetic,
     impact_latlon,
     time_axis,
 )
@@ -224,6 +225,7 @@ def impacts_latlon_csv(d: np.ndarray, ctx: "PlotContext") -> str | None:
         f"# body_name,{ctx.central_body.name}",
         f"# body_naif,{ctx.central_body.naif_id}",
         f"# bf_frame,{ctx.central_body.bf_frame_name}",
+        f"# latitude,{'geodetic' if impact_lat_is_geodetic(info, ctx.central_body) else 'geocentric'}",
         f"# n_impacts,{int(mask.sum())}",
         "case_id,lat_deg,lon_deg,tof_s,tof_days",
     ]
@@ -612,7 +614,8 @@ def _plot_events_impact_map(ax: Axes, d: np.ndarray,
     ax.set_aspect("equal", adjustable="box")
     bf_tag = ctx.central_body.bf_frame_name
     ax.set_xlabel(f"Longitude [deg, {bf_tag} frame]")
-    ax.set_ylabel(f"Latitude [deg, {bf_tag} frame]")
+    lat_kind = "geodetic" if impact_lat_is_geodetic(info, ctx.central_body) else "geocentric"
+    ax.set_ylabel(f"{lat_kind.capitalize()} latitude [deg, {bf_tag} frame]")
     title = (f"Impact locations on {ctx.central_body.name} ({bf_tag} frame)  "
              f"--  {n_imp} impacts")
     if not bg_ok:
@@ -812,6 +815,10 @@ def _plot_events_impact_3d(canvas: VtkCanvas, d: np.ndarray,
                             axis=1)
     lat = np.radians(lat_deg)
     lon = np.radians(lon_deg)
+    if impact_lat_is_geodetic(info, body):
+        # Back to the direction of the point: on the spheroid's surface
+        # (where an impact sits) tan(geocentric) = (b/a)^2 tan(geodetic).
+        lat = np.arctan((body.radius_polar_km / body.radius_km) ** 2 * np.tan(lat))
     r_bf_arr = np.column_stack((r_norm * np.cos(lat) * np.cos(lon),
                                 r_norm * np.cos(lat) * np.sin(lon),
                                 r_norm * np.sin(lat)))

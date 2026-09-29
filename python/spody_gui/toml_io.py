@@ -83,7 +83,7 @@ _KEY_ORDER: dict[str, tuple[str, ...]] = {
     "debris":        ("am_srp", "Cr"),
     "initial_state": ("frame", "position_km", "velocity_kms"),
     "cr3bp":         ("primary_1", "primary_2"),
-    "force_model":   ("central_body", "harmonics_file", "harmonics_degree",
+    "force_model":   ("central_body", "body_shape", "harmonics_file", "harmonics_degree",
                       "harmonics_adaptive", "third_bodies", "srp"),
     "ephemeris":     ("file",),
     "integrator":    ("type", "rel_tol", "h_init_s", "h_min_s", "h_max_s"),

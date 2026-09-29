@@ -311,20 +311,14 @@ static int emit_life_markers(spody_event_kind kind, double t,
     for (int i = 0; i < n_events; ++i) {
         if (events[i].kind != SPODY_EVENT_KIND_IMPACT) continue;
 
-        double dx = y[0], dy = y[1], dz = y[2];
-        if (events[i].has_ref_point) {
-            dx -= events[i].ref_point[0];
-            dy -= events[i].ref_point[1];
-            dz -= events[i].ref_point[2];
-        } else if (events[i].naif_id != ctx->naif_central) {
+        if (!events[i].has_ref_point && events[i].naif_id != ctx->naif_central)
             continue;   /* third body: distance needs the ephemeris */
-        }
 
-        SpodyEvent m = events[i];   /* naif_id, radius_km, ref point */
+        SpodyEvent m = events[i];   /* naif_id, radius_km, shape, ref point */
         m.kind      = kind;
         m.t_trigger = t;
         for (int k = 0; k < 6; ++k) m.y_trigger[k] = y[k];
-        m.distance_at_trigger = sqrt(dx * dx + dy * dy + dz * dz);
+        m.distance_at_trigger = spody_event_body_distance(&events[i], ctx, t, y);
 
         if (evt_fp && emit_event(evt_fp, &m) < 0) return -1;
         if (batch_sink && emit_event_batch(batch_sink, &m) < 0) return -1;
@@ -337,7 +331,7 @@ static int emit_life_markers(spody_event_kind kind, double t,
  *
  * IMPACT is always on: one SpodyEvent per body in the force model
  *   - central body : threshold = ctx->R_central
- *   - each third   : threshold from BODY_TABLE (mean equatorial radius)
+ *   - each third   : threshold from BODY_TABLE (equatorial radius)
  * action = LOG_AND_STOP (an impact ends the propagation).
  *
  * ECLIPSE is opt-in (cfg->eclipse_event_enabled): one SpodyEvent on the
@@ -347,6 +341,20 @@ static int emit_life_markers(spody_event_kind kind, double t,
  * Third bodies with no known radius are skipped silently (the validator
  * already gates names against BODY_TABLE). Heap-owned, freed in cleanup.
  * -------------------------------------------------------------------------- */
+/* Give an HF event the shape of its body (force_model.body_shape), spin
+ * axis at mid-run as for the SRP occulters in sim_setup. A sphere, or
+ * a body missing from the table, leaves the event as constructed. */
+static void set_event_body_shape(SpodyEvent *ev, const InputConfig *cfg) {
+    SpodyBodyShape s;
+    double et_shape = cfg->et_start_s + 0.5 * cfg->duration_s;
+    if (spody_lookup_body_shape(ev->naif_id, cfg->body_shape, et_shape, &s) != 0
+        || !(s.r_pol > 0.0)) return;
+    ev->polar_radius_km = s.r_pol;
+    ev->pole[0] = s.pole[0];
+    ev->pole[1] = s.pole[1];
+    ev->pole[2] = s.pole[2];
+}
+
 static int build_events(const InputConfig *cfg, const SimulationWorker *w,
                         SpodyEvent **out_events, int *out_n,
                         SpodyError *err) {
@@ -409,6 +417,7 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
     /* IMPACT: central body. */
     ev[n] = spody_event_impact(w->ctx.naif_central, w->ctx.R_central,
                                SPODY_EVENT_ACTION_LOG_AND_STOP);
+    set_event_body_shape(&ev[n], cfg);
     n++;
 
     /* IMPACT: third bodies. */
@@ -420,6 +429,7 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
         }
         ev[n] = spody_event_impact(w->third_naif[i], r_km,
                                    SPODY_EVENT_ACTION_LOG_AND_STOP);
+        set_event_body_shape(&ev[n], cfg);
         n++;
     }
 
@@ -428,6 +438,7 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
         ev[n] = spody_event_eclipse(w->ctx.naif_central, w->ctx.R_central,
                                     cfg->eclipse_threshold,
                                     SPODY_EVENT_ACTION_LOG);
+        set_event_body_shape(&ev[n], cfg);
         n++;
     }
 
@@ -452,6 +463,7 @@ static int build_events(const InputConfig *cfg, const SimulationWorker *w,
         ev[n] = spody_event_altitude_crossing(naif, r_km, ac->altitude_km,
                                                (spody_event_action)ac->action);
         ev[n].refined = ac->refined;
+        set_event_body_shape(&ev[n], cfg);
         n++;
     }
 
