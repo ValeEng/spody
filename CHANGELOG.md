@@ -287,6 +287,13 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **`spody propagate` times the integration with a monotonic
+  microsecond clock.** The `done in` line now prints six decimals and
+  uses the same wall clock as `spody batch` (`omp_get_wtime`) instead
+  of `clock()`, whose 1 ms step on Windows made runs under ~50 ms
+  unmeasurable and which counts CPU rather than wall time on Linux and
+  macOS. Results are unchanged bit for bit; only the reported time
+  moves.
 - **`force_model.body_shape` is required.** It changes shadows,
   impacts and altitudes, so every input states which shape it runs; a
   TOML without it is refused with a message naming the two values.

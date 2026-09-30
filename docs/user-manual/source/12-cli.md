@@ -129,13 +129,15 @@ the form additionally writes the same values as a comment under
 what the integrator actually did.
 
 ```
-  done in 6.394 s (final state at t=603900 s)
+  done in 0.553046 s (final state at t=603900 s)
   integrator: 11232 accepted steps, 0 rejected, 67393 RHS evaluations
 ```
 
 The timing brackets the integration only &mdash; parsing, ephemeris
 loading and harmonics loading all happen before the clock starts, so
-a 250 MB gravity file does not inflate the figure.
+a 250 MB gravity file does not inflate the figure. It is wall-clock
+time from a monotonic clock with microsecond resolution, so even a
+run of a few milliseconds gets a meaningful figure.
 
 The three counters measure the work rather than the machine, which is
 what makes them comparable between runs on different hardware, and
