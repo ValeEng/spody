@@ -349,9 +349,9 @@ static int cmd_propagate(int argc, char **argv) {
         return 1;
     }
 
-    clock_t t0 = clock();
+    double t0 = now_seconds();
     int rc = spody_run_simulation(&cfg, &w, NULL, &err);
-    double wall_s = (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
+    double wall_s = now_seconds() - t0;
 
     if (rc != SPODY_OK) {
         if (err.file[0] == '\0') {
@@ -364,7 +364,7 @@ static int cmd_propagate(int argc, char **argv) {
         return 1;
     }
 
-    spody_log_printf("  done in %.3f s (final state at t=%.6g s)\n",
+    spody_log_printf("  done in %.6f s (final state at t=%.6g s)\n",
            wall_s, w.integ.t);
     spody_log_printf("  integrator: %zu accepted steps, %zu rejected, "
            "%zu RHS evaluations\n",
