@@ -128,6 +128,12 @@ equator: the altitude and latitude of a map. What
 `body_shape = "ellipsoid"` uses for IMPACT, altitude crossings and
 the impact maps. [Chapter 6.]
 
+**TDB / TT.** &mdash; Barycentric Dynamical Time, the time of the
+ephemerides (ET = TDB seconds past J2000), and Terrestrial Time, the
+time of the geocentric system; they differ by a &plusmn;1.66 ms annual
+term. The integrator advances TDB, or TT with `integrator.time_scale =
+"tt"` around the Earth. [Chapter 6.]
+
 **Hard run-guard.** &mdash; The runtime check that refuses to
 launch the engine if any required data file is missing. It also
 blocks the **Validate** button for the same reason. [Chapter 3,

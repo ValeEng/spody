@@ -1168,7 +1168,19 @@ Shortest recipe, sharpest edges:
    bit-identity guarantee comes from both sides executing the same
    IEEE-754 operations in the same order against the same libm.
 3. Re-verify per §6.3 (dense hexfloat sweep, zero-ULP).
-4. If the change alters results (physics): treat outputs as a
+4. **Two times, two functions.** The integrator's `t` is not always
+   ET - et0: with `integrator.time_scale = "tt"` it counts TT seconds.
+   Every absolute time handed to physics (ephemeris, rotation, space
+   weather, events) goes through `spody_ctx_et(ctx, t)`; every time
+   written to a file goes through `spody_ctx_label(ctx, t)` (ET - et0),
+   and file-side epochs come back with `spody_ctx_t_of_label` (the
+   output grid, the end of the run). Never write `ctx->et0 + t` or
+   emit a raw integrator `t`: in TDB mode the helpers return exactly
+   what that would, so the mistake only shows in TT runs, as a
+   1.7 ms-scale label error. Verify a change here with a two-body TT
+   run against Orekit (1 mm on 7 days) and the TDB default against
+   the bit-identity regression.
+5. If the change alters results (physics): treat outputs as a
    deliberate compat break — measure, update stored example
    references and `et_start_s` values where the epoch semantics
    moved, and write the numbers in the CHANGELOG (the 2026-07 deltet

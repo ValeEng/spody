@@ -8,6 +8,31 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Integration in TT around the Earth: `integrator.time_scale =
+  "tt"`** (optional; default `"tdb"`, every earlier run bit for bit).
+  The IERS Conventions 2010 (TN36 sec. 10.3) give TT or TCG as the
+  independent variable of geocentric satellite equations of motion;
+  SpOdy advances TDB, like Tudat. The two differ by a periodic
+  +/-1.657 ms annual term, so a TDB integration moves an Earth
+  satellite along track by v * Delta(TDB - TT): up to 1.54 m in 7 days
+  on a LEO and 0.79 m on GPS (early January / July), 0.08 / 0.04 m in
+  April. With `"tt"` the integrator's time is TT from the start
+  instant; ephemerides, Earth rotation and space weather still get ET
+  (`spody_ctx_et`: tt + (TDB-TT)(tt), < 6e-13 s off), and every file
+  keeps ET - et0 as its time column, on the same ET grid
+  (`spody_ctx_label`, `spody_ctx_t_of_label`). Checked, two-body LEO
+  and GPS, 7 days, January / April / July: "tt" agrees with Orekit
+  13.1.8 to 1 mm and GMAT R2025a (both TT-based) to a few mm, "tdb"
+  with Tudat (TDB) to 0.3 mm, the two groups apart by exactly
+  v * Delta(TDB - TT); eclipse contacts of a "tt" run within 0.3 us of
+  Orekit on the same trajectory. Cost 1-4 % (one TDB-TT evaluation per
+  force call). Earth only: refused for the Moon (its analogue is TCL,
+  IAU 2024 Resolution II) and CR3BP. A TOML without the key runs in
+  TDB, bit for bit; the form writes the key on every high-fidelity
+  scenario and the bundled examples state `time_scale = "tdb"`. GUI:
+  `time_scale` row in `[integrator]`, shown for the Earth; `spody
+  validate` prints the scale.
+
 - **Body shapes: `force_model.body_shape` (required),
   `"ellipsoid"` or `"equatorial_sphere"`.** With `"ellipsoid"` every
   body the NAIF kernel `pck00011` models as an oblate spheroid (Earth

@@ -750,11 +750,51 @@ Integration algorithm and tolerances. Required.
 | `h_init_s`  | float  | &mdash;  | `> 0`  | Initial step size in seconds. Normally somewhere between `h_min_s` and `h_max_s`. |
 | `h_min_s`   | float  | &mdash;  | `> 0`  | Minimum allowed step size. The integrator gives up and reports failure if it would need to step smaller than this. |
 | `h_max_s`   | float  | &mdash;  | `> h_min_s` | Maximum allowed step size. Useful as a guard against the integrator picking very large steps in low-perturbation regions and missing events. |
+| `time_scale` | string | `"tdb"` | `"tdb"`, `"tt"` | Time coordinate the integrator advances: TDB for every central body, or TT, the IERS geocentric time, Earth only. A missing key means `"tdb"`; the form and the bundled examples write it anyway, so a scenario says which time it runs. Output files are labelled in ET either way. See *Integration time scale* below. |
 
 A typical low-lunar-orbit setup uses `rel_tol = 1e-11`,
 `h_init_s = 60`, `h_min_s = 1e-5`, `h_max_s = 2700`. The relatively
 large `h_max_s` (45 minutes) is harmless because the adaptive
 controller picks smaller steps where the dynamics need them.
+
+### Integration time scale
+
+By default the integrator advances **TDB** (Barycentric Dynamical
+Time), the time of the JPL ephemerides and of every ET in SpOdy, for
+any central body. It is the choice of SPICE-based tools (Tudat does
+the same) and is enough for most work.
+
+Around the Earth the equations of motion are, strictly, those of the
+geocentric reference system, whose time coordinate is TT: *"The
+independent variable of the satellite equations of motion may be ...
+either TT or TCG"* (IERS Conventions 2010, TN36 sec. 10.3). TDB and TT
+tick at the same average rate but differ by a periodic term, about
+1.657 ms &times; sin(g) over the year, because the Earth runs faster
+and deeper in the Sun's potential in January than in July. Advancing
+the satellite with TDB therefore moves it along its orbit by
+v &middot; &Delta;(TDB &minus; TT): up to 1.5 m in 7 days on a LEO and
+0.8 m on GPS around early January and early July, almost nothing
+around April and October (the term is periodic: over a year it swings
+by about &plusmn;13 m on a LEO).
+
+`time_scale = "tt"` integrates in TT instead (Earth central body only;
+any other body, or CR3BP, is refused). Ephemerides, Earth rotation and
+space weather still receive ET, converted from TT with the same
+TDB&minus;TT term as the rest of SpOdy, and every file keeps its time
+column as ET &minus; `et_start_s`, the output grid on the same round ET
+epochs: only the physics changes. Measured on a two-body LEO and GPS,
+7 days, three seasons: SpOdy with `"tt"` agrees with Orekit to 1 mm
+and GMAT, both TT-based, to a few mm; with `"tdb"` it agrees with
+Tudat (TDB) to 0.3 mm and differs from the TT tools by exactly
+v &middot; &Delta;(TDB &minus; TT). Cost: 1 to 4 % of run time. The
+default `"tdb"` reproduces earlier runs bit for bit, written or not: a
+TOML without the key runs in TDB, identical to one with
+`time_scale = "tdb"`; the form writes the key on every high-fidelity
+scenario (`"tdb"` for any body but the Earth).
+
+For a lunar orbiter the analogue of TT is Lunar Coordinate Time (TCL,
+IAU 2024 Resolution II), not yet available in SpOdy: lunar runs use
+TDB.
 
 ## `[output]`
 

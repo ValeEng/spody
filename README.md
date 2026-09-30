@@ -49,6 +49,10 @@ PyInstaller bundle.
   uniformly bright sphere).
 - **General relativity**: the Schwarzschild term of the central body
   (IERS 2010 eq. 10.12), checked against Orekit and Tudat.
+- **TDB or TT integration**: TDB by default (the ephemerides' time, as
+  in Tudat); `integrator.time_scale = "tt"` integrates Earth orbits in
+  TT as the IERS Conventions prescribe (up to 1.5 m in 7 days on a LEO),
+  agreeing with Orekit to 1 mm.
 - **Multi-occulter SRP eclipse**: every third body can shade the
   satellite, overlapping shadows combined by inclusion&ndash;exclusion,
   so the Earth darkens a lunar orbiter.
