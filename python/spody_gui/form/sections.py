@@ -641,6 +641,10 @@ class SectionBuildersMixin:
                     self._fm_ds_row, self._fm_dsf_row, self._fm_drag_row,
                     self._fm_erp_row):
             self._fm_force_form.setRowVisible(row, is_earth)
+        # integrator.time_scale = "tt" is Earth only (the engine refuses
+        # it elsewhere); the [integrator] group is built after this one.
+        if hasattr(self, "_int_form"):
+            self._int_form.setRowVisible(self._int_ts_row, is_earth)
 
         if is_earth and self._store is not None:
             data_root = self._store.data_dir()
@@ -686,6 +690,14 @@ class SectionBuildersMixin:
         self._add_float(f, "integrator.h_init_s", "h_init_s")
         self._add_float(f, "integrator.h_min_s",  "h_min_s")
         self._add_float(f, "integrator.h_max_s",  "h_max_s")
+        # Time coordinate the integrator advances: TDB (default, every
+        # body) or TT (IERS geocentric, Earth only; hidden otherwise).
+        self._int_form = f
+        self._int_ts_row = f.rowCount()
+        self._add_enum (f, "integrator.time_scale", "time_scale", ("tdb", "tt"))
+        cb = self._widgets.get("force_model.central_body")
+        if cb is not None:
+            self._on_central_body_changed(cb.currentText())
         return g
 
     def _build_output(self) -> QGroupBox:

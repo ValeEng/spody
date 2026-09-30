@@ -238,10 +238,11 @@ int spody_open_batch_events(const char *path, FILE **out_fp) {
     return 0;
 }
 
-static int emit_event(FILE *fp, const SpodyEvent *ev) {
+static int emit_event(FILE *fp, const SpodyEvent *ev,
+                      const ForceModelContext *ctx) {
     if (!fp) return 0;
     EventRecord r;
-    r.t           = ev->t_trigger;
+    r.t           = spody_ctx_label(ctx, ev->t_trigger);   /* ET - et0 */
     r.kind        = (int)ev->kind;
     r.naif_id     = ev->naif_id;
     r.radius_km   = ev->radius_km;
@@ -256,12 +257,13 @@ static int emit_event(FILE *fp, const SpodyEvent *ev) {
  * a function-local auto variable so each thread has its own copy of the
  * return value -- declaring it outside the critical would make it shared
  * and last-writer-wins. */
-static int emit_event_batch(BatchEventSink *sink, const SpodyEvent *ev) {
+static int emit_event_batch(BatchEventSink *sink, const SpodyEvent *ev,
+                            const ForceModelContext *ctx) {
     if (!sink || !sink->fp) return 0;
     BatchEventRecord r;
     r.case_idx     = sink->case_idx;
     r._pad         = 0;
-    r.ev.t           = ev->t_trigger;
+    r.ev.t           = spody_ctx_label(ctx, ev->t_trigger);   /* ET - et0 */
     r.ev.kind        = (int)ev->kind;
     r.ev.naif_id     = ev->naif_id;
     r.ev.radius_km   = ev->radius_km;
@@ -320,8 +322,8 @@ static int emit_life_markers(spody_event_kind kind, double t,
         for (int k = 0; k < 6; ++k) m.y_trigger[k] = y[k];
         m.distance_at_trigger = spody_event_body_distance(&events[i], ctx, t, y);
 
-        if (evt_fp && emit_event(evt_fp, &m) < 0) return -1;
-        if (batch_sink && emit_event_batch(batch_sink, &m) < 0) return -1;
+        if (evt_fp && emit_event(evt_fp, &m, ctx) < 0) return -1;
+        if (batch_sink && emit_event_batch(batch_sink, &m, ctx) < 0) return -1;
     }
     return 0;
 }
@@ -512,8 +514,8 @@ static int check_events(SpodyEvent *events, int n_events,
          * events_log so evt_fp is NULL in batch mode -- the two sinks
          * never write simultaneously in normal use. */
         if (do_log) {
-            if (evt_fp && emit_event(evt_fp, &events[i]) < 0) return -1;
-            if (batch_sink && emit_event_batch(batch_sink, &events[i]) < 0)
+            if (evt_fp && emit_event(evt_fp, &events[i], ctx) < 0) return -1;
+            if (batch_sink && emit_event_batch(batch_sink, &events[i], ctx) < 0)
                 return -1;
         }
         if (do_stop && !stop) {
@@ -612,7 +614,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
     }
 
     /* ----- initial sample (both modes) ----- */
-    if (emit_trajectory(csv, bin, w->integ.t, w->integ.y) < 0) {
+    if (emit_trajectory(csv, bin, spody_ctx_label(&w->ctx, w->integ.t),
+                        w->integ.y) < 0) {
         spody_error_set(err, SPODY_ERR_IO, "write failed on initial record");
         rc = SPODY_ERR_IO; goto cleanup;
     }
@@ -629,7 +632,11 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
         rc = SPODY_ERR_IO; goto cleanup;
     }
 
-    const double t_end = cfg->duration_s;
+    /* The run ends, and the grid samples sit, on round ET labels (file
+     * time ET - et0); spody_ctx_t_of_label turns them into the
+     * integrator's t, which is the same number unless it integrates in
+     * TT (integrator.time_scale = "tt"). */
+    const double t_end = spody_ctx_t_of_label(&w->ctx, cfg->duration_s);
     const double eps   = 1.0e-9;
 
     /* Adaptive harmonics degree. Both stepping loops below re-pick it
@@ -648,7 +655,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
          * after a month at dt = 1.1 s) and the sample on the last
          * epoch can be lost to the endpoint record. */
         long long k_next = 1;
-        double t_next   = dt;
+        double label_next = dt;
+        double t_next   = spody_ctx_t_of_label(&w->ctx, label_next);
         double t_last_emitted = w->integ.t;
 
         while (w->integ.t < t_end - eps) {
@@ -697,7 +705,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                    && (ev_rc <= 0 || t_next < t_stop - eps)) {
                 double y_q[6];
                 spody_dense_state_rv6(&w->integ, t_next, y_q);
-                if (emit_trajectory(csv, bin, t_next, y_q) < 0) {
+                if (emit_trajectory(csv, bin, label_next, y_q) < 0) {
                     spody_error_set(err, SPODY_ERR_IO,
                             "trajectory write failed at t=%.6g s", t_next);
                     rc = SPODY_ERR_IO; goto cleanup;
@@ -708,7 +716,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                     rc = SPODY_ERR_IO; goto cleanup;
                 }
                 t_last_emitted = t_next;
-                t_next = (double)++k_next * dt;
+                label_next = (double)++k_next * dt;
+                t_next = spody_ctx_t_of_label(&w->ctx, label_next);
             }
 
             /* A stop-class event ended the propagation inside this
@@ -718,10 +727,11 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 stop_ev = &events[first];
                 spody_log_printf(
                     "  %sIMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
-                    w->log_prefix, events[first].naif_id, events[first].t_trigger,
+                    w->log_prefix, events[first].naif_id,
+                    spody_ctx_label(&w->ctx, events[first].t_trigger),
                     events[first].distance_at_trigger, events[first].radius_km);
                 if (emit_trajectory(csv, bin,
-                                    events[first].t_trigger,
+                                    spody_ctx_label(&w->ctx, events[first].t_trigger),
                                     events[first].y_trigger) < 0) {
                     spody_error_set(err, SPODY_ERR_IO,
                             "trajectory write failed on impact record");
@@ -741,7 +751,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
         /* If duration_s is not a clean multiple of dt, append the endpoint
          * so the user always sees the final integrator state. */
         if (t_end - t_last_emitted > eps) {
-            if (emit_trajectory(csv, bin, w->integ.t, w->integ.y) < 0) {
+            if (emit_trajectory(csv, bin, spody_ctx_label(&w->ctx, w->integ.t),
+                                w->integ.y) < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
                         "write failed on endpoint record");
                 rc = SPODY_ERR_IO; goto cleanup;
@@ -790,10 +801,11 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 stop_ev = &events[first];
                 spody_log_printf(
                     "  %sIMPACT: body NAIF=%d, t=%.3f s, |r|=%.3f km (R=%.3f km)\n",
-                    w->log_prefix, events[first].naif_id, events[first].t_trigger,
+                    w->log_prefix, events[first].naif_id,
+                    spody_ctx_label(&w->ctx, events[first].t_trigger),
                     events[first].distance_at_trigger, events[first].radius_km);
                 if (emit_trajectory(csv, bin,
-                                    events[first].t_trigger,
+                                    spody_ctx_label(&w->ctx, events[first].t_trigger),
                                     events[first].y_trigger) < 0) {
                     spody_error_set(err, SPODY_ERR_IO,
                             "trajectory write failed on impact record");
@@ -808,7 +820,8 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 }
                 goto cleanup;   /* normal termination via impact */
             }
-            if (emit_trajectory(csv, bin, w->integ.t, w->integ.y) < 0) {
+            if (emit_trajectory(csv, bin, spody_ctx_label(&w->ctx, w->integ.t),
+                                w->integ.y) < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
                         "trajectory write failed at t=%.6g s", w->integ.t);
                 rc = SPODY_ERR_IO; goto cleanup;

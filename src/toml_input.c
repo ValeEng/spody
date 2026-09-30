@@ -1086,6 +1086,24 @@ static int parse_integrator(toml_table_t *root, InputConfig *cfg,
     if ((rc = req_double(t, "integrator", "h_init_s", &cfg->h_init_s, err))) return rc;
     if ((rc = req_double(t, "integrator", "h_min_s",  &cfg->h_min_s,  err))) return rc;
     if ((rc = req_double(t, "integrator", "h_max_s",  &cfg->h_max_s,  err))) return rc;
+
+    /* time_scale: optional, default "tdb" (every existing TOML runs as
+     * before, bit for bit). Any other value is refused. */
+    cfg->time_scale_tt = 0;
+    if (toml_key_exists(t, "time_scale")) {
+        char scale[16] = {0};
+        int has = 0;
+        if ((rc = opt_string(t, "time_scale", scale, sizeof scale, &has))) return rc;
+        if (has && strcmp(scale, "tdb") == 0)
+            cfg->time_scale_tt = 0;
+        else if (has && strcmp(scale, "tt") == 0)
+            cfg->time_scale_tt = 1;
+        else {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "integrator.time_scale must be \"tdb\" (default) or \"tt\"");
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
     return SPODY_OK;
 }
 
@@ -2098,6 +2116,12 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                 return SPODY_ERR_BAD_VALUE;
             }
         }
+        if (cfg->time_scale_tt) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "integrator.time_scale = \"tt\" is for high-fidelity "
+                    "runs around the Earth; CR3BP time is nondimensional");
+            return SPODY_ERR_BAD_VALUE;
+        }
         return SPODY_OK;
     }
 
@@ -2397,6 +2421,19 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                     cfg->iau2006_dir);
             return SPODY_ERR_FILE_NOT_FOUND;
         }
+    }
+
+    /* TT is the time coordinate of the geocentric system (IERS 2010
+     * sec. 10.3); for the Moon the analogue is TCL (IAU 2024 Res. II),
+     * not TT, so "tt" is refused anywhere but around the Earth. */
+    if (cfg->time_scale_tt
+        && (cfg->dynamics_model == SPODY_DYN_CR3BP
+            || cfg->central_body != SPODY_CENTRAL_EARTH)) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "integrator.time_scale = \"tt\" needs a high-fidelity run "
+                "with central_body = \"Earth\" (TT is the time of the "
+                "geocentric system); use \"tdb\" otherwise");
+        return SPODY_ERR_BAD_VALUE;
     }
 
     /* Drag needs an atmosphere model registered on the central body

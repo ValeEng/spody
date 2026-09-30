@@ -169,8 +169,10 @@ static void print_config_summary(const InputConfig *cfg) {
         spody_log_printf("  spacecraft mass  : %.3f kg\n", cfg->mass_kg);
     }
     spody_log_printf("  integrator       : rkdp45  rel_tol=%.0e  h=[%.1e, %.1e] s "
-           "(init %.3f s)\n",
-           cfg->rel_tol, cfg->h_min_s, cfg->h_max_s, cfg->h_init_s);
+           "(init %.3f s)%s\n",
+           cfg->rel_tol, cfg->h_min_s, cfg->h_max_s, cfg->h_init_s,
+           cfg->dynamics_model == SPODY_DYN_CR3BP ? ""
+           : cfg->time_scale_tt ? "  time TT" : "  time TDB");
     spody_log_printf("  output mode      : %s",
            cfg->output_mode == SPODY_OUT_FIXED ? "fixed" : "step");
     if (cfg->output_mode == SPODY_OUT_FIXED) {

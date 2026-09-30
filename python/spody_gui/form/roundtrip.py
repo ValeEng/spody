@@ -157,6 +157,15 @@ class RoundTripMixin:
             flat.pop("force_model.density_scale",      None)
             flat.pop("force_model.density_scale_file", None)
 
+        # integrator.time_scale: always written, so the TOML says which
+        # time it runs (the engine reads a missing key as "tdb"). "tt" is
+        # Earth only, so any other body gets "tdb"; CR3BP time is
+        # nondimensional and carries no key.
+        if dyn_model == "cr3bp":
+            flat.pop("integrator.time_scale", None)
+        elif flat.get("force_model.central_body") != "Earth":
+            flat["integrator.time_scale"] = "tdb"
+
         # solid_tides: "off" is the form's name for the absent key.
         if flat.get("force_model.solid_tides") == "off":
             flat.pop("force_model.solid_tides", None)

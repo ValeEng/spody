@@ -51,6 +51,7 @@ rel_tol  = 1.0e-9
 h_init_s = 60.0
 h_min_s  = 1.0e-5
 h_max_s  = 600.0
+time_scale = "tdb"                     # "tt" = IERS geocentric time (Earth only)
 
 [output]
 mode       = "fixed"

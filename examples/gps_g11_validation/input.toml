@@ -93,6 +93,7 @@ rel_tol  = 1.0e-12                   # tight: GPS altitude wants the conservativ
 h_init_s = 60.0
 h_min_s  = 1.0e-5
 h_max_s  = 900.0                     # matches SP3 sample interval
+time_scale = "tdb"                     # "tt" = IERS geocentric time (Earth only)
 
 [output]
 mode       = "fixed"

@@ -370,6 +370,12 @@ typedef struct {
     double              h_init_s;
     double              h_min_s;
     double              h_max_s;
+    /* time_scale: OPTIONAL, "tdb" (default) | "tt". The time coordinate
+     * the integrator advances: TDB, the time of the ephemerides, for
+     * every body; or TT, the time IERS 2010 (TN36 sec. 10.3) prescribes
+     * for geocentric equations of motion -- Earth central body only.
+     * Files keep "ET - et0" either way. */
+    int                 time_scale_tt;
 
     /* [output] */
     SpodyOutputMode output_mode;

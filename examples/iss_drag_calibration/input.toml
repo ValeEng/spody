@@ -77,6 +77,7 @@ rel_tol  = 1.0e-11
 h_init_s = 30.0
 h_min_s  = 1.0e-5
 h_max_s  = 240.0                     # one accepted step per OEM cadence at most
+time_scale = "tdb"                     # "tt" = IERS geocentric time (Earth only)
 
 [output]
 mode       = "fixed"

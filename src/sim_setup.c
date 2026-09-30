@@ -250,6 +250,9 @@ static void print_data_sources(const InputConfig *cfg,
                          EARTHRAD_N_NADIR, EARTHRAD_N_AZIMUTH);
     }
     if (cfg->dynamics_model != SPODY_DYN_CR3BP) {
+        spody_log_printf("    time scale: %s\n", cfg->time_scale_tt
+                         ? "TT (IERS 2010 geocentric; files keep ET - et0)"
+                         : "TDB");
         spody_log_printf("    shapes    : %s (shadow, impact, altitude)\n",
                          cfg->body_shape == SPODY_BODY_SHAPE_EQUATORIAL_SPHERE
                          ? "equatorial spheres"
@@ -896,6 +899,10 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.enable_relativity   = cfg->enable_general_relativity;
     w->ctx.enable_earthradiation = cfg->enable_earth_radiation_pressure;
     w->ctx.et0                 = cfg->et_start_s;
+    /* TT integration: the integrator's t counts TT seconds from the
+     * same instant; spody_ctx_et / spody_ctx_label map it to ET. */
+    w->ctx.time_scale_tt       = cfg->time_scale_tt;
+    w->ctx.tt0                 = cfg->et_start_s - spody_tdb_minus_tt(cfg->et_start_s);
 
     /* Integrator. Map cfg options onto IntegratorOptions and bind the
      * default RHS + force context. */

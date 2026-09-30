@@ -87,6 +87,7 @@ rel_tol  = 1.0e-12                   # tight: GNSS altitude wants the conservati
 h_init_s = 60.0
 h_min_s  = 1.0e-5
 h_max_s  = 1800.0                    # matches GLONASS broadcast TOC spacing
+time_scale = "tdb"                     # "tt" = IERS geocentric time (Earth only)
 
 [output]
 mode       = "fixed"
