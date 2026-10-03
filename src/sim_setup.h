@@ -98,6 +98,10 @@ typedef struct {
     unsigned init_ds  : 1;
 } SimulationShared;
 
+/* Receiver of one trajectory record: t is the file time label (s),
+ * y = (x, y, z, vx, vy, vz) in km, km/s, central-inertial. */
+typedef void (*SpodyStateSinkFn)(double t, const double y[6], void *user);
+
 /* ------------------------------------------------------------------
  * Per-worker state (one per thread / per propagation).
  *
@@ -143,6 +147,16 @@ typedef struct {
      * "[i/n] <case id>: " so lines from parallel cases can be told
      * apart in the terminal and the log. */
     char    log_prefix[128];
+
+    /* Optional in-memory receiver of the trajectory records: called
+     * with exactly the (t, y) written to csv_file / bin_file, in the
+     * same order, whether or not those files are open. NULL (the
+     * memset default) = none. Set by the caller after
+     * spody_build_worker; `state_sink_user` is not owned. The sink
+     * cannot fail the run: it records its own trouble in its user
+     * data for the caller to check afterwards. */
+    SpodyStateSinkFn state_sink;
+    void            *state_sink_user;
 
     /* Init flags drive cleanup -- each handle's free() is only called
      * when the corresponding setup actually succeeded. */

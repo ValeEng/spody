@@ -107,7 +107,9 @@ static int write_bin_header(FILE *fp) {
     return 0;
 }
 
-static int emit_trajectory(FILE *csv, FILE *bin, double t, const double y[6]) {
+static int emit_trajectory(FILE *csv, FILE *bin, const SimulationWorker *w,
+                           double t, const double y[6]) {
+    if (w->state_sink) w->state_sink(t, y, w->state_sink_user);
     if (csv) {
         if (fprintf(csv,
                     "%.15e,%.15e,%.15e,%.15e,%.15e,%.15e,%.15e\n",
@@ -614,7 +616,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
     }
 
     /* ----- initial sample (both modes) ----- */
-    if (emit_trajectory(csv, bin, spody_ctx_label(&w->ctx, w->integ.t),
+    if (emit_trajectory(csv, bin, w, spody_ctx_label(&w->ctx, w->integ.t),
                         w->integ.y) < 0) {
         spody_error_set(err, SPODY_ERR_IO, "write failed on initial record");
         rc = SPODY_ERR_IO; goto cleanup;
@@ -705,7 +707,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                    && (ev_rc <= 0 || t_next < t_stop - eps)) {
                 double y_q[6];
                 spody_dense_state_rv6(&w->integ, t_next, y_q);
-                if (emit_trajectory(csv, bin, label_next, y_q) < 0) {
+                if (emit_trajectory(csv, bin, w, label_next, y_q) < 0) {
                     spody_error_set(err, SPODY_ERR_IO,
                             "trajectory write failed at t=%.6g s", t_next);
                     rc = SPODY_ERR_IO; goto cleanup;
@@ -730,7 +732,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                     w->log_prefix, events[first].naif_id,
                     spody_ctx_label(&w->ctx, events[first].t_trigger),
                     events[first].distance_at_trigger, events[first].radius_km);
-                if (emit_trajectory(csv, bin,
+                if (emit_trajectory(csv, bin, w,
                                     spody_ctx_label(&w->ctx, events[first].t_trigger),
                                     events[first].y_trigger) < 0) {
                     spody_error_set(err, SPODY_ERR_IO,
@@ -751,7 +753,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
         /* If duration_s is not a clean multiple of dt, append the endpoint
          * so the user always sees the final integrator state. */
         if (t_end - t_last_emitted > eps) {
-            if (emit_trajectory(csv, bin, spody_ctx_label(&w->ctx, w->integ.t),
+            if (emit_trajectory(csv, bin, w, spody_ctx_label(&w->ctx, w->integ.t),
                                 w->integ.y) < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
                         "write failed on endpoint record");
@@ -804,7 +806,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                     w->log_prefix, events[first].naif_id,
                     spody_ctx_label(&w->ctx, events[first].t_trigger),
                     events[first].distance_at_trigger, events[first].radius_km);
-                if (emit_trajectory(csv, bin,
+                if (emit_trajectory(csv, bin, w,
                                     spody_ctx_label(&w->ctx, events[first].t_trigger),
                                     events[first].y_trigger) < 0) {
                     spody_error_set(err, SPODY_ERR_IO,
@@ -820,7 +822,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 }
                 goto cleanup;   /* normal termination via impact */
             }
-            if (emit_trajectory(csv, bin, spody_ctx_label(&w->ctx, w->integ.t),
+            if (emit_trajectory(csv, bin, w, spody_ctx_label(&w->ctx, w->integ.t),
                                 w->integ.y) < 0) {
                 spody_error_set(err, SPODY_ERR_IO,
                         "trajectory write failed at t=%.6g s", w->integ.t);
