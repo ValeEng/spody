@@ -94,7 +94,7 @@ widget on the right.
   ET value on the left, a UTC ISO 8601 cell on the right, two
   arrow buttons between them. **&rarr;** converts ET to UTC,
   **&larr;** converts UTC to ET. Conversion is bit-identical to
-  SPICE `str2et` / `et2utc` (see chapter 14 for the underlying
+  SPICE `str2et` / `et2utc` (see chapter 15 for the underlying
   algorithm). Only `et_start_s` is written to the TOML; the UTC
   cell is purely a typing aid.
 - **Duration (`simulation.duration_s`)** &mdash; a line edit plus a

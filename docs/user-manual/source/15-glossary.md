@@ -28,6 +28,11 @@ periapsis, in the orbital plane. [Chapter 9.]
 **Batch.** &mdash; A multi-case parameter sweep, driven by a CSV
 file and a column-to-target mapping. [Chapter 7.]
 
+**Bias (Monte Carlo).** &mdash; The mean deviation of the Monte Carlo
+cases from the nominal at one epoch: how far the centre of the cloud
+has moved. Near zero while the dynamics is linear for the spread
+given. [Chapter 14.]
+
 **Body shape.** &mdash; The shape every body has for shadows, impacts
 and altitudes, set by the required `force_model.body_shape`: the
 `pck00011` spheroid (`"ellipsoid"`, geodetic altitude) or the sphere of
@@ -56,6 +61,11 @@ single Cr. [Chapter 6.]
 **Cross-track.** &mdash; The third RIC axis: perpendicular to the
 orbit plane, positive along the angular-momentum direction.
 [Chapter 10.]
+
+**Curvilinear coordinates.** &mdash; Position differences measured
+along the nominal orbit instead of along straight RIC axes: radius
+difference, arc in the orbital plane, arc out of it. A cloud stretched
+along the orbit has no false radial spread in them. [Chapter 14.]
 
 **Cubic Hermite.** &mdash; Interpolation scheme used by the diff
 dispatcher when the two trajectories are on different time grids.
@@ -174,9 +184,17 @@ field answers a tide: the deformation adds `k` times the tidal
 potential, seen from the surface. Earth `k2` &asymp; 0.30 (IERS 2010),
 Moon `k2` = 0.024116 (GRAIL). [Chapter 6, *Solid-body tides*.]
 
+**Monte Carlo.** &mdash; Propagating many copies of a scenario with
+the uncertain quantities drawn at random and measuring how the copies
+spread; `spody uncertainty montecarlo`. [Chapter 14.]
+
 **`mu`.** &mdash; Gravitational parameter, in km&sup3;/s&sup2;. For
 the Moon: `4902.8001184575496` (DE440); a run with a gravity file
 uses the GM of the file for its central term. [Chapters 9, 10.]
+
+**Nominal (case 0).** &mdash; In a Monte Carlo, the scenario
+propagated exactly as written; every deviation is measured from it.
+[Chapter 14.]
 
 **Override mode.** &mdash; The batch column mapping mode in which
 the CSV cell value *replaces* the TOML's nominal value. The
@@ -220,10 +238,19 @@ of the embedded error estimate. [Chapter 6.]
 
 **Run-guard.** &mdash; See *Hard run-guard*.
 
+**Seed.** &mdash; The integer that fixes every random number of a
+Monte Carlo: same file, same seed, same cases bit for bit. [Chapter
+14.]
+
 **SPDYOUT_ / SPDYACC_ / SPDYEVT_ / SPDYEVTB.** &mdash; The 8-byte
 magics of SpOdy's four binary output formats: trajectory state
 vectors, per-force accelerations, per-run events log, and the
-batch-aggregated events log respectively. [Chapter 7, chapter 12.]
+events log of many cases (batch and Monte Carlo) respectively.
+[Chapter 7, chapter 12.]
+
+**SPDYUQM_ / SPDYUQC_.** &mdash; The Monte Carlo binaries: moments
+(bias and covariance at every epoch) and clouds (every case at the
+snapshots). [Chapter 14.]
 
 **spopy.** &mdash; Pure-Python (numpy-only) re-implementation of
 spody-core's read-side helpers (DE440 ephemeris reader, lunar
@@ -287,6 +314,11 @@ in the orbital plane, measured in the direction of motion.
 `-mu * r / |r|^3`. Always present; the rest of the force model is
 added on top. [Chapter 6.]
 
+**Uncertainty file (`.uq.toml`).** &mdash; The small TOML file, with
+a `[montecarlo]` table, that names a scenario and says which of its
+quantities are uncertain and by how much; *uq* = uncertainty
+quantification. [Chapter 14.]
+
 **Validate.** &mdash; The action of running `spody.exe validate`
 against a TOML to check it parses and passes consistency rules,
 without actually propagating. [Chapter 5, chapter 12.]
@@ -295,6 +327,11 @@ without actually propagating. [Chapter 5, chapter 12.]
 that ties together speed, distance, and semi-major axis on a
 Keplerian orbit. Used by the orbital-elements solver to derive
 `a` from the state vector. [Chapter 9.]
+
+**Wilson interval.** &mdash; The 95 % interval of a probability
+estimated as a fraction of cases (k impacts out of N), printed at the
+end of a Monte Carlo log. With no impact, the one-sided bound
+1 &minus; 0.05^(1/N) &asymp; 3/N is given instead. [Chapter 14.]
 
 **Working directory.** &mdash; The folder the Analysis tab scans
 for `.bin` files. Set explicitly via **Change&hellip;** or auto-

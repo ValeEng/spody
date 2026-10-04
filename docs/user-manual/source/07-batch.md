@@ -17,9 +17,11 @@ runs are:
   understand the SRP coefficient's contribution to long-term drift;
   sweep `mass_kg` to characterise the response of a chosen
   propellant tank load.
-- **Monte-Carlo simulation** &mdash; randomly perturb the initial
-  state across thousands of cases and compute statistics on the
-  final position.
+- **Monte-Carlo simulation** &mdash; better done with
+  `spody uncertainty montecarlo` (chapter 14), which draws the cases
+  itself, keeps them in memory and writes the statistics. Its
+  samples file is a valid batch cases file, so any Monte Carlo can
+  be rerun as a batch, case for case.
 - **Debris-cloud propagation** &mdash; one case per fragment, each
   with its own `A/m` ratio drawn from a debris-population
   distribution.

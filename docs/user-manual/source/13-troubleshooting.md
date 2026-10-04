@@ -138,6 +138,21 @@ Same as the validate counterpart: the run-guard intercepted the
 launch because data files are missing. The dialog offers to open
 the wizard; accept the offer and complete the downloads.
 
+### Monte Carlo stops: a case "failed to propagate"
+
+`spody uncertainty montecarlo` stops when one case fails numerically,
+because the statistics would be missing it. The case's own line above
+gives the reason. On reentry scenarios the usual one is
+`integrator failed (rc=-4) ... h=...`: the step needed in the final
+descent is below `integrator.h_min_s`. Lower `h_min_s` (1e-9 s) or
+relax `rel_tol` to 1e-9 (chapter 14, *Practical notes*).
+
+### Monte Carlo refused: samples "outside the physical domain"
+
+A normal distribution drew a value that the parameter cannot take (a
+negative Cd, for instance); the message lists the cases. Use a
+lognormal, which is always positive, or a smaller sigma (chapter 14).
+
 ### Run starts but stops within seconds
 
 Open the terminal pane on the right; the engine printed a one-line

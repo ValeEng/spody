@@ -1,0 +1,394 @@
+# Uncertainty propagation (Monte Carlo)
+
+A propagation is only as good as what goes into it. The initial
+state comes from an orbit determination with its own error; the drag
+coefficient, the area, the mass and the density are known to some
+percent at best. This chapter shows how SpOdy carries those
+uncertainties forward in time: **it propagates many copies of the
+scenario, each with the uncertain quantities drawn at random, and
+measures how the copies spread**. That is the Monte Carlo method,
+the reference against which every faster method (linear covariance,
+unscented transform) is checked.
+
+The command is
+
+```
+spody uncertainty montecarlo <name>.uq.toml
+```
+
+It reads a small file of its own (the *uncertainty file*, always
+named `<name>.uq.toml`, where *uq* stands for *uncertainty
+quantification*) that points to an ordinary scenario TOML and says
+what is uncertain and by how much. The scenario itself is not
+touched. SpOdy only propagates the uncertainty; it does not estimate
+the orbit from measurements.
+
+## A first run
+
+Scenario `iss.toml` (any high-fidelity, fixed-output scenario), and
+next to it `iss.uq.toml`:
+
+```toml
+[montecarlo]
+name        = "iss_mc"
+scenario    = "iss.toml"
+samples     = 1000
+seed        = 1
+thread_number = 8
+snapshots_s = [86400.0, 172800.0]
+
+[montecarlo.initial_state]
+axes               = "ric"
+position_sigma_km  = [0.05, 0.2, 0.03]
+velocity_sigma_kms = [2.0e-4, 5.0e-5, 3.0e-5]
+
+[montecarlo.parameters]
+"spacecraft.drag.Cd" = { distribution = "lognormal", sigma_percent = 20.0, scenario_value_is = "mean" }
+```
+
+```
+spody uncertainty montecarlo iss.uq.toml
+```
+
+The run folder (`<output_dir>/<UTC>/`, as for every run) then holds
+the nominal trajectory, the statistics at every output epoch, the
+clouds at the two snapshots, a readable sigma table, the impacts and
+the log. The rest of the chapter explains each piece.
+
+## The uncertainty file
+
+The file has one table, `[montecarlo]`, and two optional
+sub-tables. The schema is **closed**: an unknown key is an error, not
+a silently ignored line. At least one of the two sub-tables must be
+present (otherwise there is nothing to disperse).
+
+The two kinds of file never mix: `spody propagate`, `spody batch`
+and `spody validate` refuse a scenario that contains `[montecarlo]`,
+and `spody uncertainty montecarlo` refuses a file that is not named
+`*.uq.toml` or has no `[montecarlo]` table.
+
+### `[montecarlo]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | string | required | Names every output file. Must be a valid file name. |
+| `scenario` | string (path) | required | The scenario TOML, relative to the `.uq.toml` or absolute. Must be `high_fidelity`, without `[batch]`, with `output.mode = "fixed"` (every case on the same epochs). |
+| `samples` | integer &ge; 2 | required | N, the number of dispersed cases. The nominal (case 0) comes on top. |
+| `seed` | integer &ge; 0 | required | The random seed. Same file, same seed: same cases, bit for bit, on any machine and any number of threads. |
+| `output_dir` | string (path) | the scenario's `output.output_dir` | Parent of the run folder. Absent or empty: the scenario's. |
+| `thread_number` | integer &ge; 1 | 1 | Cases propagated in parallel (OpenMP build). The results do not depend on it. |
+| `snapshots_s` | array of seconds | none | Epochs where the whole cloud is saved, case by case. Each must be an output epoch of the scenario (a multiple of `interval_s`, or the end). At most 64. |
+| `case_outputs` | bool | false | Also write each case's trajectory (`SPDYOUT_`). Off by default: 1000 cases would mean 1000 files. |
+
+### `[montecarlo.initial_state]`: the state error
+
+The error of the initial position and velocity, as a Gaussian with
+zero mean. Give it **either** as standard deviations (and optionally
+correlations) **or** as a full covariance:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `axes` | `"ric"` or `"icrf"` | Required. The axes the numbers are written in. RIC = radial, in-track, cross-track of the scenario's initial state (r&#770; = r/\|r\|, c&#770; = r&times;v/\|r&times;v\|, &icirc; = c&#770;&times;r&#770;; rotation only, the CCSDS RTN convention). |
+| `position_sigma_km` | 3 numbers &ge; 0 | &sigma; of the three position components [km]. |
+| `velocity_sigma_kms` | 3 numbers &ge; 0 | &sigma; of the three velocity components [km/s]. |
+| `correlation` | 6&times;6 | Optional correlation matrix (symmetric, 1 on the diagonal, entries in [&minus;1, 1]). Identity if absent. |
+| `covariance` | 6&times;6 | The covariance itself [km&sup2;, km&sup2;/s, km&sup2;/s&sup2;], instead of the three keys above. |
+
+A component with zero &sigma; stays exact. The matrix must be
+positive definite on the other components; if it is not, the error
+gives the most negative eigenvalue of the correlation matrix and its
+direction, so you can see which correlations are inconsistent.
+
+Each case's offset is drawn as L&middot;z, with L the Cholesky
+factor of the covariance and z six independent standard normal
+numbers, then rotated from RIC to ICRF when `axes = "ric"`, and added
+to the scenario's initial state (resolved to ICRF first, whatever
+frame the scenario uses).
+
+### `[montecarlo.parameters]`: uncertain parameters
+
+One line per uncertain parameter, keyed by its **batch target path**
+(the same dotted paths as `[batch.columns]`, chapter 7):
+
+```toml
+[montecarlo.parameters]
+"spacecraft.drag.Cd"        = { distribution = "lognormal", sigma_percent = 20.0, scenario_value_is = "mean" }
+"spacecraft.srp.Cr"         = { distribution = "normal", sigma = 0.05 }
+"force_model.density_scale" = { distribution = "lognormal", sigma_ln = 0.25, scenario_value_is = "median" }
+```
+
+The scenario value p&#8320; is the centre of the distribution. At most
+16 parameters. A target is refused when it cannot be uncertain or
+would have no effect: the initial state (use the table above),
+`simulation.*`, `integrator.*`, `output.*`, integer switches, a drag
+parameter with drag off, a radiation-pressure parameter with neither
+SRP nor Earth radiation pressure on, `spacecraft.mass_kg` when no
+force depends on the mass, `density_scale` when the scenario uses a
+`density_scale_file`, a `debris.*` target in a spacecraft scenario
+and vice versa.
+
+**Normal** (`distribution = "normal"`): p = p&#8320; + &sigma; z with
+`sigma` in the parameter's units, or p = p&#8320;(1 + r z) with
+`sigma_percent` = 100 r. Mean and median are both p&#8320;. A normal
+has unbounded tails: for a parameter that must stay positive, the
+probability of a negative draw is &Phi;(&minus;1/r) &mdash; 7.6e-24
+at 10 %, 4.3e-4 at 30 %, 2.3 % at 50 %. If any drawn case falls
+outside the parameter's physical domain the run is **refused**,
+naming the cases; nothing is discarded silently.
+
+**Lognormal** (`distribution = "lognormal"`): p = p&#8320; X with
+ln X normal, so p is always positive &mdash; the natural choice for
+multiplicative factors (Cd, area, density scale). The spread is
+`sigma_ln` (the &sigma; of ln X; a 1-&sigma; factor of e^&sigma;) or
+`sigma_percent` (the relative standard deviation r of X; then
+&sigma;&#8343;&#8345; = &radic;ln(1 + r&sup2;)). For a lognormal the
+mean and the median differ, so you must say which one the scenario
+value is:
+
+| `scenario_value_is` | X | mean of p | median of p |
+|---|---|---|---|
+| `"median"` | exp(&sigma;&#8343;&#8345; z) | p&#8320; exp(&sigma;&#8343;&#8345;&sup2;/2) | p&#8320; |
+| `"mean"` | exp(&sigma;&#8343;&#8345; z &minus; &sigma;&#8343;&#8345;&sup2;/2) | p&#8320; | p&#8320; exp(&minus;&sigma;&#8343;&#8345;&sup2;/2) |
+
+Which one is right depends on where p&#8320; comes from. An
+**estimate** (the k fitted by `spody calibrate`, a least-squares Cd)
+is a mean: use `"mean"`. A **typical or catalogue value** ("Cd = 2.2,
+within a factor 1.3") is a median: use `"median"` and give
+`sigma_ln = ln 1.3`. The choice matters: with 30 % the two differ by
+4.4 % in the mean of p, and in LEO the along-track error grows
+linearly with the drag factor, so that 4.4 % becomes an along-track
+bias of the cloud. There is no default on purpose.
+
+## What a run does
+
+1. **Checks** the uncertainty file and the scenario together (all the
+   rules above).
+2. **Creates the run folder and the log**, copies the scenario
+   (`<ts>_input.toml`) and the uncertainty file (`<ts>_<name>.uq.toml`,
+   its `scenario` line rewritten to the copy, the original kept as a
+   comment): the folder is self-contained, and rerunning its
+   `.uq.toml` gives the same cases.
+3. **Draws every case** and writes them to `<ts>_<name>_samples.uq.csv`
+   (see below). With `--samples-only` the command stops here.
+4. **Keeps from the scenario only its dynamics.** Output files
+   (`csv_file`, `bin_file`, `accelerations_file`, `events_log`) and
+   every event (eclipse, altitude crossings, including stop-class ones)
+   are ignored, and the log names what was ignored. Only an impact,
+   which is always on, can end a case. The time span is the
+   scenario's. For the ignored outputs, run `spody propagate` on the
+   copied `<ts>_input.toml`.
+5. **Checks every case before any runs** (its final values and run
+   window, as `spody batch` does). A case that could not run would bias
+   the statistics, so the command stops and lists them instead of
+   skipping them.
+6. **Propagates the nominal**, case 0: the scenario exactly as it is.
+   Its trajectory is bit-identical to `spody propagate` on the same
+   scenario.
+7. **Propagates the N cases** in parallel, in chunks, keeping each
+   trajectory in memory, and adds them to the statistics **in case
+   order** &mdash; so every output is identical whatever
+   `thread_number`. A case whose integration fails (not an impact: a
+   numerical failure) stops the command.
+8. **Writes the statistics** and closes the log with the impact
+   count.
+
+### Random numbers and reproducibility
+
+The random numbers come from Philox4x64-10 (Salmon et al., SC'11), a
+counter-based generator: number k of case c is a fixed function of
+(`seed`, c, k). So case 37 is the same whether it runs first or last,
+on one thread or on eight, and adding cases (raising `samples`) keeps
+the first ones unchanged. Each uncertain quantity has its own
+independent stream: the initial state one, each parameter another
+(derived from its target path). Uniform numbers are turned into
+normal ones by the inverse normal CDF (Wichura's AS241, accurate to
+about 1e-16).
+
+### The samples file
+
+`<ts>_<name>_samples.uq.csv` has one row per case, case 0 (the
+nominal, no draw) included: the id, the standard normal numbers drawn
+(`z_*` columns), the initial-state offsets in ICRF (`dx_km` ...
+`dvz_kms`) and the parameter values. It is a valid **batch cases
+file**: the log prints the `[batch.columns]` block that reruns these
+exact cases with `spody batch` (offsets as `delta` columns, parameters
+as overrides, `z_*` columns as metadata). The rerun reproduces every
+Monte Carlo case bit for bit.
+
+## The statistics
+
+At every output epoch t of the nominal, with x&#8345;(t) the nominal
+state and x&#7522;(t) the state of case i, SpOdy works with the
+deviations d&#7522; = x&#7522; &minus; x&#8345; and computes, over
+the n cases that have a state at t:
+
+- the **bias** b = mean of d&#7522;: how far the centre of the cloud is
+  from the nominal;
+- the **covariance about the mean** C = &Sigma;(d&#7522; &minus;
+  b)(d&#7522; &minus; b)&#7488; / (n &minus; 1): the shape and size of
+  the cloud;
+- the **second moment about the nominal** M = C (n &minus; 1)/n +
+  b b&#7488;: the error of someone who uses the nominal as "the"
+  orbit. It is not stored; it follows exactly from b and C.
+
+In the linear regime b is close to zero and C &asymp; M. A growing b
+is the sign that the dynamics is non-linear for this spread: the
+cloud's centre drifts away from the nominal.
+
+The sums run with Welford's update, which keeps full precision
+however many cases are added.
+
+### RIC and curvilinear coordinates
+
+The ICRF numbers are rotated into the RIC axes **of the nominal at
+each epoch** (rotation only). Along the orbit, however, a cloud
+stretches into an arc, and straight RIC axes then report a false
+radial error: a case 50 km of arc ahead at the same altitude of a
+6878 km orbit is &minus;0.18 km "radial" in RIC; at 500 km of arc,
+&minus;18 km. So SpOdy also gives the position in **curvilinear**
+coordinates (Vallado & Alfano), with r&#8345; = \|r&#8345;\| and
+r&#770;, &icirc;, c&#770; the nominal's RIC axes:
+
+- radial: \|r\| &minus; r&#8345;
+- in-track: r&#8345; atan2(r&middot;&icirc;, r&middot;r&#770;), the arc
+  in the nominal's plane
+- cross-track: r&#8345; asin(r&middot;c&#770; / \|r\|), the arc out of
+  the plane
+
+For the case above they read 0 and 50 km.
+
+### Impacts
+
+A case that impacts stops counting at its impact: n(t) is the number
+of cases still flying at t, and from that moment the statistics
+describe the survivors. If the nominal impacts, the statistics stop
+there (its last record is its impact, where n = 0).
+
+The impacts are in `<ts>_<name>_events.uq.bin` (one file for all
+cases: each impact with its case number and state, plus the start and
+end markers of every case), which the Analysis tab opens like a batch
+events file. The log closes with how many cases impacted and **how far
+that count can be trusted**. With N cases the observed fraction k/N
+is only an estimate of the true impact probability, like a poll: a
+different seed gives a different k. The line gives the 95 % interval
+of the true probability:
+
+| N | impacts k | log line |
+|---|---|---|
+| 100 | 4 | `4 of 100 cases (4.00 %), 95 % interval 1.57 % .. 9.84 % (Wilson)` |
+| 1000 | 37 | `37 of 1000 cases (3.70 %), 95 % interval 2.70 % .. 5.06 % (Wilson)` |
+| 1000 | 0 | `0 of 1000 cases, probability < 0.30 % at 95 %` |
+
+For 0 < k < N it is Wilson's interval (Wilson 1927; recommended over
+the textbook k/N &plusmn; 1.96&radic;(...) by Brown, Cai & DasGupta
+2001, which fails exactly when impacts are rare: it gives "0 %, no
+uncertainty" for k = 0). With no impact the only honest statement is
+an upper bound, 1 &minus; 0.05^(1/N) &asymp; 3/N (the "rule of three",
+Hanley & Lippman-Hand 1983): 1000 cases without an impact only show
+that the probability is below 0.3 %. With every case impacting, the
+mirror bound is given.
+
+### How many cases
+
+The uncertainty of every Monte Carlo number shrinks as 1/&radic;N:
+four times the cases halve it. Two rules of thumb: a &sigma; estimated
+from N cases has a relative error of about 1/&radic;(2(N &minus; 1))
+(2.2 % at N = 1000); and showing that an event has a probability
+below P needs at least 3/P cases without it.
+
+## Output files
+
+All in the run folder, all prefixed by the run's timestamp, all marked
+`.uq` before the extension:
+
+| File | Contents |
+|---|---|
+| `<ts>_input.toml` | the scenario as it was run |
+| `<ts>_<name>.uq.toml` | the uncertainty file, pointing at the copy above |
+| `<ts>_<name>.uq.log` | everything printed, refusals included |
+| `<ts>_<name>_samples.uq.csv` | the drawn cases (a batch cases file) |
+| `<ts>_<name>_nominal.uq.bin` | case 0 trajectory, `SPDYOUT_` |
+| `<ts>_<name>_moments.uq.bin` | statistics at every nominal epoch, `SPDYUQM_` |
+| `<ts>_<name>_clouds.uq.bin` | every case at the snapshots, `SPDYUQC_` (only with `snapshots_s`) |
+| `<ts>_<name>_sigma.uq.csv` | the statistics in RIC, readable |
+| `<ts>_<name>_events.uq.bin` | impacts and life markers, `SPDYEVTB` |
+| `<ts>_<name>_case<i>.uq.bin` | each case's trajectory, `SPDYOUT_` (only with `case_outputs = true`; i zero-padded to N's digits) |
+
+### `SPDYUQM_` &mdash; moments
+
+Standard 24-byte header; payload = record size (352 bytes); first
+reserved word = N. One record of 44 little-endian doubles per output
+epoch of the nominal:
+
+| Index | Field | Units |
+|---|---|---|
+| 0 | t (same label as the nominal's `SPDYOUT_`) | s |
+| 1 | n, cases with a state at t | &mdash; |
+| 2&ndash;7 | nominal state x&#8345;, ICRF | km, km/s |
+| 8&ndash;13 | bias b, ICRF | km, km/s |
+| 14&ndash;34 | C, ICRF, lower triangle by rows: C&#8321;&#8321;, C&#8322;&#8321;, C&#8322;&#8322;, C&#8323;&#8321;, ... (the order of the CCSDS OEM COVARIANCE block) | km&sup2;, km&sup2;/s, km&sup2;/s&sup2; |
+| 35&ndash;37 | curvilinear position bias (radial, in-track, cross-track) | km |
+| 38&ndash;43 | curvilinear position covariance, lower triangle | km&sup2; |
+
+Fields that are undefined are NaN: everything after the nominal state
+when n = 0, the covariances when n = 1.
+
+### `SPDYUQC_` &mdash; clouds
+
+Payload = 64 bytes; reserved words = N and the number of snapshots.
+One record of 8 doubles per case with a state at a snapshot: t, case
+number, d&#7522; (6, ICRF). Ordered by snapshot, then by case.
+
+### `<name>_sigma.uq.csv`
+
+One row per epoch: `t_s, n`; &sigma; in R, I, C and in the three
+velocity components (from C rotated into the nominal's RIC); the
+position correlations RI, RC, IC; the bias in R, I, C; the RMS about
+the nominal in R, I, C (from M); the curvilinear &sigma; and bias.
+Empty fields where n < 2.
+
+### Reading them in Python
+
+```python
+from spody_io import read_uq_moments, read_uq_clouds, read_trajectory
+from spody_io.uq import lower_to_full
+
+mom, n_cases = read_uq_moments("…_iss_mc_moments.uq.bin")
+C = lower_to_full(mom["cov"], 6)          # (epochs, 6, 6)
+cloud, n_cases, n_snap = read_uq_clouds("…_iss_mc_clouds.uq.bin")
+```
+
+## Practical notes
+
+- **Time.** A case costs about as much as one `spody propagate`; the
+  run costs N + 1 of them, divided by the threads.
+- **Memory.** The trajectories of one chunk (8 cases per thread, at
+  most 512 MB) are in memory at once, plus the nominal and the
+  statistics (about 0.5 kB per epoch).
+- **Reentries.** A case that reaches the ground needs the integrator to
+  follow a fast final descent. With a tight `rel_tol` (1e-11) the
+  step there can fall below `integrator.h_min_s`; the case then fails
+  numerically and stops the whole run. For reentry studies set
+  `h_min_s` well below the default (1e-9 s works on a 200 km decay)
+  or relax `rel_tol` to 1e-9.
+- **Non-Gaussian clouds.** b and C describe a cloud completely only if
+  it is Gaussian. A long arc stretched along the orbit is not; the
+  curvilinear moments and the snapshot clouds are there to show it.
+
+## References
+
+- J. K. Salmon et al., *Parallel random numbers: as easy as 1, 2, 3*,
+  SC'11 (2011) &mdash; Philox.
+- M. J. Wichura, *Algorithm AS 241: the percentage points of the
+  normal distribution*, Applied Statistics 37 (1988) 477&ndash;484.
+- B. P. Welford, *Note on a method for calculating corrected sums of
+  squares and products*, Technometrics 4 (1962) 419&ndash;420.
+- D. A. Vallado, S. Alfano, *Curvilinear coordinate transformations
+  for relative motion*, Celestial Mechanics and Dynamical Astronomy
+  118 (2014) 253&ndash;271.
+- E. B. Wilson, *Probable inference, the law of succession, and
+  statistical inference*, JASA 22 (1927) 209&ndash;212.
+- L. D. Brown, T. T. Cai, A. DasGupta, *Interval estimation for a
+  binomial proportion*, Statistical Science 16 (2001) 101&ndash;133.
+- J. A. Hanley, A. Lippman-Hand, *If nothing goes wrong, is
+  everything all right?*, JAMA 249 (1983) 1743&ndash;1745.

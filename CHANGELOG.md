@@ -8,6 +8,45 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Monte Carlo uncertainty propagation: `spody uncertainty
+  montecarlo <name>.uq.toml`** (manual ch. 14, new). A separate
+  uncertainty file (closed schema, table `[montecarlo]`) names a
+  scenario, N, a seed, an initial-state error (sigmas + correlation or
+  a full covariance, in RIC or ICRF) and uncertain parameters (the
+  physical batch targets; normal with `sigma` / `sigma_percent`, lognormal with
+  `sigma_percent` / `sigma_ln` and a required `scenario_value_is =
+  "mean" | "median"`). The run propagates the nominal (bit-identical
+  to `spody propagate`) and the N cases in parallel, keeping only the
+  scenario's dynamics (its output files and every event but the
+  impact are ignored and listed), and writes: the nominal
+  (`SPDYOUT_`), the bias and covariance about the mean at every epoch
+  in ICRF plus curvilinear position moments (`SPDYUQM_`, new), every
+  case at chosen snapshots (`SPDYUQC_`, new), a RIC sigma / bias / RMS
+  table (`_sigma.uq.csv`), the impacts of every case (`SPDYEVTB`), and
+  closes the log with the impact count and its 95 % interval (Wilson;
+  1 − 0.05^(1/N) with no impact). Random numbers: Philox4x64-10 in
+  spody-core (`spody_random`, counter-based, one independent stream
+  per case and quantity) with Wichura's AS241 inverse normal; the
+  statistics are folded in case order, so every output is
+  bit-identical for any thread count (checked on 1 vs 8 threads).
+  Checked against an independent numpy recomputation (covariance
+  within 2e-15 of a sigma), a `spody batch` rerun of the samples file
+  (every case bit for bit) and a 200 km reentry (125 of 200 cases
+  impacting). A sample outside a parameter's physical domain, a case
+  that cannot run or a case that fails numerically stops the run with
+  the list; nothing is dropped silently. `--samples-only` writes the
+  drawn cases (a valid batch cases file) and stops. `propagate`,
+  `batch` and `validate` refuse a scenario that contains
+  `[montecarlo]`. `spody_io` gains `read_uq_moments` /
+  `read_uq_clouds`.
+- **spody-core: `spody_random`, `spody_getrotmatrix_ric2icrf` /
+  `_icrf2ric`, `spody_symmat_cholesky`, `spody_symmat_eigen_jacobi`.**
+  Philox4x64-10 written from Salmon et al. (SC'11) and checked against
+  the Random123 known-answer vectors and numpy's Philox; uniforms on
+  the open grid (k + ½)·2⁻⁵²; AS241 within 4e-16 of scipy. Jacobi keeps
+  relative accuracy on small eigenvalues (used to report a covariance
+  that is not positive definite).
+
 - **Integration in TT around the Earth: `integrator.time_scale =
   "tt"`** (optional; default `"tdb"`, every earlier run bit for bit).
   The IERS Conventions 2010 (TN36 sec. 10.3) give TT or TCG as the

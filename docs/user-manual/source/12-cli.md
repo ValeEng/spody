@@ -21,7 +21,7 @@ The conventions throughout the chapter:
 spody.exe <command> [arguments]
 ```
 
-The six commands are:
+The seven commands are:
 
 | Command           | Purpose                                      |
 |-------------------|----------------------------------------------|
@@ -30,6 +30,7 @@ The six commands are:
 | `batch`           | run a multi-case sweep                       |
 | `convert`         | data-file conversions (ephemeris, harmonics, SP3, GLONASS, GPS, OEM) |
 | `calibrate`       | fit the drag density-scale `k(t)` nodes against a reference |
+| `uncertainty montecarlo` | propagate the uncertainty of a scenario by Monte Carlo (chapter 14) |
 | `info`            | print version + build info                   |
 
 Pass `--help` or no command to print a short usage summary.
@@ -724,6 +725,46 @@ reference with 24 h windows (6 day-arcs) fits in ~35 s.
 - `1` &mdash; parse/validation failure, reference format error,
   a propagation failure inside a window, or every window skipped.
 
+## `spody uncertainty montecarlo`
+
+```
+spody.exe uncertainty montecarlo <name>.uq.toml [--samples-only]
+```
+
+Propagates the scenario named in the uncertainty file once as it is
+(the nominal, case 0) and `samples` more times with the uncertain
+initial state and parameters drawn at random, and writes the
+statistics of the spread at every output epoch. The uncertainty file,
+the statistics and every output are described in chapter 14.
+
+- `--samples-only` &mdash; draw the cases, write the samples file
+  (and the run folder's copies and log) and stop, without
+  propagating. Useful to inspect the draws, or to run them as a
+  `spody batch` (the log prints the `[batch.columns]` block).
+
+The report gives the scenario outputs and events it ignores, the
+nominal, the progress per chunk of cases, the output files and, last,
+the impact count with its 95 % interval:
+
+```
+  ignored   : csv_file, bin_file (Monte Carlo keeps the trajectory and the
+              impacts; run spody propagate on <ts>_input.toml for the rest)
+  nominal   : ./out/2026-10-04T150400Z/2026-10-04T150400Z_re_nominal.uq.bin (199 records, t = 0 .. 47433.1 s)
+  cases     : 200 in chunks of 64 on 8 threads
+  cases     : 64 / 200 done (2.9 s)
+  ...
+  nominal   : impact at t = 47433.055831 s; the statistics stop there
+  impacts   : 125 of 200 cases (62.50 %), 95 % interval 55.61 % .. 68.91 % (Wilson)
+  impacted  : case 1 at t = 46855.860 s, case 2 at t = 31383.987 s, ... and 115 more
+```
+
+Exit codes:
+
+- `0` &mdash; every case propagated and every output written.
+- `1` &mdash; the uncertainty file or the scenario is refused, a drawn
+  sample is outside its parameter's physical domain, a case fails
+  the pre-check or fails numerically, or an output cannot be written.
+
 ## `spody info`
 
 ```
@@ -775,7 +816,12 @@ Every binary starts with the same **24-byte header**:
 
 The three magics are `SPDYOUT_` for trajectories, `SPDYACC_` for
 the per-force accelerations breakdown, and `SPDYEVT_` for events.
-The payload metadata is interpreted per format:
+`spody batch` and `spody uncertainty montecarlo` add `SPDYEVTB`
+(events of many cases, each record prefixed by its case number), and
+the Monte Carlo writes `SPDYUQM_` (moments) and `SPDYUQC_` (clouds),
+whose layouts are in chapter 14 (`spody_io.read_uq_moments` /
+`read_uq_clouds` read them). The payload metadata is interpreted per
+format:
 
 ### `SPDYOUT_` &mdash; trajectory
 

@@ -184,6 +184,8 @@ Commands:
                                           sp3 | glonass | gps | oem | gp)
   calibrate   <input.toml> <ref.bin> [--window <hours>]
                                           fit the drag density-scale k(t)
+  uncertainty montecarlo <name.uq.toml> [--samples-only]
+                                          Monte Carlo uncertainty propagation
   info                                    print version + capabilities
   maxhgdegree <harmonics_file> <x> <y> <z>
                                           largest useful harmonics degree
@@ -262,6 +264,14 @@ Ordered roughly by what unlocks the most for users.
       `gp` (general-perturbation mean elements &rarr; the ICRF state
       a propagation starts from, printed as a pasteable
       `[initial_state]` block)
+- [x] `spody uncertainty montecarlo` — Monte Carlo uncertainty
+      propagation from a separate `<name>.uq.toml` (initial-state
+      covariance in RIC or ICRF, normal / lognormal parameters on the
+      physical batch targets); counter-based random numbers (Philox, in
+      spody-core) so every output is bit-identical on any thread
+      count; bias + covariance at every epoch (`SPDYUQM_`), clouds at
+      snapshots (`SPDYUQC_`), RIC and curvilinear sigma table, impacts
+      with a 95 % interval; samples file reruns as a `spody batch`
 - [x] `spody calibrate` — engine-side fit of the drag
       density-scale `k(t)` node table against a full-state
       reference (sliding windows, drag on/off arc pairs, in-track
@@ -446,6 +456,7 @@ spody/
 │   ├── dynamics_model.{c,h}  # high_fidelity / cr3bp dispatch table
 │   ├── atmosphere_nrlmsise00.{c,h} # per-body atmosphere callback + space-weather input
 │   ├── calibrate.{c,h}       # density-scale k(t) fit driving `spody calibrate`
+│   ├── uncertainty.{c,h}     # `spody uncertainty montecarlo`: sampling, cases, statistics, SPDYUQM_/SPDYUQC_
 │   ├── sim_setup.{c,h}       # InputConfig -> SimulationShared + SimulationWorker (per-model branches)
 │   └── sim_run.{c,h}         # propagation loop, CSV / binary writers, SPDYEVTB
 ├── examples/                 # input TOML examples (schema guide in examples/README.md)

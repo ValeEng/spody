@@ -26,7 +26,7 @@ commits).
 | Avoid the classic traps | §7 (invariants) + §8 (tooling pitfalls) |
 
 Domain shorthand used everywhere in the code and in this guide
-(full definitions in user-manual ch. 14, the glossary):
+(full definitions in user-manual ch. 15, the glossary):
 
 - **ET** — ephemeris time: TDB seconds past J2000. The one canonical
   time scale inside the engine, the TOML (`et_start_s`) and every
@@ -47,7 +47,7 @@ SpOdy is three cooperating components:
 | Component | Language | Where | Role |
 |---|---|---|---|
 | **spody-core** | C | `external/spody-core` (git submodule of [ValeEng/spody-core](https://github.com/ValeEng/spody-core)) | The physics/numerics library: ephemeris reader, force models, RKDP45 integrator with dense output, events, Earth orientation (IAU 2006/2000A_R06), GNSS/SP3 converters, time-scale helpers (`spody_time.c`), NRLMSISE-00 atmosphere (`spody_nrlmsise00.c`, native port). No I/O policy, no TOML — pure engine. |
-| **spody** (app layer) | C | `src/` | The `spody.exe` CLI: TOML parsing/validation (`toml_input.c`), worker setup (`sim_setup.c`), run loop + output writers (`sim_run.c`), subcommand dispatch (`main.c`). |
+| **spody** (app layer) | C | `src/` | The `spody.exe` CLI: TOML parsing/validation (`toml_input.c`), worker setup (`sim_setup.c`), run loop + output writers (`sim_run.c`), subcommand dispatch (`main.c`), density-scale fit (`calibrate.c`), Monte Carlo uncertainty propagation (`uncertainty.c`). |
 | **GUI + Python libs** | Python | `python/` | `spody_gui` (PySide6 desktop app wrapping `spody.exe` as a subprocess), `spopy` (pure-Python mirror of spody-core read-side functions), `spody_io` (binary output readers). |
 
 The split is deliberate: the GUI never links the engine — it writes a
@@ -82,8 +82,10 @@ input.toml
 
 `main.c` dispatches the subcommands: `propagate` (one TOML),
 `batch` (base TOML + CSV of per-case overrides, OpenMP-parallel),
-`validate` (parse + validate only), `info` (print a binary's header),
-`convert` (harmonics_icgem / sp3 / gps / glonass), `maxhgdegree`.
+`validate` (parse + validate only), `info` (app and core versions),
+`convert` (ephemeris / harmonics_icgem / sp3 / gps / glonass / oem /
+gp), `calibrate` (`calibrate.c`), `uncertainty montecarlo`
+(`uncertainty.c`, §1.4), `maxhgdegree`.
 
 ### 1.2 Binary wire formats
 
@@ -94,7 +96,9 @@ All little-endian, 8-byte magic + version/dim header:
 | `SPDYOUT_` | trajectory records `(t, x, y, z, vx, vy, vz)`; `t` is seconds since the run's `et_start_s` | `sim_run.c`, GNSS/SP3 converters | `spody_io/traj.py` |
 | `SPDYACC_` | per-force acceleration breakdown (v4: `acc_earthradiation` appended, 432 B; v3 adds `acc_relativity`, 408 B; v2 `acc_solidtides`, 384 B; v1 360 B; all still read) | `sim_run.c` | `spody_io/accel.py` |
 | `SPDYEVT_` | per-run events | `sim_run.c` | `spody_io/events.py` |
-| `SPDYEVTB` | batch-aggregated events (extra `case_idx`) | `sim_run.c` | `spody_io/events.py` |
+| `SPDYEVTB` | batch-aggregated events (extra `case_idx`; record struct `BatchEventRecord` in `sim_run.h`) | `sim_run.c` (batch, uncertainty) | `spody_io/events.py`, `uncertainty.c` (reads impacts back) |
+| `SPDYUQM_` | Monte Carlo moments, one 44-double record per nominal epoch: `t, n, x_n[6], bias[6], C[21]` (lower triangle by rows, OEM order) `, curv_bias[3], curv_C[6]`; reserved1 = N cases | `uncertainty.c` | `spody_io/uq.py` |
+| `SPDYUQC_` | Monte Carlo clouds, 8 doubles `(t, case, d[6])` per case at each snapshot, snapshot-major; reserved1 = N, reserved2 = snapshots | `uncertainty.c` | `spody_io/uq.py` |
 | `SPDYEPET` | compiled DE440 ephemeris (`.spody`) | offline generator | spody-core + `spopy/ephemeris.py` |
 
 Both events formats carry two record kinds that are **not** triggers:
@@ -113,7 +117,8 @@ the statistics.
 A new format field means touching **both** sides plus `detect_kind`
 in `spody_gui/analysis/registry.py`. Never change a record layout in
 place — bump the header version and keep the reader
-backward-compatible.
+backward-compatible. (`SPDYUQM_` / `SPDYUQC_` are not in the registry
+yet: they arrive with the GUI's Uncertainty tab.)
 
 ### 1.3 GUI package layout
 
@@ -245,6 +250,52 @@ backward-compatible.
   (ephemeris objects come in duck-typed); the GUI reaches it through
   the `spody_gui/vtk_canvas.py` shim (`VtkCanvas`) and the
   `analysis/scene3d.py` glue.
+
+### 1.4 Anatomy of a Monte Carlo run (`uncertainty.c`)
+
+`spody uncertainty montecarlo <name>.uq.toml` (manual ch. 14) reuses
+the single-run machinery; nothing in `sim_run.c` knows about it except
+two hooks that exist for it:
+
+- **the state sink** (`SimulationWorker.state_sink` /
+  `state_sink_user`, `sim_setup.h`): `emit_trajectory` hands every
+  emitted state `(t, y)` to it, so a caller keeps a trajectory in
+  memory without a file. NULL for propagate/batch/calibrate.
+  The sink is called from the worker's thread: one sink object per
+  worker, never shared.
+- **`BatchEventSink`**: the run passes one with `case_idx` = the case
+  number, so impacts and life markers of every case land in one
+  SPDYEVTB file, read back at the end (`report_impacts`).
+
+The flow, in `spody_uncertainty_montecarlo_run` → `run_montecarlo`:
+
+1. `spody_load_uq_input` / `spody_validate_uq_input`
+   (`toml_input.c`): closed schema, every check that needs the
+   scenario.
+2. Run folder + log (`<ts>_<name>.uq.log`), scenario snapshot, the
+   `.uq.toml` copy pointed at the snapshot, the samples CSV.
+3. `strip_scenario`: output files and every event but the always-on
+   impact are removed (and named in the log) — only an impact may end
+   a case, and the time span is the scenario's.
+4. Pre-check of every case (`spody_check_case`): any failure stops the
+   run with the list (a skipped case would bias the statistics).
+5. Case 0 (nominal) runs alone, kept in a `Track` (the sink).
+6. Cases 1..N in chunks of `8 × threads` (capped at 512 MB of
+   trajectories), propagated in parallel, each built by
+   `case_config`: a one-case `BatchConfig` fed to
+   `spody_apply_batch_case`, so a `spody batch` rerun of the samples
+   file gives the same bits. Then folded **in case order** by
+   `stats_add_case` (Welford on `d = x − x_n`).
+7. Writers: `write_moments`, `write_clouds`, `write_sigma_csv`, then
+   `report_impacts` (Wilson 95 % interval, or the one-sided
+   `1 − 0.05^(1/N)` bound for zero impacts).
+
+Random numbers come from spody-core `spody_random` (Philox4x64-10,
+counter-based): word k of stream `(seed, case, substream)` is a pure
+function of those numbers, so any case can be drawn by any thread in
+any order. Substream 0 is the initial state; a parameter's substream
+is the FNV-1a 64 hash of its target path
+(`spody_random_substream_id`). See §7 for the invariants.
 
 ## 2. Dev setup from zero
 
@@ -399,7 +450,8 @@ reader of any one document is never lied to:
 3. **User manual** (`docs/user-manual/source/`) — the chapter(s)
    covering the touched surface: ch. 5 form / ch. 6 TOML schema /
    ch. 7 batch / ch. 8 analysis tab / ch. 9 plot catalog / ch. 12
-   CLI, plus ch. 14 glossary for new terms. The HTML/PDF are build
+   CLI / ch. 14 uncertainty (Monte Carlo), plus ch. 15 glossary for
+   new terms. The HTML/PDF are build
    artifacts — only the `source/*.md` files are versioned.
 4. **This guide** — if you added an extension point, changed a
    convention, moved a module, changed the build, or discovered a
@@ -942,9 +994,11 @@ CHANGELOG.
 
 **Break risk:** reader/writer drift (assert record sizes on both
 sides); forgetting `detect_kind` (files invisible in the Analysis
-tree). **Verify:** run a scenario that writes the new file; `spody
-info` prints its header; the Analysis tree lists it under the new
-label and the views render. **Document:** §1.2 table in this guide;
+tree). **Verify:** run a scenario that writes the new file; the
+`spody_io` reader loads it (header, version, record count = file
+size); the Analysis tree lists it under the new label and the views
+render. (`spody info` prints only the app and core versions; it does
+not read files.) **Document:** §1.2 table in this guide;
 manual ch. 8 + ch. 9; CHANGELOG.
 
 ### 5.5 New event kind
@@ -1253,8 +1307,13 @@ Shortest recipe, sharpest edges:
 ### 5.11 New CLI subcommand or format converter
 
 Canonical examples: `spody convert oem` (converter, spody-core
-`spody_oem.{h,c}`) and `spody calibrate` (subcommand,
-`src/calibrate.{h,c}`). The split rule decides where the code goes
+`spody_oem.{h,c}`), `spody calibrate` (subcommand,
+`src/calibrate.{h,c}`) and `spody uncertainty montecarlo` (subcommand
+with its own input file `<name>.uq.toml` and a two-word verb,
+`src/uncertainty.{h,c}`, §1.4). A subcommand with its own input file
+also needs the two-way refusal: its file must be refused by
+`propagate`/`batch`/`validate` (as `spody_load_input` refuses a
+`[montecarlo]` table), and a plain scenario refused by it. The split rule decides where the code goes
 **before** you write it:
 
 - **Format converters live in spody-core**, one file per format,
@@ -2224,6 +2283,41 @@ Each entry: the rule, and the symptom you'll see if you break it.
   anyone who sorts by `t`.*
 - **Wire formats are append-only** (§1.2): readers in the wild parse
   old files. *Symptom: `spody_io` exceptions on historical runs.*
+- **Every dispersed quantity has its own random substream.** A Monte
+  Carlo draw is `spody_random` word k of `(seed, case, substream)`:
+  substream 0 = the initial state, a parameter = FNV-1a 64 of its
+  target path. Two quantities on the same substream would receive the
+  same normal deviates — perfectly correlated, silently.
+  `spody_validate_uq_input` refuses a collision. Checklist for a new
+  dispersed quantity (a new `[montecarlo.*]` family, a new batch
+  target): give it a substream id that cannot equal 0 or any target
+  hash (a distinct, documented name hashed by
+  `spody_random_substream_id`), and extend the collision check.
+  *Symptom: two parameters' samples columns move together
+  (correlation 1 in the samples CSV).*
+- **Monte Carlo statistics are folded in case order.** Threads only
+  propagate; `stats_add_case` runs single-threaded on 1, 2, 3, ... per
+  chunk, so every output is bit-identical for any `thread_number` and
+  chunk size. Never accumulate inside the parallel loop (floating
+  sums are not associative). The SPDYEVTB file is the one exception:
+  its records follow thread completion, compare it sorted by
+  `(case_idx, t, kind)`. *Symptom: moments differ in the last bits
+  between 1 and 8 threads.*
+- **A Monte Carlo case is applied exactly like a batch case.**
+  `case_config` builds a one-case `BatchConfig` and calls
+  `spody_apply_batch_case` (state offsets as delta columns,
+  parameters as overrides). Do not assign fields by hand: the
+  samples file rerun with `spody batch` must reproduce every case bit
+  for bit, and that only holds while both paths are the same function.
+  *Symptom: the rerun check in the local tests finds a case that
+  differs.*
+- **Only an impact ends a Monte Carlo case.** `strip_scenario` removes
+  every scenario event except the always-on impact (and every output
+  file) before case 0 runs, so the nominal and the cases span the same
+  window and the statistics are not cut by a scenario stop event. A
+  case counts at the nominal epochs while its record times equal the
+  nominal's (`stats_add_case`); its impact record, off the grid, ends
+  it. *Symptom: n(t) drops with no impact in the events file.*
 
 ## 8. Tooling pitfalls (Windows-flavoured)
 

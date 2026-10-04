@@ -4,7 +4,10 @@ This chapter is the field-by-field reference for the TOML input
 files SpOdy reads. Every section, every key, every accepted value
 is listed here in the order they appear in the form. For the
 high-level workflow consult chapter 5; for batch-specific keys
-also see chapter 7.
+also see chapter 7. The Monte Carlo uncertainty file
+(`<name>.uq.toml`, table `[montecarlo]`) is a separate file with its
+own schema, in chapter 14; a scenario that contains a `[montecarlo]`
+table is refused.
 
 The conventions used in the tables below:
 
