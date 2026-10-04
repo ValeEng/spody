@@ -107,11 +107,14 @@ engine accepts for `[batch.columns]`:
 
 - `simulation.et_start_s`, `simulation.duration_s`
 - `spacecraft.mass_kg`, `spacecraft.srp.area_m2`,
-  `spacecraft.srp.Cr` (only in Spacecraft mode)
-- `debris.am_srp`, `debris.Cr` (only in Debris mode)
+  `spacecraft.srp.Cr`, `spacecraft.drag.area_m2`,
+  `spacecraft.drag.Cd` (only in Spacecraft mode)
+- `debris.am_srp`, `debris.Cr`, `debris.am_drag`, `debris.Cd`
+  (only in Debris mode)
 - `initial_state.position_km[0]`, `[1]`, `[2]`
 - `initial_state.velocity_kms[0]`, `[1]`, `[2]`
-- `force_model.srp`
+- `force_model.srp`, `force_model.drag`
+- `force_model.density_scale` (the constant density factor k)
 - `integrator.rel_tol`, `integrator.h_init_s`,
   `integrator.h_min_s`, `integrator.h_max_s`
 - `output.interval_s`

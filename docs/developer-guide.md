@@ -122,8 +122,28 @@ yet: they arrive with the GUI's Uncertainty tab.)
 
 ### 1.3 GUI package layout
 
-- `spody_gui/main_window.py` — shell; owns the tabs. The only entry
-  points it imports are `TomlForm` and `AnalysisPanel`.
+- `spody_gui/main_window.py` — shell; owns the tabs and the one
+  `SpodyRunner`. The entry points it imports are `TomlForm`,
+  `UncertaintyPanel`, `AnalysisPanel` and `RerunPanel`. File > New /
+  Save / Save As go through `_menu_*`, which act on the tab shown
+  (Run or Uncertainty); the `_action_*` slots stay Run-form only
+  because the form's save prompt calls them.
+- `spody_gui/uncertainty_panel.py` — the Uncertainty tab: a
+  self-contained editor for `<name>.uq.toml` (tomli in,
+  `toml_io.format_uq_toml` out) with the Run tab's layout (TOML row,
+  path + Draw samples / RUN / Stop, form, live preview, its own
+  `TerminalView`). It owns no process: `runRequested(bool)` /
+  `stopRequested` / `openResultsRequested(Path)` go to MainWindow,
+  which runs `uncertainty montecarlo` on the shared runner with
+  `_run_owner = "uq"` (that routes the output to the tab's terminal,
+  arms the `run folder:` capture and sends the finish to
+  `run_finished`). It validates only what it cannot write (unparsable
+  numbers, a lognormal without `scenario_value_is`); everything else
+  is the engine's, reached in under a second by Draw samples
+  (`--samples-only`). Dispersible targets = `BATCH_TARGETS` minus
+  `simulation.*`, `initial_state.*`, `integrator.*`, `output.*` and
+  the two on/off switches (`dispersible_targets`), filtered by the
+  scenario's object kind.
 - `spody_gui/form/` — the Run-tab form building blocks:
   - `catalog.py` — **declarative tables** mirroring the engine schema:
     field keys, tooltips, units (`UNIT`), validators, batch targets
@@ -158,8 +178,8 @@ yet: they arrive with the GUI's Uncertainty tab.)
     parsed the same file with different fallbacks until the field
     landed here.
   - `plots_traj.py`, `plots_cr3bp.py`, `plots_diff.py`,
-    `plots_accel.py`, `plots_events.py` — one module per view
-    family; each exports a `SPECS` list. **A new view = one function
+    `plots_accel.py`, `plots_events.py`, `plots_uq.py` (Monte Carlo
+    moments and clouds) — one module per view family; each exports a `SPECS` list. **A new view = one function
     + one spec entry here.**
   - `registry.py` — assembles `PLOTS` per file kind, owns
     `KIND_LABEL`, `READERS`, `detect_kind`.
@@ -203,9 +223,15 @@ yet: they arrive with the GUI's Uncertainty tab.)
   the block is recomputed at every save and cannot go stale; return
   `[]` rather than guessing when anything is unresolvable; keep it
   informational — nothing may read it back.
+  The same module lists TOMLs for both tabs (`find_toml_files`, which
+  prunes `TOML_SCAN_SKIP_DIRS`; `is_uq_toml` splits them) and writes
+  uncertainty files (`format_uq_toml`: documented key order, 6x6
+  matrices one row per line, the file's top comment block kept via
+  `uq_header_comment`).
 - `spody_gui/runner.py` — spawns `spody.exe` with the scenario root
   as CWD (Windows MAX_PATH defence), streams output to the terminal
-  pane.
+  pane. `subcommand` may be two words (`"uncertainty montecarlo"`),
+  split before the TOML path.
 - `spody_gui/setup_wizard.py` — first-run data download (DE440
   coverage profiles, EOP, textures).
 - `spopy/` — pure-Python re-implementations of spody-core read-side
@@ -296,6 +322,18 @@ function of those numbers, so any case can be drawn by any thread in
 any order. Substream 0 is the initial state; a parameter's substream
 is the FNV-1a 64 hash of its target path
 (`spody_random_substream_id`). See §7 for the invariants.
+
+**GUI side.** The Uncertainty tab (`uncertainty_panel.py`, §1.3)
+writes the file and launches the run; the Analysis tab reads the two
+statistics files through `plots_uq.py` (`SPECS_MOMENTS`,
+`SPECS_CLOUDS`, registered as kinds `uq_moments` / `uq_clouds`) and
+`info.py` (`info_rows_uq_moments` / `_clouds`, plus the run's
+`.uq.toml` settings). Every view rotates into the nominal's RIC with
+`spopy.rotations.icrf_to_ric` (the engine's twin, never a GUI
+re-implementation), and the curvilinear cloud coordinates repeat the
+engine's `curvilinear()` formulas. The clouds file does not carry the
+nominal: `nominal_at` takes it from the `_moments.uq.bin` of the same
+run folder, and a cloud view without it says so instead of guessing.
 
 ## 2. Dev setup from zero
 
@@ -821,6 +859,17 @@ manual ch. 6 schema table (+ ch. 5 if the form UI is visible,
      explanation.
    - `projection="mollweide"` (or `"aitoff"`/`"hammer"`) for
      geographic ellipse views, 2D only.
+   - `options_bar=factory` for a view with controls of its own:
+     `factory(replot) -> QWidget`, built once by the panel, shown
+     above the canvas only while the view is active, calling
+     `replot()` after each change. Keep the view's settings in a
+     small class-level state object the plot function reads (see
+     `CloudView` in `plots_uq.py`). A **3D** view with an options bar
+     is a dedicated scene: the panel hides the orbit scene's sun row,
+     animation bar and Scene options for it, so do not draw orbit
+     decoration there. Any text drawn inside a VTK scene (legends,
+     labels) must stay ASCII: the VTK font has no Greek glyphs, so
+     write `sigma`, not `σ` (matplotlib and Qt widgets are fine).
 
 **Break risk:** essentially zero for other views (the registry is
 additive); the classic mistake is hardcoding a body (radius,
@@ -1398,6 +1447,18 @@ Checklist, in order:
      `_on_run_error`, and must stay idempotent;
    - remember §3.3's GUI rule: launch `python -m spody_gui` and get
      the owner's OK before committing.
+   - **A subcommand with its own input file gets its own tab**, not
+     a form button (template: `uncertainty_panel.py`). Checklist:
+     the Run tab's combo must skip the new files
+     (`_refresh_toml_combo` filters with a `toml_io` predicate like
+     `is_uq_toml`); `_open_path` routes them to the tab and brings it
+     to the front; `_menu_new` / `_menu_save` / `_menu_save_as` and
+     `_refresh_title` follow the tab shown; `closeEvent` asks the
+     tab's `maybe_save()` too; the launch reuses the shared runner
+     with a `_run_owner` value, and `_on_run_finished` /
+     `_on_run_error` / `_on_run_started` handle that owner on every
+     path (terminal, `set_running`, finish). Reuse the RUN / Stop
+     looks from `toml_form.RUN_BUTTON_QSS` / `STOP_BUTTON_QSS`.
 7. **Docs catch-up** (§3.3): manual ch. 12 section (+ ch. 5 form
    row and ch. 6/11 pointers if the subcommand feeds a TOML key),
    README feature list, CHANGELOG, this guide if the recipe moved.

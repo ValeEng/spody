@@ -358,6 +358,108 @@ C = lower_to_full(mom["cov"], 6)          # (epochs, 6, 6)
 cloud, n_cases, n_snap = read_uq_clouds("…_iss_mc_clouds.uq.bin")
 ```
 
+## The Uncertainty tab
+
+The GUI edits and runs uncertainty files in its own tab (layout and
+buttons in chapter 4). The Run tab does not list `*.uq.toml` files,
+and **File &rsaquo; Open** of one brings the Uncertainty tab to the
+front. The bundled example `examples/iss_montecarlo/` (the ISS for
+3 days, 500 cases, about a minute on 8 threads) is a ready-made
+starting point.
+
+The form mirrors the file, one group per table, with the keys as
+labels:
+
+- **`[montecarlo]`**: `scenario` lists the scenario TOMLs under the
+  working dir (run-folder copies and drafts left out), plus
+  **Browse&hellip;**. Under it a grey line reads the scenario back:
+  object kind, duration, and the output step, since every snapshot
+  must be a multiple of it. `snapshots_s` takes seconds separated by
+  commas.
+- **`[montecarlo.initial_state]`** (a check box turns it off): `axes`
+  RIC or ICRF; *given as* standard deviations (with an optional 6&times;6
+  correlation) or a 6&times;6 covariance. Both matrices are symmetric
+  by construction: typing a cell fills its mirror, and the
+  correlation's diagonal is fixed at 1.
+- **`[montecarlo.parameters]`**: one row per parameter. *Target*
+  lists only what can be dispersed for the scenario's object
+  (spacecraft or debris); *Scenario value* shows the value the
+  scenario gives it (the centre of the distribution); *&sigma; given
+  as* offers the kinds the distribution accepts (absolute or percent
+  for a normal, percent or &sigma; of ln for a lognormal);
+  *Scenario value is* (mean or median) is enabled only for a
+  lognormal and has no default.
+
+The TOML preview under the form shows what Save writes. While the
+form cannot be written yet (no scenario, a lognormal without *Scenario
+value is*, a number that does not parse) the preview lists the
+reasons and Save refuses with the same list. Everything else is
+checked by the engine: **Draw samples** runs the same checks as a
+full run in a fraction of a second. Save keeps the comment block at
+the top of a file; comments further down are not kept. A file inside
+a run folder is the run's copy, so Save on it always asks for a new
+path.
+
+## Viewing the results
+
+Load the moments file (`_moments.uq.bin`) or the clouds file
+(`_clouds.uq.bin`) in the Analysis tab, or press **Open results in
+Analysis** after a run. The views are listed in chapter 9:
+
+- moments: &sigma; of position and velocity in R, I, C, curvilinear
+  vs RIC &sigma;, the position correlations, the bias with its
+  &plusmn;2 standard-error band, the RMS about the nominal, and n(t);
+- clouds: the cases at each snapshot in the I&ndash;R, I&ndash;C and
+  C&ndash;R planes with their 3&sigma; ellipse, the I&ndash;R plane in
+  curvilinear coordinates, and **Cloud 3D**.
+
+The Info tab gives, for the moments file, the epochs, the cases alive
+at the start and at the end, the error of the &sigma; estimates
+(1/&radic;(2(N &minus; 1))) and the last epoch's &sigma;, bias and RMS;
+for the clouds file, the &sigma; in R, I, C at each snapshot. Both
+also show the settings of the run's `.uq.toml`.
+
+### Reading the 3D cloud
+
+**Cloud 3D** is a scene of its own, with its own options bar
+(*Coordinates* RIC or curvilinear, *Show* all snapshots or one,
+*Point size*) and a **How to read this view** button that opens the
+guide below.
+
+Each point is one case at the chosen snapshot, placed in the R, I, C
+axes of the nominal (case 0), which sits at the origin. In
+curvilinear coordinates the in-track and cross-track components are
+arc lengths along the nominal orbit instead of straight-line
+distances.
+
+The three components differ by orders of magnitude (in-track errors
+grow to kilometres, radial and cross-track stay at tens of metres), so
+**each axis is stretched by its own standard deviation**: one unit
+along R, I or C is one &sigma; of the points shown, worth the number of
+metres the legend gives. Without correlations the cloud would be a
+round ball; an elongated or tilted cloud shows correlated errors.
+
+The &sigma; are computed over **all the points on screen**. With all
+snapshots shown they come from the clouds together, dominated by the
+latest and widest one, so the earlier clouds look small: that is the
+scale, not an error. Show one snapshot to see it at its own scale.
+
+The R, I, C arrows start at the nominal and are 3&sigma; long. The
+cloud's centre is off the origin when the cases are biased (drag, for
+instance, running them ahead of the nominal): that offset is the bias
+of the *Centre and error* plots.
+
+Each translucent shell is the **3&sigma; ellipsoid of one snapshot's
+cloud**, centred on its mean and built from its full covariance,
+correlations included. For a Gaussian cloud 2.9 % of the cases fall
+outside it: in three dimensions 3&sigma; encloses 97.1 %, not the
+99.7 % of one dimension. The legend counts the cases outside for each
+snapshot. Many more than 2.9 % means the cloud is not Gaussian,
+typically because the dynamics curl it into a banana along the orbit;
+the curvilinear coordinates straighten that shape. In the ISS example
+at 3 days, 29 of 500 cases are outside in RIC and 19 in curvilinear,
+against about 15 for a Gaussian.
+
 ## Practical notes
 
 - **Time.** A case costs about as much as one `spody propagate`; the

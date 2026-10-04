@@ -2,7 +2,7 @@
 
 Once the wizard has done its job you can take stock of the
 application proper. This chapter is a tour of the main window: the
-two top-level modes (**Run** and **Analysis**), the menus, the
+top-level modes (**Run**, **Uncertainty**, **Analysis**), the menus, the
 status bar, and how the pieces work together over the course of a
 typical session. Detailed coverage of the form, the schema, the
 plot catalogue, and the diff workflow waits for the chapters that
@@ -19,14 +19,14 @@ The window divides into five regions:
    Both the Run tab's TOML picker and the Analysis tab's bin tree
    read from this one path, so picking a folder here drives every
    downstream view.
-3. The **mode tab strip** below the top bar, with three tabs:
-   **Run**, **Analysis**, **Re-run**. The window switches between
+3. The **mode tab strip** below the top bar, with four tabs:
+   **Run**, **Uncertainty**, **Analysis**, **Re-run**. The window switches between
    completely different layouts depending on which tab is active;
    the menus and the top bar stay shared.
 4. The **active workspace**, which fills the bulk of the window
    and changes shape with the mode (see sections 4.2 and 4.3).
 5. The **status bar** along the bottom, with the path of the
-   currently loaded TOML on the left and the run state
+   TOML of the tab being shown on the left and the run state
    (`idle`, `running 12.3s`, `OK (47.1s)`, `exit 1 (3.2s)`) on the
    right.
 
@@ -54,7 +54,8 @@ redistribute width:
 | Live TOML preview below   | Engine status (idle / running)         |
 
 The **TOML combo** lists every `.toml` file under the shared
-working dir, scanned fully recursively. Snapshots inside
+working dir, scanned fully recursively, except the uncertainty files
+(`*.uq.toml`), which belong to the Uncertainty tab. Snapshots inside
 `output/<ts>/` are included as load targets, identifiable by the
 `<ts>_` filename prefix; draft files produced by Save (see
 chapter 5) carry a trailing `(draft)` tag. Entries display
@@ -109,6 +110,44 @@ Three action buttons sit at the top of the form column itself
 Detailed coverage of the form and the schema appears in chapters 5
 and 6.
 
+## The Uncertainty tab
+
+The Uncertainty tab edits and runs **uncertainty files**
+(`<name>.uq.toml`, chapter 14): a Monte Carlo that propagates many
+copies of a scenario with the uncertain quantities drawn at random.
+Its layout is the Run tab's:
+
+| Top row (full tab width)                                         |
+|------------------------------------------------------------------|
+| TOML combo + **Load TOML&hellip;** + **Save** + **Save As&hellip;** |
+
+| Pane (left)                                   | Pane (right)        |
+|-----------------------------------------------|---------------------|
+| path + **Draw samples** / **RUN** / **Stop**  | Terminal view       |
+| **Open results in Analysis** + outcome badge  |                     |
+| Form: `[montecarlo]`, `[montecarlo.initial_state]`, `[montecarlo.parameters]` | |
+| Live TOML preview below                       |                     |
+
+The combo lists the `*.uq.toml` files under the working dir. The
+form is described in chapter 14 (*The Uncertainty tab*); the
+buttons:
+
+- **Draw samples**: `spody uncertainty montecarlo <file>
+  --samples-only`. Checks the file against its scenario and writes
+  the drawn cases without propagating (well under a second): the
+  Validate of this tab.
+- **RUN** (green): the full Monte Carlo. Unsaved edits are saved
+  first; the engine reads the file on disk.
+- **Stop** (red): same as **Run &gt; Stop**.
+- **Open results in Analysis**: enabled after a successful RUN;
+  switches to the Analysis tab with the run's moments file loaded
+  (the clouds file is in the same run folder).
+
+The badge on the right reports the outcome (`✓ Monte Carlo done`,
+`✓ samples drawn`, or `✗ exit N: see the terminal`). One engine
+process runs at a time: while a Monte Carlo runs, RUN is disabled in
+the Run tab too.
+
 ## The Analysis tab
 
 The Analysis tab is where you inspect simulation outputs. Its
@@ -155,15 +194,18 @@ switch.
 
 ### File
 
-- **New** &mdash; reset the Run-tab form to a blank scenario.
+- **New** &mdash; reset the form of the tab being shown (Run or
+  Uncertainty) to a blank file.
 - **Open&hellip;** &mdash; open a `.toml` file (also achievable via the
   Run tab's **Load TOML&hellip;** button or by picking an entry
-  from the TOML combo).
+  from the TOML combo). An uncertainty file (`*.uq.toml`) opens in
+  the Uncertainty tab, which comes to the front.
 - **Open Recent &rsaquo;** &mdash; jump to one of the last eight files
   you have opened. **Clear list** at the bottom of the submenu
   empties the history.
-- **Save** / **Save As&hellip;** &mdash; write the current form state to
-  the current path, or to a chosen path.
+- **Save** / **Save As&hellip;** &mdash; write the form of the tab
+  being shown (Run or Uncertainty) to its current path, or to a
+  chosen path.
 - **Quit**.
 
 ### Run
@@ -199,8 +241,8 @@ switch.
 The status bar at the very bottom of the window shows two
 permanently visible items:
 
-- on the **left**, the absolute path of the TOML the Run tab is
-  currently editing (or the literal string `(unsaved)` if you have
+- on the **left**, the absolute path of the TOML the tab being shown
+  (Run or Uncertainty) is currently editing (or the literal string `(unsaved)` if you have
   never saved). An asterisk after the path (`<path>*`) indicates
   unsaved edits in the form;
 - on the **right**, the engine's current state:

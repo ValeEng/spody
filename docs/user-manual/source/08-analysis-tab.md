@@ -336,6 +336,15 @@ plot redraws; clear it to unset. It is independent of the
 different: that one is the *upper bound of a cumulative window*, this
 one is *an instant*.
 
+## 3D views with their own options
+
+A 3D view that is not an orbit scene comes with an **options bar of
+its own** above the canvas, shown only while that view is active;
+the orbit scene's sun row, animation bar and *Scene options* are
+hidden for it. Today this is *Cloud 3D* of a Monte Carlo clouds file
+(chapter 9): coordinates, snapshots, point size, and a **How to read
+this view** guide.
+
 ## 3D UTC overlay
 
 A small text overlay at the bottom-right of the 3D canvas shows
@@ -512,7 +521,8 @@ rows always come from the file itself:
 - **Folder** &mdash; the absolute parent directory.
 - **Type** &mdash; one of `trajectory (SPDYOUT_)`, `accelerations
   (SPDYACC_)`, `events log (SPDYEVT_)`, `events log (SPDYEVTB,
-  batch-aggregated)`.
+  batch-aggregated)`, `Monte Carlo moments (SPDYUQM_)`, `Monte Carlo
+  clouds (SPDYUQC_)`.
 - **Records** &mdash; the record count.
 
 The remaining rows come from the **per-run snapshot TOML** the
@@ -631,6 +641,25 @@ non-zero:
   silently dropped from the pairing &mdash; expect
   `2 &times; Complete eclipses + odd-tails = Trigger records`
   per group.
+
+### Monte Carlo files (`SPDYUQM_` / `SPDYUQC_`)
+
+Both start with a *Monte Carlo settings* section read from the run
+folder's `<ts>_<name>.uq.toml`: cases, seed, the dispersed initial
+state and parameters. Then:
+
+- **moments** &mdash; epochs and time span, the cases alive at the
+  first and last epoch, the **error of a &sigma; estimate**
+  (1/&radic;(2(N &minus; 1)): about 3 % with 500 cases, so a &sigma; of
+  13950 m means 13950 &plusmn; 440 m), and at the last epoch the
+  position &sigma;, velocity &sigma;, bias and RMS in R, I, C and the
+  curvilinear &sigma;;
+- **clouds** &mdash; the snapshots and, for each, the number of cases
+  and the position &sigma; in R, I, C.
+
+Numbers are written in plain notation (13950 m, 0.03589 m/s), never
+in scientific notation. The views are in chapter 9; how to read the
+3D cloud is in chapter 14.
 
 ### Diff overlay (plot-aware)
 

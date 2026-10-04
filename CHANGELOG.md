@@ -47,6 +47,34 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   relative accuracy on small eigenvalues (used to report a covariance
   that is not positive definite).
 
+- **GUI: Uncertainty tab and Monte Carlo views** (manual ch. 4, 8, 9,
+  14). A fourth tab edits `<name>.uq.toml` files with the Run tab's
+  layout (TOML row, form, live TOML preview, terminal): scenario
+  picked from the working dir with its object kind, duration and
+  output step read back; initial-state error as RIC / ICRF sigmas with
+  an optional correlation or a 6x6 covariance (symmetric editors);
+  parameters with the scenario value shown and `scenario_value_is`
+  required for a lognormal. **Draw samples** (`--samples-only`),
+  **RUN** and **Stop** run on the shared runner into the tab's own
+  terminal; **Open results in Analysis** opens the run's moments
+  file. A run launched from the tab is bit-identical to the same run
+  from the command line (moments, clouds, nominal; events equal once
+  sorted). The Run tab no longer lists `*.uq.toml`; File > Open routes
+  them to the new tab, and File > New / Save / Save As act on the tab
+  shown. Analysis reads `SPDYUQM_` and `SPDYUQC_`: position and
+  velocity sigma in RIC, curvilinear vs RIC sigma, correlations, bias
+  with a +/-2 standard-error band, RMS about the nominal, n(t); 2D
+  clouds (I-R, I-C, C-R, and I-R curvilinear) with each snapshot's
+  3-sigma ellipse; **Cloud 3D**, a dedicated scene with its own
+  options bar (`PlotSpec.options_bar`), axes stretched to one sigma,
+  each snapshot's 3-sigma covariance ellipsoid, the count of cases
+  outside it (2.9 % for a Gaussian in 3D; 29 of 500 in RIC and 19 in
+  curvilinear at 3 days on the ISS example) and a reading guide. Info
+  rows for both files, numbers never in scientific notation.
+  `force_model.density_scale` joins the GUI's batch target list (the
+  engine already accepted it). New example `examples/iss_montecarlo/`
+  (ISS, 3 days, 500 cases, about a minute on 8 threads).
+
 - **Integration in TT around the Earth: `integrator.time_scale =
   "tt"`** (optional; default `"tdb"`, every earlier run bit for bit).
   The IERS Conventions 2010 (TN36 sec. 10.3) give TT or TCG as the

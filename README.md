@@ -271,7 +271,12 @@ Ordered roughly by what unlocks the most for users.
       spody-core) so every output is bit-identical on any thread
       count; bias + covariance at every epoch (`SPDYUQM_`), clouds at
       snapshots (`SPDYUQC_`), RIC and curvilinear sigma table, impacts
-      with a 95 % interval; samples file reruns as a `spody batch`
+      with a 95 % interval; samples file reruns as a `spody batch`.
+      GUI: an **Uncertainty** tab that edits and runs the `.uq.toml`
+      (Draw samples / RUN / Stop, live TOML preview) and Analysis views
+      for the moments and clouds (sigma, bias, correlations, n(t), 2D
+      clouds with 3-sigma ellipses, a 3D cloud with covariance
+      ellipsoids)
 - [x] `spody calibrate` — engine-side fit of the drag
       density-scale `k(t)` node table against a full-state
       reference (sliding windows, drag on/off arc pairs, in-track
@@ -468,10 +473,11 @@ spody/
 │   ├── gps_g11_validation/   # Earth HF vs IGS SP3 (GPS G11, multi-day)
 │   ├── glonass_r03_validation/ # Earth HF vs MGEX SP3 (GLONASS R03, 7-day)
 │   ├── iss_drag_calibration/ # ISS 15-day drag bench vs NASA/JSC OEM + `spody calibrate`
+│   ├── iss_montecarlo/       # ISS 3-day Monte Carlo, 500 cases (`spody uncertainty montecarlo`)
 │   └── cr3bp_em_l4/          # CR3BP Earth-Moon L4 30-day stability smoke test
 ├── python/
 │   ├── spody_gui/            # PySide6 frontend (Setup wizard, TOML editor, runner,
-│   │                         #  Analysis tab, UTC<->ET converter, ...)
+│   │                         #  Uncertainty tab, Analysis tab, UTC<->ET converter, ...)
 │   ├── spody_io/             # NumPy readers for the binary outputs (.bin / SPDYEVTB)
 │   ├── spopy/                # Pure-Python DE440 + ICRF<->Moon PA rotations
 │   ├── spoviz/               # 3D astrodynamics visualization library (VTK + numpy;

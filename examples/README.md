@@ -12,6 +12,7 @@ without copying-and-tweaking from an existing one.
 | [`gps_g11_validation/`](gps_g11_validation/)     | propagate | Earth HF vs IGS SP3 precise orbits (GPS G11, 7 days)    |
 | [`glonass_r03_validation/`](glonass_r03_validation/) | propagate | Earth HF vs MGEX SP3 (GLONASS R03, 7 days)          |
 | [`iss_drag_calibration/`](iss_drag_calibration/) | propagate + calibrate | ISS 15-day drag bench vs the NASA/JSC OEM: `convert oem` -> `spody calibrate` -> propagate with the fitted k(t) |
+| [`iss_montecarlo/`](iss_montecarlo/)             | uncertainty montecarlo | ISS 3 days, 500 cases: OD-like initial error in RIC + lognormal Cd (mean) and density scale (median); ~1 min on 8 threads |
 | [`cr3bp_em_l4/`](cr3bp_em_l4/)                   | propagate | CR3BP Earth-Moon L4 30-day stability smoke test         |
 | [`batch_demo/`](batch_demo/)                     | batch     | Smoke test: 3-case mass + SRP sweep over 1 hour         |
 | [`debris_demo/`](debris_demo/)                   | batch     | Debris-mode A/m sweep -- 3 cases, 1 hour                |

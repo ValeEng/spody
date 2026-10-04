@@ -2,7 +2,7 @@
 
 This chapter is the reference for every plot SpOdy ships with. The
 entries are grouped first by file kind (trajectory, accelerations,
-events) and within each by the topic folder the plot tree shows
+events, Monte Carlo) and within each by the topic folder the plot tree shows
 them under. Each entry documents what the plot displays, the
 formulas used, whether the plot is *overlay-safe* (a single line
 per file, so an N-file overlay produces N lines rather than 3N),
@@ -745,3 +745,90 @@ fraction against a denominator that shrinks as the cloud dies. The
 bars plus `ended` always sum to the propagated population.
 
 **Overlay-safe.** No (single-file aggregate).
+
+
+## Monte Carlo plots (`SPDYUQM_`, `SPDYUQC_`)
+
+A Monte Carlo run (chapter 14) writes two statistics files: the
+**moments** (`_moments.uq.bin`, the bias and covariance of the cloud
+at every output epoch of the nominal) and the **clouds**
+(`_clouds.uq.bin`, every case at the snapshot epochs). Every view
+works in the **RIC axes of the nominal** at each epoch (radial,
+in-track, cross-track; rotation only, the CCSDS RTN convention),
+with the covariance rotated as R&nbsp;C&nbsp;R&#7488;. All the views
+are single-file: none is overlay-safe.
+
+### Spread (moments)
+
+#### Position σ R/I/C (log y)
+
+&sigma; of the three position components [m] against time. In LEO
+the in-track &sigma; dominates and grows (linearly from a velocity
+error, quadratically from a drag error) while radial and cross-track
+stay bounded.
+
+#### Velocity σ R/I/C (log y)
+
+The same for the velocity [mm/s]. In rotation-only RIC the velocity
+of a case that is ahead along the orbit points in a slightly
+different direction, so a large in-track spread shows up in the
+radial velocity too (&sigma;&nbsp;v&#7523; &asymp; v&nbsp;&sigma;&#7522;/r).
+
+#### Curvilinear vs RIC σ (log y)
+
+The RIC &sigma; as wide pale bands and the curvilinear &sigma; (radial =
+difference of radii, in-track and cross-track = arcs along the
+nominal orbit) as thin lines on top. The two agree while the cloud is
+short compared with the orbit radius; they part where the cloud
+bends along the orbit, and the curvilinear one is then the right
+description of the spread.
+
+#### Position correlations
+
+&rho;&nbsp;RI, &rho;&nbsp;RC, &rho;&nbsp;IC in [&minus;1, 1]. A strong
+negative &rho;&nbsp;RI is the signature of drag: a case that decays
+lower runs faster and ends ahead.
+
+### Centre and error (moments)
+
+#### Bias R/I/C
+
+Mean of the cloud minus the nominal [m], with a band of &plusmn;2
+standard errors of the mean (2&sigma;/&radic;n): a bias inside its
+band cannot be told from sampling noise; outside, the cloud's centre
+really moves away from the nominal (non-linear dynamics, or a
+lognormal parameter whose mean is not the scenario value).
+
+#### RMS about the nominal (log y)
+
+&radic;(&sigma;&sup2;&nbsp;(n&minus;1)/n + bias&sup2;) per component [m]: the
+typical distance of a case from the nominal, spread and bias
+together.
+
+#### Cases alive n(t)
+
+The number of cases with a state at t. It drops at each impact; the
+other views describe the survivors from then on.
+
+### Clouds
+
+#### Cloud I–R, I–C, C–R (RIC) and Cloud I–R curvilinear
+
+The cases at each snapshot as points in one plane [m], the nominal at
+the origin (the black cross), one colour per snapshot, each with the
+**3&sigma; ellipse** of its own points (sample covariance, centred on
+their mean). A 2D Gaussian leaves 1.1 % of the points outside its
+3&sigma; ellipse. The curvilinear view straightens the banana that a
+long cloud draws in the RIC plane.
+
+The nominal's state at the snapshots comes from the moments file of
+the same run folder; without it the views say so.
+
+#### Cloud 3D
+
+The cases at the snapshots in the three axes, each axis stretched so
+one unit is one &sigma; of the points shown, with the 3&sigma;
+covariance ellipsoid of each snapshot and the count of cases outside
+it. A dedicated scene with its own options bar (coordinates, which
+snapshots, point size) and a **How to read this view** button; the
+full guide is in chapter 14, *Reading the 3D cloud*.
