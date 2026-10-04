@@ -245,16 +245,16 @@ static int cmd_propagate(int argc, char **argv) {
         return 1;
     }
 
-    /* --out redirects every output file (CSV / binary / log / accelerations
-     * / events) to that directory, keeping only the basename from the TOML.
-     * Lets the user reuse the same TOML for ad-hoc runs without editing it.
+    /* --out redirects every output file (CSV / binary / accelerations /
+     * events, and the log) to that directory, keeping only the basename
+     * from the TOML. Lets the user reuse the same TOML for ad-hoc runs
+     * without editing it.
      * Acts as an escape hatch: when given, the per-run timestamp folder
      * is disabled and the user is on their own about disambiguation. */
     if (out_dir) {
         struct { char *dst; size_t cap; } slots[] = {
             { cfg.csv_file,           sizeof cfg.csv_file           },
             { cfg.bin_file,           sizeof cfg.bin_file           },
-            { cfg.log_file,           sizeof cfg.log_file           },
             { cfg.accelerations_file, sizeof cfg.accelerations_file },
             { cfg.events_log,         sizeof cfg.events_log         },
         };
@@ -266,13 +266,14 @@ static int cmd_propagate(int argc, char **argv) {
                 snprintf(slots[i].dst, slots[i].cap, "%s", tmp);
             }
         }
-    } else if (cfg.output_dir[0]) {
+    }
+    char run_subdir[SPODY_MAX_PATH] = "";
+    if (!out_dir && cfg.output_dir[0]) {
         /* Default behaviour when [output].output_dir is set: create a
          * fresh timestamp subfolder under it, snapshot the source TOML
          * inside, and rewrite every output path to live in that folder.
          * Each run is then fully self-contained -- inputs + outputs in
          * the same dir, named by the moment the run started. */
-        char run_subdir[SPODY_MAX_PATH];
         if (spody_io_make_run_subdir(cfg.output_dir, run_subdir,
                                      sizeof run_subdir, &err) != SPODY_OK) {
             spody_error_print(&err);
@@ -292,17 +293,35 @@ static int cmd_propagate(int argc, char **argv) {
             spody_log_close_mirror(); spody_free_input(&cfg);
             return 1;
         }
-        spody_log_printf("  run dir    : %s\n", run_subdir);
     }
 
-    /* Open the tee log mirror if requested. Done BEFORE the banner so the
-     * "spody propagate: ..." line and everything that follows is captured. */
-    if (cfg.log_file[0]) {
-        char log_path[SPODY_MAX_PATH];
-        spody_io_timestamp_filename(cfg.log_file, log_path, sizeof log_path);
+    /* The log is unconditional: no run without its log, and if it cannot
+     * be opened the run does not start. Opened BEFORE the banner so the
+     * "spody propagate: ..." line and everything that follows is
+     * captured. Named after simulation.name: <ts>_<name>.log inside the
+     * run folder, <name>_<ts>.log in --out or beside the TOML. */
+    {
+        char log_name[SPODY_MAX_SIM_NAME + 8], log_path[SPODY_MAX_PATH];
+        snprintf(log_name, sizeof log_name, "%s.log", cfg.sim_name);
+        if (run_subdir[0]) {
+            spody_io_run_subdir_filepath(run_subdir, log_name,
+                                         log_path, sizeof log_path);
+        } else {
+            /* --out, or the TOML's own folder (its path up to the
+             * basename, separator included). */
+            char base[SPODY_MAX_PATH];
+            if (out_dir) {
+                snprintf(base, sizeof base, "%s/%s", out_dir, log_name);
+            } else {
+                int dir_len = (int)(spody_io_basename(toml_path) - toml_path);
+                snprintf(base, sizeof base, "%.*s%s", dir_len, toml_path,
+                         log_name);
+            }
+            spody_io_timestamp_filename(base, log_path, sizeof log_path);
+        }
         if (spody_log_open_mirror(log_path) != 0) {
             spody_error_set(&err, SPODY_ERR_IO,
-                    "cannot open log_file '%s'", log_path);
+                    "cannot open the run log '%s'", log_path);
             spody_error_print(&err);
             spody_log_close_mirror(); spody_free_input(&cfg);
             return 1;
@@ -310,6 +329,8 @@ static int cmd_propagate(int argc, char **argv) {
     }
 
     spody_log_printf("spody propagate: %s\n", toml_path);
+    spody_input_warn_deprecated(&cfg);
+    if (run_subdir[0]) spody_log_printf("  run dir    : %s\n", run_subdir);
     spody_log_printf("  duration   : %.3e s (%.3f days)\n",
            cfg.duration_s, cfg.duration_s / 86400.0);
     spody_log_printf("  mode       : %s",
@@ -472,14 +493,14 @@ static int cmd_batch(int argc, char **argv) {
     }
 
     /* Open the batch-level tee log inside output/batch/, named after the
-     * batch + timestamp. Only when cfg.log_file is enabled in the TOML
-     * (presence as toggle, same convention as csv/bin). */
-    if (cfg.log_file[0]) {
+     * batch + timestamp. Unconditional, like the single-run log: if it
+     * cannot be opened the batch does not start. */
+    {
         char log_path[SPODY_MAX_PATH];
         spody_io_batch_log_path(cfg.batch, batch_subdir, log_path, sizeof log_path);
         if (spody_log_open_mirror(log_path) != 0) {
             spody_error_set(&err, SPODY_ERR_IO,
-                    "cannot open batch log_file '%s'", log_path);
+                    "cannot open the batch log '%s'", log_path);
             spody_error_print(&err);
             spody_log_close_mirror(); spody_free_input(&cfg);
             return 1;
@@ -487,6 +508,7 @@ static int cmd_batch(int argc, char **argv) {
     }
 
     spody_log_printf("spody batch: %s\n", toml_path);
+    spody_input_warn_deprecated(&cfg);
     spody_log_printf("  name      : %s\n", cfg.batch->name);
     spody_log_printf("  cases     : %d  (%d columns)\n",
            cfg.batch->n_cases, cfg.batch->n_columns);

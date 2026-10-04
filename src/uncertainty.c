@@ -392,7 +392,23 @@ int spody_uncertainty_montecarlo_run(const char *uq_path, int samples_only)
         spody_error_print(&err);
         goto done;
     }
+
+    /* Run folder and log first, so the log holds the whole run, a
+     * refusal below included. */
+    char run_dir[SPODY_MAX_PATH], path[SPODY_MAX_PATH], base[SPODY_MAX_SIM_NAME + 32];
+    if (spody_io_make_run_subdir(out_dir, run_dir, sizeof run_dir, &err) != SPODY_OK) {
+        spody_error_print(&err);
+        goto done;
+    }
+    snprintf(base, sizeof base, "%s.uq.log", uq.name);
+    spody_io_run_subdir_filepath(run_dir, base, path, sizeof path);
+    if (spody_log_open_mirror(path) != 0) {
+        spody_error_set(&err, SPODY_ERR_IO, "cannot open the run log '%s'", path);
+        spody_error_print(&err);
+        goto done;
+    }
     print_summary(&uq, &sc, out_dir);
+    spody_log_printf("  run folder: %s\n", run_dir);
 
     /* The nominal initial state in ICRF: the RIC axes and every offset
      * refer to it, exactly as spody batch adds its delta columns. */
@@ -410,12 +426,6 @@ int spody_uncertainty_montecarlo_run(const char *uq_path, int samples_only)
         goto done;
     }
 
-    char run_dir[SPODY_MAX_PATH], path[SPODY_MAX_PATH], base[SPODY_MAX_SIM_NAME + 32];
-    if (spody_io_make_run_subdir(out_dir, run_dir, sizeof run_dir, &err) != SPODY_OK) {
-        spody_error_print(&err);
-        goto done;
-    }
-    spody_log_printf("  run folder: %s\n", run_dir);
     spody_io_run_subdir_filepath(run_dir, "input.toml", path, sizeof path);
     if (spody_io_copy_file(uq.scenario, path, &err) != SPODY_OK) {
         spody_error_print(&err);
@@ -438,6 +448,7 @@ int spody_uncertainty_montecarlo_run(const char *uq_path, int samples_only)
     }
     rc = 0;
 done:
+    spody_log_close_mirror();
     spody_free_shared(&shared);
     spody_free_input(&sc);
     return rc;

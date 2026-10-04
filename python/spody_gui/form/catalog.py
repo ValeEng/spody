@@ -180,7 +180,7 @@ TOOLTIPS: dict[str, str] = {
     "output.output_dir":             "Parent directory for the per-run timestamp folder spody.exe creates at launch (<output_dir>/<UTC-ISO8601>/). Each run is self-contained: a snapshot of this TOML lands there as input.toml alongside all output files. Applies to BOTH single-run propagation and batch (the form mirrors this into batch.output_dir on emit). Leave empty to write outputs to the TOML's own directory with no per-run folder.",
     "output.csv_file":               "State vector CSV stream. Auto-named '<sim_name>_state_icrf.csv' under output_dir.",
     "output.bin_file":               "State vector binary stream (SPDYOUT_). Auto-named '<sim_name>_state_icrf.bin'.",
-    "output.log_file":               "Tee stdout/stderr to a file. Auto-named '<sim_name>.log'.",
+    "output.log_file":               "Every run writes its log (terminal output) as '<sim_name>.log' in the run folder; it cannot be turned off. The TOML key output.log_file is deprecated: the GUI no longer writes it and drops it on load.",
     "output.accelerations_file":     "Per-force acceleration breakdown (SPDYACC_). Auto-named '<sim_name>_acc_icrf.bin'.",
     "output.events_log":             "Event triggers binary. Per-run SPDYEVT_ ('<sim_name>_events.bin') in single-propagate; aggregated SPDYEVTB ('<batch_name>_events.bin') in batch.",
     "events.eclipse_threshold":      "Sunlight-fraction crossing that fires the eclipse event; in [0, 1].",
@@ -286,14 +286,14 @@ DURATION_UNIT_AUTOPICK = ("days", "h", "min")
 # the same dotted TOML paths as the form widgets; values are appended to
 # the simulation's `[simulation].name` to form the basename. Pattern is
 # `_<subject>_<frame>` for streams whose payload is in a specific frame
-# (state, acc), bare suffix for the rest (events have no frame; log is
-# plain text).
+# (state, acc), bare suffix for the rest (events have no frame). The log
+# is not a toggle any more: spody.exe always writes '<sim_name>.log', so
+# it is shown (checked, locked) but never emitted into the TOML.
 OUTPUT_FILE_SUFFIX: dict[str, str] = {
     "output.csv_file":           "_state_icrf.csv",
     "output.bin_file":           "_state_icrf.bin",
     "output.accelerations_file": "_acc_icrf.bin",
     "output.events_log":         "_events.bin",
-    "output.log_file":           ".log",
 }
 
 # Display label for each output checkbox: short + tells the user
@@ -303,5 +303,5 @@ OUTPUT_CHECK_LABEL: dict[str, str] = {
     "output.bin_file":           "state vector binary (<sim_name>_state_icrf.bin)",
     "output.accelerations_file": "accelerations       (<sim_name>_acc_icrf.bin)",
     "output.events_log":         "events              (<sim_name>_events.bin)",
-    "output.log_file":           "log                 (<sim_name>.log)",
+    "output.log_file":           "log                 (<sim_name>.log, always written)",
 }

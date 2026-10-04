@@ -730,13 +730,20 @@ class SectionBuildersMixin:
             "output.bin_file",
             "output.accelerations_file",
             "output.events_log",
-            "output.log_file",
         ):
             cb = QCheckBox(OUTPUT_CHECK_LABEL[key])
             cb.toggled.connect(self._touch)
             cb.toggled.connect(lambda _checked: self._refresh_output_preview())
             self._widgets[key] = cb
             f.addRow("", cb)
+        # The log is unconditional in spody.exe: shown checked and locked,
+        # kept out of self._widgets so load / reset / to_dict never touch
+        # it and the deprecated output.log_file key is never emitted.
+        log_cb = QCheckBox(OUTPUT_CHECK_LABEL["output.log_file"])
+        log_cb.setChecked(True)
+        log_cb.setEnabled(False)
+        log_cb.setToolTip(TOOLTIPS["output.log_file"])
+        f.addRow("", log_cb)
 
         # Live preview of the paths the next Generate will emit. Sits
         # below the checkboxes so the user can sanity-check the
@@ -1905,6 +1912,14 @@ class SectionBuildersMixin:
             return
         lines = [f"{key.rsplit('.', 1)[1]:>19}: {p}"
                  for key, p in paths.items()]
+        # batch.name is derived from simulation.name on emit, so one stem
+        # covers both the single-run and the batch log.
+        name_w = self._widgets.get("simulation.name")
+        stem = (name_w.text().strip()
+                if isinstance(name_w, QLineEdit) else "") or "output"
+        out_dir = self._widgets["output.output_dir"].text().strip()
+        lines.append(f"{'log':>19}: "
+                     + (f"{out_dir}/{stem}.log" if out_dir else f"{stem}.log"))
         self._output_preview_label.setText("\n".join(lines))
 
     def _build_events(self) -> QGroupBox:

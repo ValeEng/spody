@@ -139,7 +139,6 @@ static int run_arc(const InputConfig *base, const SimulationShared *shared,
     cfg.output_mode   = SPODY_OUT_STEP;
     snprintf(cfg.bin_file, sizeof cfg.bin_file, "%s", bin_path);
     cfg.csv_file[0]           = '\0';
-    cfg.log_file[0]           = '\0';
     cfg.accelerations_file[0] = '\0';
     cfg.events_log[0]         = '\0';
 
@@ -192,19 +191,6 @@ int spody_calibrate_run(const char *toml_path,
         goto fail;
     }
 
-    /* Any pre-existing calibration is dropped: the internal drag-on
-     * arcs must run at the raw k = 1 for the fit to price the
-     * uncalibrated model bias. */
-    if (cfg.has_density_scale || cfg.density_scale_file[0]) {
-        spody_log_eprintf(
-            "calibrate: WARNING -- [force_model] density_scale%s in '%s' "
-            "is ignored while calibrating\n",
-            cfg.density_scale_file[0] ? "_file" : "", toml_path);
-        cfg.density_scale         = 1.0;
-        cfg.has_density_scale     = 0;
-        cfg.density_scale_file[0] = '\0';
-    }
-
     size_t rn = 0;
     if (read_spdyout(reference_bin, "reference", &rt, &ry, &rn,
                      &err) != SPODY_OK) goto fail;
@@ -247,6 +233,31 @@ int spody_calibrate_run(const char *toml_path,
     spody_io_run_subdir_filepath(run_dir, "input.toml",
                                  toml_copy, sizeof toml_copy);
     if (spody_io_copy_file(toml_path, toml_copy, &err) != SPODY_OK) goto fail;
+
+    /* The run log is unconditional, as for propagate: <ts>_<name>.log in
+     * the run folder, opened before anything else is reported. */
+    char log_name[SPODY_MAX_SIM_NAME + 8], log_path[SPODY_MAX_PATH];
+    snprintf(log_name, sizeof log_name, "%s.log", cfg.sim_name);
+    spody_io_run_subdir_filepath(run_dir, log_name, log_path, sizeof log_path);
+    if (spody_log_open_mirror(log_path) != 0) {
+        spody_error_set(&err, SPODY_ERR_IO,
+                "cannot open the run log '%s'", log_path);
+        goto fail;
+    }
+    spody_input_warn_deprecated(&cfg);
+
+    /* Any pre-existing calibration is dropped: the internal drag-on
+     * arcs must run at the raw k = 1 for the fit to price the
+     * uncalibrated model bias. */
+    if (cfg.has_density_scale || cfg.density_scale_file[0]) {
+        spody_log_eprintf(
+            "calibrate: WARNING -- [force_model] density_scale%s in '%s' "
+            "is ignored while calibrating\n",
+            cfg.density_scale_file[0] ? "_file" : "", toml_path);
+        cfg.density_scale         = 1.0;
+        cfg.has_density_scale     = 0;
+        cfg.density_scale_file[0] = '\0';
+    }
 
     size_t total_windows = 0;
     for (size_t a = 0; a + 1 < rn; a = window_end(rt, rn, a, win_s)) {

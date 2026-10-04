@@ -397,8 +397,11 @@ class RoundTripMixin:
             if isinstance(output_in, dict):
                 output_in = dict(output_in)
                 derived_dir = output_in.get("output_dir", "")
+                # output.log_file is deprecated (the log is always
+                # written): dropped here, so saving cleans the TOML.
+                output_in.pop("log_file", None)
                 for key in ("csv_file", "bin_file", "accelerations_file",
-                            "events_log", "log_file"):
+                            "events_log"):
                     val = output_in.get(key, "")
                     if isinstance(val, str) and val:
                         output_in[key] = True

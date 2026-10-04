@@ -63,7 +63,6 @@ interval_s = 60.0
 output_dir = "output"
 csv_file   = "output/lro_batch_demo_state_icrf.csv"
 bin_file   = "output/lro_batch_demo_state_icrf.bin"
-log_file   = "output/lro_batch_demo.log"
 
 [batch]
 name          = "mass_srp_sweep"

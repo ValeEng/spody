@@ -182,7 +182,6 @@ void spody_io_rewrite_outputs_to_run_subdir(InputConfig *cfg,
                                             const char *run_subdir) {
     rewrite_one_path(cfg->csv_file,           sizeof cfg->csv_file,           run_subdir);
     rewrite_one_path(cfg->bin_file,           sizeof cfg->bin_file,           run_subdir);
-    rewrite_one_path(cfg->log_file,           sizeof cfg->log_file,           run_subdir);
     rewrite_one_path(cfg->accelerations_file, sizeof cfg->accelerations_file, run_subdir);
     rewrite_one_path(cfg->events_log,         sizeof cfg->events_log,         run_subdir);
 }

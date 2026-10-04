@@ -88,11 +88,11 @@ _KEY_ORDER: dict[str, tuple[str, ...]] = {
     "ephemeris":     ("file",),
     "integrator":    ("type", "rel_tol", "h_init_s", "h_min_s", "h_max_s", "time_scale"),
     # output_dir is the parent under which spody.exe creates the per-run
-    # `<UTC-ISO8601>/` folder for each invocation. The five file paths
+    # `<UTC-ISO8601>/` folder for each invocation. The four file paths
     # are still emitted but spody.exe only keeps their basenames when
     # the run-folder layout is active (output_dir set).
     "output":        ("mode", "interval_s", "output_dir",
-                      "csv_file", "bin_file", "log_file",
+                      "csv_file", "bin_file",
                       "accelerations_file", "events_log"),
     "events":        ("eclipse_threshold",),
     # cases_frame ("icrf" | "ric") + cases_source_file together

@@ -383,7 +383,11 @@ typedef struct {
     double          output_interval_s;
     char            csv_file[SPODY_MAX_PATH];           /* resolved path, "" if none */
     char            bin_file[SPODY_MAX_PATH];           /* resolved path, "" if none */
-    char            log_file[SPODY_MAX_PATH];           /* resolved path, "" if none */
+    char            log_file[SPODY_MAX_PATH];           /* DEPRECATED `output.log_file` as
+                                                         * written (resolved), "" if absent.
+                                                         * The log is always written; this
+                                                         * only feeds the warning of
+                                                         * spody_input_warn_deprecated. */
     char            accelerations_file[SPODY_MAX_PATH]; /* per-force acc binary; "" disables */
     char            events_log[SPODY_MAX_PATH];         /* event triggers binary; "" disables */
     /* Parent directory for the per-run timestamp subfolder. When set,
@@ -517,6 +521,14 @@ void spody_apply_batch_case(const InputConfig *base,
  * Returns SPODY_OK or an error code with *err filled in.
  */
 int spody_validate_input(const InputConfig *cfg, SpodyError *err);
+
+/*
+ * Print one "spody: warning:" line per deprecated key present in *cfg
+ * (today: output.log_file, ignored since the log became unconditional)
+ * through spody_log_eprintf. Commands call it right after opening their
+ * log, so the warning lands in the log too; the run then goes on.
+ */
+void spody_input_warn_deprecated(const InputConfig *cfg);
 
 /*
  * Parse a `<name>.uq.toml` Monte Carlo file into *uq (zeroed on entry).

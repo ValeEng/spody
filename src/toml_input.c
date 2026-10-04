@@ -2009,6 +2009,15 @@ void spody_apply_batch_case(const InputConfig *base, const BatchConfig *batch,
     }
 }
 
+void spody_input_warn_deprecated(const InputConfig *cfg) {
+    if (cfg->log_file[0]) {
+        spody_log_eprintf(
+                "spody: warning: output.log_file is deprecated and ignored: "
+                "every run now writes its log anyway. Remove the "
+                "key from the scenario.\n");
+    }
+}
+
 int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
     spody_error_clear(err);
 
@@ -2025,12 +2034,13 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
     }
 
     /* Output file names, for every dynamics model: a Windows device
-     * name would swallow the data without an error. */
+     * name would swallow the data without an error. simulation.name
+     * names the run log. */
     {
         const struct { const char *path, *what; } out[] = {
             { cfg->csv_file,           "output.csv_file"           },
             { cfg->bin_file,           "output.bin_file"           },
-            { cfg->log_file,           "output.log_file"           },
+            { cfg->sim_name,           "simulation.name"           },
             { cfg->accelerations_file, "output.accelerations_file" },
             { cfg->events_log,         "output.events_log"         },
         };

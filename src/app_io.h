@@ -101,9 +101,9 @@ void spody_io_rewrite_outputs_to_run_subdir(InputConfig *cfg,
 void spody_io_timestamp_filename(const char *base, char *out, size_t out_sz);
 
 /* Compose the batch-level log path:
- *   <batch_subdir>/<batch.name>_<ts>.log
- * The path is derived from the batch name + a UTC timestamp inside
- * output_dir/batch/, independent of cfg.log_file's original value. */
+ *   <batch_subdir>/<ts>_<batch.name>.log
+ * where <ts> is the run folder's own timestamp (its last path
+ * component). cmd_batch always opens it: the log is unconditional. */
 void spody_io_batch_log_path(const BatchConfig *batch,
                              const char *batch_subdir,
                              char *out, size_t out_sz);
