@@ -31,7 +31,9 @@ import numpy as np
 SPODY_BIN_MAGIC = b"SPDYOUT_"
 SPODY_ACC_MAGIC = b"SPDYACC_"
 SPODY_EVT_MAGIC  = b"SPDYEVT_"
-SPODY_EVTB_MAGIC = b"SPDYEVTB"   # aggregated batch events (cmd_batch only)
+SPODY_EVTB_MAGIC = b"SPDYEVTB"   # aggregated batch events (batch, uncertainty)
+SPODY_UQM_MAGIC  = b"SPDYUQM_"   # uncertainty montecarlo moments
+SPODY_UQC_MAGIC  = b"SPDYUQC_"   # uncertainty montecarlo clouds
 
 HEADER_BYTES = 24   # 8 (magic) + 16 (four little-endian uint32)
 

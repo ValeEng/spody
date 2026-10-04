@@ -26,6 +26,8 @@ file kind:
     SPDYOUT_  payload = state dimension (always 6 in v0)
     SPDYACC_  payload = sizeof(ForceBreakdown) record in bytes (v4 432, v3 408, v2 384, v1 360)
     SPDYEVT_  payload = sizeof(EventRecord)   record in bytes  (80)
+    SPDYUQM_  payload = record size in bytes (352), first reserved = N
+    SPDYUQC_  payload = record size in bytes (64), first reserved = N
 
 The on-disk format matches the C structs verbatim (no padding tricks
 needed on x86_64 / aarch64) and is little-endian by definition; the
@@ -55,6 +57,14 @@ from .headers import (
     read_header,
 )
 from .traj import TRAJ_DTYPE, read_trajectory
+from .uq import (
+    SPODY_UQC_MAGIC,
+    SPODY_UQM_MAGIC,
+    UQ_CLOUDS_DTYPE,
+    UQ_MOMENTS_DTYPE,
+    read_uq_clouds,
+    read_uq_moments,
+)
 
 __all__ = [
     "ACCEL_DTYPE", "EVENT_DTYPE", "TRAJ_DTYPE",
@@ -64,4 +74,6 @@ __all__ = [
     "SPODY_ACC_MAGIC", "SPODY_BIN_MAGIC", "SPODY_EVT_MAGIC",
     "SPODY_FM_MAX_THIRD",
     "read_accelerations", "read_events", "read_header", "read_trajectory",
+    "SPODY_UQM_MAGIC", "SPODY_UQC_MAGIC", "UQ_MOMENTS_DTYPE", "UQ_CLOUDS_DTYPE",
+    "read_uq_moments", "read_uq_clouds",
 ]

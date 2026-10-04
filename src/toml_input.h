@@ -470,6 +470,10 @@ typedef struct {
     double   sigma[6];                    /* km x3, km/s x3 (sigma form)      */
     double   correlation[36];             /* row-major, identity if absent    */
     double   covariance[36];              /* row-major, `covariance` form     */
+    /* initial_state.position_km[0..2] / velocity_kms[0..2]: the targets
+     * of the six delta columns a case is applied through
+     * (spody_apply_batch_case), resolved once by the loader. */
+    const SpodyFieldDesc *state_field[6];
 
     int              n_params;
     SpodyUqParameter params[SPODY_UQ_MAX_PARAMS];

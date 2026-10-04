@@ -188,13 +188,8 @@ static int emit_breakdown(FILE *fp, const ForceModelContext *ctx,
 #define SPODY_EVTB_MAGIC   "SPDYEVTB"
 #define SPODY_EVTB_VERSION 1u
 
-typedef struct {
-    int32_t     case_idx;       /* 0-based row index in cases_file */
-    int32_t     _pad;           /* keep `ev` 8-byte aligned */
-    EventRecord ev;             /* 80 bytes: see spody_events.h */
-} BatchEventRecord;
-
-/* Compile-time guard: any drift in BatchEventRecord layout would break
+/* BatchEventRecord itself lives in sim_run.h (uncertainty.c reads the
+ * file back). Compile-time guard: any drift in its layout would break
  * the Python reader, so fail the build instead of silently producing
  * files that can't be parsed. */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L

@@ -49,6 +49,7 @@
 
 #include "app_diagnostics.h"
 #include "sim_setup.h"
+#include "spody_events.h"     /* EventRecord (BatchEventRecord) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,6 +77,15 @@ extern "C" {
  * working unchanged. The two paths are independent: in batch mode the
  * caller MUST blank cfg_i->events_log so spody.exe does not open a
  * per-case file alongside the aggregated one. */
+/* One SPDYEVTB v1 record (88 bytes): int32 case_idx + 4-byte pad so the
+ * embedded EventRecord (spody_events.h, 80 bytes) stays 8-byte aligned.
+ * The file is a 24-byte header followed by these records. */
+typedef struct {
+    int32_t     case_idx;       /* 0-based row index in cases_file */
+    int32_t     _pad;           /* keep `ev` 8-byte aligned */
+    EventRecord ev;             /* 80 bytes: see spody_events.h */
+} BatchEventRecord;
+
 typedef struct {
     FILE   *fp;          /* shared by all threads; header already written */
     int32_t case_idx;    /* 0-based; per-thread (set before each spody_run_simulation call) */

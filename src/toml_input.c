@@ -2934,6 +2934,11 @@ int spody_load_uq_input(const char *path, SpodyUqConfig *uq, SpodyError *err) {
     memset(uq, 0, sizeof *uq);
     if (err) snprintf(err->file, sizeof err->file, "%s", path);
     snprintf(uq->path, sizeof uq->path, "%s", path);
+    static const char *const state_targets[6] = {
+        "initial_state.position_km[0]",  "initial_state.position_km[1]",
+        "initial_state.position_km[2]",  "initial_state.velocity_kms[0]",
+        "initial_state.velocity_kms[1]", "initial_state.velocity_kms[2]" };
+    for (int k = 0; k < 6; ++k) uq->state_field[k] = resolve_field(state_targets[k]);
 
     static const char suffix[] = ".uq.toml";
     size_t n = strlen(path), ns = sizeof suffix - 1;
