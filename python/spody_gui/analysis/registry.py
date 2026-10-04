@@ -32,13 +32,15 @@ from spody_io import (
     read_accelerations,
     read_events,
     read_trajectory,
+    read_uq_clouds,
+    read_uq_moments,
 )
 # The aggregated batch-events magic is exposed through the same
 # package but not re-exported by spody_io.__init__; import directly so
 # detect_kind can tell the two events formats apart.
-from spody_io.headers import SPODY_EVTB_MAGIC
+from spody_io.headers import SPODY_EVTB_MAGIC, SPODY_UQC_MAGIC, SPODY_UQM_MAGIC
 
-from . import plots_accel, plots_cr3bp, plots_diff, plots_events, plots_traj
+from . import plots_accel, plots_cr3bp, plots_diff, plots_events, plots_traj, plots_uq
 from .spec import PlotSpec
 
 
@@ -54,6 +56,8 @@ PLOTS: dict[str, list[PlotSpec]] = {
     "accel":        list(plots_accel.SPECS),
     "events":       list(plots_events.SPECS_SINGLE),
     "events_batch": list(plots_events.SPECS_BATCH),
+    "uq_moments":   list(plots_uq.SPECS_MOMENTS),
+    "uq_clouds":    list(plots_uq.SPECS_CLOUDS),
 }
 
 
@@ -63,6 +67,8 @@ KIND_LABEL = {
     "accel":        "accelerations  (SPDYACC_)",
     "events":       "events log  (SPDYEVT_)",
     "events_batch": "events log  (SPDYEVTB, batch-aggregated)",
+    "uq_moments":   "Monte Carlo moments  (SPDYUQM_)",
+    "uq_clouds":    "Monte Carlo clouds  (SPDYUQC_)",
 }
 
 # `read_events` auto-detects per-run vs batch by peeking the magic and
@@ -74,6 +80,10 @@ READERS = {
     "accel":        read_accelerations,
     "events":       read_events,
     "events_batch": read_events,
+    # The uq readers also return N (and the snapshot count); the panel
+    # wants the record array alone.
+    "uq_moments":   lambda p: read_uq_moments(p)[0],
+    "uq_clouds":    lambda p: read_uq_clouds(p)[0],
 }
 
 
@@ -88,4 +98,6 @@ def detect_kind(path: Path) -> str | None:
     if m == SPODY_ACC_MAGIC:  return "accel"
     if m == SPODY_EVT_MAGIC:  return "events"
     if m == SPODY_EVTB_MAGIC: return "events_batch"
+    if m == SPODY_UQM_MAGIC:  return "uq_moments"
+    if m == SPODY_UQC_MAGIC:  return "uq_clouds"
     return None

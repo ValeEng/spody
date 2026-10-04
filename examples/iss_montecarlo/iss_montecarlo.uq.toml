@@ -1,0 +1,45 @@
+# SpOdy uncertainty file -- ISS Monte Carlo (manual ch. 14).
+#
+#   spody uncertainty montecarlo examples/iss_montecarlo/iss_montecarlo.uq.toml
+#
+# 500 copies of input.toml, each with its own initial-state error and
+# its own drag, for 3 days. What to expect (8 threads, about a minute):
+#
+#   - the in-track sigma grows from 50 m to about 1 km at 6 h, 4 km at
+#     1 day and 14 km at 3 days: the initial velocity error makes it
+#     grow linearly, the drag errors quadratically (manual ch. 14);
+#   - radial stays at 30-50 m and cross-track at 10 m;
+#   - the cloud's centre drifts AHEAD of the nominal (in-track bias
+#     about +80 m at 1 day, +650 m at 3 days), mainly because with the density scale
+#     median at 1.0 its mean is e^(0.2^2/2) = 1.02, so the average case
+#     has 2 % more drag, sinks faster and runs ahead (the drag paradox);
+#   - no impact (the ISS loses ~100 m of altitude a day): the log
+#     closes with "impacts : 0 of 500 cases, probability < 0.60 % at
+#     95 %".
+#
+# Open the run folder in the Analysis tab: the moments file
+# (SPDYUQM_) gives sigma, bias and n(t), the clouds file (SPDYUQC_)
+# the cases at 1, 2 and 3 days.
+
+[montecarlo]
+name          = "iss_montecarlo"
+scenario      = "input.toml"
+samples       = 500
+seed          = 1
+thread_number = 8
+snapshots_s   = [86400.0, 172800.0, 259200.0]
+case_outputs  = false
+
+# A typical orbit-determination error, given in the station's own
+# radial / in-track / cross-track axes.
+[montecarlo.initial_state]
+axes               = "ric"
+position_sigma_km  = [0.010, 0.050, 0.010]
+velocity_sigma_kms = [5.0e-5, 1.0e-5, 1.0e-5]
+
+[montecarlo.parameters]
+# The OEM's Cd is the operator's estimate, so it is the MEAN.
+"spacecraft.drag.Cd"        = { distribution = "lognormal", sigma_percent = 10.0, scenario_value_is = "mean" }
+# The density model is the typical value, off by a factor e^0.2 = 1.22
+# (1 sigma) either way: the scenario's 1.0 is the MEDIAN.
+"force_model.density_scale" = { distribution = "lognormal", sigma_ln = 0.2, scenario_value_is = "median" }

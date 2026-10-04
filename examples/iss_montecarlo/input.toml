@@ -1,0 +1,62 @@
+# SpOdy input file -- ISS Monte Carlo, the scenario.
+#
+# The International Space Station from the first state of the NASA/JSC
+# public trajectory ephemeris of 2024-07-03 (the same state, mass and
+# drag data as examples/iss_drag_calibration/), propagated for 3 days.
+# On its own it is an ordinary scenario; the uncertainty file next to
+# it, iss_montecarlo.uq.toml, says what is uncertain and by how much:
+#
+#   spody uncertainty montecarlo examples/iss_montecarlo/iss_montecarlo.uq.toml
+#
+# or the Uncertainty tab of the GUI (manual ch. 14). Harmonics degree
+# 20 instead of the calibration bench's 70 keeps each case short: the
+# uncertainty that grows here comes from drag, not from the field.
+#
+# All paths are relative to this TOML file.
+
+[simulation]
+name       = "iss_montecarlo"
+et_start_s = 773280069.1840384       # 2024-07-03 12:00:00 UTC (OEM record 0)
+duration_s = 259200.0                # 3 days
+
+[spacecraft]
+mass_kg = 473008.90                  # OEM COMMENT MASS
+
+  [spacecraft.drag]
+  area_m2 = 1442.80                  # OEM COMMENT DRAG_AREA
+  Cd      = 2.70                     # OEM COMMENT DRAG_COEFF
+
+[initial_state]
+# OEM record 0 (EME2000 == ICRF per the SPICE convention), verbatim.
+frame        = "central_inertial"
+position_km  = [-4053.878376071140, 1516.158380989270, -5248.342246843150]
+velocity_kms = [-3.76331237308345, -6.58017659889217, 1.01601021932383]
+
+[force_model]
+central_body       = "Earth"
+body_shape         = "ellipsoid"
+harmonics_file     = "../../data/EIGEN-6C4/eigen-6c4.tab"
+harmonics_degree   = 20
+eop_file           = "../../data/eop/finals2000A.all"
+iau2006_dir        = "../../data/iau2006"
+space_weather_file = "../../data/spaceweather/SW-All.csv"
+third_bodies       = ["Moon", "Sun"]
+srp                = false
+drag               = true
+
+[ephemeris]
+file = "../../data/DE440/de440.spody"
+
+[integrator]
+type     = "rkdp45"
+rel_tol  = 1.0e-11
+h_init_s = 30.0
+h_min_s  = 1.0e-5
+h_max_s  = 240.0
+time_scale = "tdb"
+
+[output]
+mode       = "fixed"                 # required by the Monte Carlo: every case on one grid
+interval_s = 240.0
+bin_file   = "output/iss_montecarlo_state_icrf.bin"
+output_dir = "output"

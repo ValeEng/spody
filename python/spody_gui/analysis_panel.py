@@ -113,6 +113,8 @@ from .analysis.info import (
     info_rows_accel,
     info_rows_diff,
     info_rows_events,
+    info_rows_uq_clouds,
+    info_rows_uq_moments,
     info_rows_run_summary,
     info_rows_traj,
 )
@@ -469,6 +471,12 @@ class AnalysisPanel(QWidget):
         plot_lay.setContentsMargins(0, 0, 0, 0)
         plot_lay.addWidget(self._sun_widget)
         plot_lay.addWidget(self._anim_bar)
+        # Per-view option bars (PlotSpec.options_bar), built on first
+        # use and shown only while their view is active.
+        self._options_bars: dict[str, QWidget] = {}
+        self._options_host = QVBoxLayout()
+        self._options_host.setContentsMargins(0, 0, 0, 0)
+        plot_lay.addLayout(self._options_host)
         plot_lay.addWidget(self._stack, 1)
 
         # Table tab content: raw record view of the loaded file. The
@@ -765,6 +773,10 @@ class AnalysisPanel(QWidget):
                 elif self._kind in ("events", "events_batch"):
                     rows += info_rows_events(self._data, snapshot,
                                              self._central_body)
+                elif self._kind == "uq_moments":
+                    rows += info_rows_uq_moments(self._data, self._path)
+                elif self._kind == "uq_clouds":
+                    rows += info_rows_uq_clouds(self._data, self._path)
             self._info_rows_cache = (cache_tag, list(rows))
         # Diff overlay: only meaningful when the active plot is a diff
         # spec AND we have a cached aligned pair from `_plot_diff`.
@@ -1116,8 +1128,10 @@ class AnalysisPanel(QWidget):
         if spec is None:
             return
         self._active_spec = spec
-        # Sun-arrow row only makes sense once a 3D scene is up.
-        self._sun_widget.setVisible(spec.dim == "3d")
+        # Sun-arrow row only makes sense once a 3D orbit scene is up; a
+        # view with its own options bar is a dedicated scene without it.
+        self._sun_widget.setVisible(spec.dim == "3d" and spec.options_bar is None)
+        self._show_options_bar(spec)
         # Leaving a diff spec invalidates the cached pair -- the next
         # diff click will repopulate. Done up front so the Info tab
         # refresh below sees a consistent (spec, diff-cache) pair.
@@ -1418,7 +1432,9 @@ class AnalysisPanel(QWidget):
         if self._plot_options_dialog is not None:
             self._plot_options_dialog.set_export_availability(
                 self._export_availability())
-        if self._stack.currentIndex() != 1:
+        if (self._stack.currentIndex() != 1
+                or (self._active_spec is not None
+                    and self._active_spec.options_bar is not None)):
             self._anim_bar.setVisible(False)
             # Drop the UTC overlay too: it's a 3D-only widget and a
             # leftover string on a 2D switch would mislead.
@@ -2144,6 +2160,17 @@ class AnalysisPanel(QWidget):
         # caller (`_on_plot_tree_clicked`) refreshes the Info tab
         # after dispatch, so we only set the payload here.
         self._last_diff = (paths, data_a, data_b, was_interp)
+
+    def _show_options_bar(self, spec) -> None:
+        """Show the active view's own options bar (built on first use),
+        hide every other one."""
+        key = f"{spec.dim}:{spec.label}"
+        if spec.options_bar is not None and key not in self._options_bars:
+            bar = spec.options_bar(self._plot_active)
+            self._options_bars[key] = bar
+            self._options_host.addWidget(bar)
+        for k, bar in self._options_bars.items():
+            bar.setVisible(k == key)
 
     def _plot_active(self) -> None:
         """Dispatch the active PlotSpec (last leaf clicked in the

@@ -485,3 +485,115 @@ def info_rows_diff(data_a: np.ndarray, data_b: np.ndarray,
                  f"I {fmt_num(math.sqrt(float((dI * dI).mean())))}  /  "
                  f"C {fmt_num(math.sqrt(float((dC * dC).mean())))}"))
     return rows
+
+
+# ----------------------------------------------------------------------
+# Monte Carlo files (spody uncertainty montecarlo, manual ch. 14)
+# ----------------------------------------------------------------------
+
+def _uq_settings_rows(path: Path) -> list[tuple[str, str | None]]:
+    """What was dispersed and how, from the run folder's copy of the
+    uncertainty file (<ts>_<name>.uq.toml). Empty when it is missing."""
+    import tomli
+    found = sorted(Path(path).parent.glob("*.uq.toml"))
+    if not found:
+        return []
+    try:
+        mc = tomli.loads(found[0].read_text(encoding="utf-8"))["montecarlo"]
+    except (OSError, ValueError, KeyError):
+        return []
+    rows: list[tuple[str, str | None]] = [
+        ("Monte Carlo set-up", SECTION),
+        ("Uncertainty file", found[0].name),
+        ("Cases (N)", str(mc.get("samples", "-"))),
+        ("Seed", str(mc.get("seed", "-"))),
+        ("Threads", str(mc.get("thread_number", 1))),
+    ]
+    st = mc.get("initial_state")
+    if st:
+        axes = str(st.get("axes", "?")).upper()
+        if "covariance" in st:
+            rows.append(("Initial state", f"full covariance, {axes} axes"))
+        else:
+            p = st.get("position_sigma_km", [])
+            v = st.get("velocity_sigma_kms", [])
+            rows.append((f"Initial state σ pos ({axes}) [m]",
+                         " / ".join(f"{1e3 * x:g}" for x in p)))
+            rows.append((f"Initial state σ vel ({axes}) [mm/s]",
+                         " / ".join(f"{1e6 * x:g}" for x in v)))
+            if "correlation" in st:
+                rows.append(("Correlation", "given (6x6)"))
+    else:
+        rows.append(("Initial state", "exact"))
+    for target, spec in (mc.get("parameters") or {}).items():
+        dist = spec.get("distribution", "?")
+        if "sigma_percent" in spec:
+            sig = f"σ {spec['sigma_percent']:g} %"
+        elif "sigma_ln" in spec:
+            sig = f"σ_ln {spec['sigma_ln']:g}"
+        else:
+            sig = f"σ {spec.get('sigma', '?')}"
+        vis = spec.get("scenario_value_is")
+        rows.append((target, f"{dist}, {sig}" + (f", scenario value = {vis}" if vis else "")))
+    return rows
+
+
+def info_rows_uq_moments(data: np.ndarray, path: Path
+                         ) -> list[tuple[str, str | None]]:
+    from .plots_uq import _ric_moments, plain
+    t, n = data["t"], data["n"]
+    n0 = int(n[0]) if len(n) else 0
+    rows = _uq_settings_rows(path)
+    rows += [
+        ("Moments", SECTION),
+        ("Epochs", str(len(t))),
+        ("t range [s]", f"{fmt_num(t[0])}  →  {fmt_num(t[-1])}"),
+        ("Time span", fmt_duration(float(t[-1] - t[0]))),
+        ("Cases at start / end", f"{n0} / {int(n[-1])}"),
+    ]
+    drop = np.where(n < n0)[0]
+    if drop.size:
+        rows.append(("First case lost at", fmt_duration(float(t[drop[0]]))))
+    if n0 >= 2:
+        rows.append(("Relative error of a σ estimate",
+                     f"± {100.0 / math.sqrt(2.0 * (n0 - 1)):.1f} %  (1/√(2(N−1)))"))
+    # last epoch with a defined covariance
+    ok = np.where(n >= 2)[0]
+    if ok.size:
+        e = int(ok[-1])
+        Pp, Pv, b = _ric_moments(data[e:e + 1])
+        sp, sv = np.sqrt(np.diag(Pp[0])), np.sqrt(np.diag(Pv[0]))
+        w = (n[e] - 1) / n[e]
+        rms = np.sqrt(np.diag(Pp[0]) * w + b[0] ** 2)
+        sc = np.sqrt(np.array([data["curv_cov"][e][k] for k in (0, 2, 5)]))
+        rows += [
+            (f"At t = {fmt_duration(float(t[e]))} (RIC)", SECTION),
+            ("σ R / I / C [m]", " / ".join(plain(1e3 * x) for x in sp)),
+            ("σ vR / vI / vC [mm/s]", " / ".join(plain(1e6 * x) for x in sv)),
+            ("bias R / I / C [m]", " / ".join(plain(1e3 * x) for x in b[0])),
+            ("RMS about nominal R / I / C [m]",
+             " / ".join(plain(1e3 * x) for x in rms)),
+            ("curvilinear σ R / I / C [m]",
+             " / ".join(plain(1e3 * x) for x in sc)),
+        ]
+    return rows
+
+
+def info_rows_uq_clouds(data: np.ndarray, path: Path
+                        ) -> list[tuple[str, str | None]]:
+    from .plots_uq import cloud_points, plain
+    rows = _uq_settings_rows(path)
+    rows.append(("Snapshots", SECTION))
+    clouds = cloud_points(data, path, False)
+    if clouds is None:
+        for t in np.unique(data["t"]):
+            rows.append((fmt_duration(float(t)),
+                         f"{int(np.sum(data['t'] == t))} cases (moments file "
+                         f"missing: no RIC axes)"))
+        return rows
+    for t, pts in clouds.items():
+        s = pts.std(axis=0, ddof=1) if len(pts) > 1 else np.full(3, np.nan)
+        rows.append((fmt_duration(float(t)),
+                     f"{len(pts)} cases, σ R / I / C = "
+                     + " / ".join(plain(x) for x in s) + " m"))
+    return rows

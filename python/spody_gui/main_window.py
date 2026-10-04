@@ -48,20 +48,11 @@ from .settings import SettingsDialog, SettingsStore
 from .setup_wizard import SetupWizard, require_data_ready
 from .terminal import TerminalView
 from .toml_form import TomlForm
+from .toml_io import find_toml_files, is_uq_toml
+from .uncertainty_panel import UncertaintyPanel
 
 # How many entries to keep in the File > Recent menu.
 RECENT_FILES_MAX = 8
-
-# Folder names skipped during the working-dir TOML scan. Common
-# build / VCS / venv noise that has no business in the combo. Note
-# that `output/` is INTENTIONALLY NOT in this list: per-run snapshots
-# inside output folders are valid load targets so the user can re-run
-# them. The WIP-save mechanism in `_action_save` protects those
-# snapshots from accidental overwrite.
-_TOML_SCAN_SKIP_DIRS: frozenset[str] = frozenset({
-    "__pycache__", ".git", ".venv", "venv",
-    "build", "dist", "node_modules",
-})
 
 
 def _project_root_for_toml(toml_path: Path) -> Path:
@@ -197,10 +188,21 @@ class MainWindow(QMainWindow):
         # existing Run path so the user sees the same form/terminal UI.
         self._rerun.runRequested.connect(self._on_rerun_requested)
 
+        # Uncertainty tab: edits <name>.uq.toml files, which the Run
+        # tab no longer lists (File > Open of one lands here).
+        self._uq = UncertaintyPanel(self._store)
+        self._uq.fileLoadedOrSaved.connect(self._on_uq_loaded_or_saved)
+        self._uq.stateChanged.connect(self._refresh_title)
+        self._uq.runRequested.connect(self._action_uq_run)
+        self._uq.stopRequested.connect(self._action_stop)
+        self._uq.openResultsRequested.connect(self._open_uq_results)
+
         self._tabs = QTabWidget()
         self._tabs.addTab(run_tab,         "Run")
+        self._tabs.addTab(self._uq,        "Uncertainty")
         self._tabs.addTab(self._analysis,  "Analysis")
         self._tabs.addTab(self._rerun,     "Re-run")
+        self._tabs.currentChanged.connect(lambda _i: self._refresh_title())
 
         # Top bar sits above the tabs and only carries the working-dir
         # field + Browse -- that IS shared between Run (lists TOMLs)
@@ -219,7 +221,13 @@ class MainWindow(QMainWindow):
 
         # Runner: QProcess wrapper. Wired to the terminal and status bar.
         self._runner = SpodyRunner(self)
-        self._runner.line_received.connect(self._terminal.append_line)
+        self._runner.line_received.connect(self._on_runner_line)
+        # Which tab launched the running process: its terminal gets the
+        # output and its finish handler runs ("run" | "uq").
+        self._run_owner = "run"
+        self._uq_samples_only = False
+        self._uq_run_folder: Path | None = None
+        self._uq_run_cwd: Path | None = None
         self._runner.started.connect(self._on_run_started)
         self._runner.finished.connect(self._on_run_finished)
         self._runner.error.connect(self._on_run_error)
@@ -358,6 +366,7 @@ class MainWindow(QMainWindow):
         self._dir_edit.setCursorPosition(len(text))
         self._dir_edit.setToolTip(text)
         self._refresh_toml_combo()
+        self._uq.set_working_dir(self._working_dir)
         self._analysis.set_working_dir(self._working_dir)
 
     def _refresh_toml_combo(self) -> None:
@@ -365,8 +374,9 @@ class MainWindow(QMainWindow):
         current working dir, scanning all subdirectories. Snapshots
         inside `output/<ts>/` are listed too so the user can re-load
         them and re-run; the WIP-save mechanism keeps them safe from
-        accidental overwrite. Subtrees in `_TOML_SCAN_SKIP_DIRS`
-        (build / venv / VCS noise) are pruned. The currently-loaded
+        accidental overwrite. Subtrees in `TOML_SCAN_SKIP_DIRS`
+        (build / venv / VCS noise) are pruned; uncertainty files
+        (`*.uq.toml`) are left to the Uncertainty tab. The currently-loaded
         form path stays selected (or auto-selected when present in
         the list); items outside the working dir show up as a
         `(external)` label so the user is not confused by an apparent
@@ -384,30 +394,8 @@ class MainWindow(QMainWindow):
             entries: list[tuple[str, Path]] = []
             if self._working_dir is not None and self._working_dir.is_dir():
                 root = self._working_dir
-                # Manual walk instead of rglob so we can prune entire
-                # subtrees by directory name (rglob still enters them
-                # before filtering -- expensive on huge build trees).
-                seen: list[Path] = []
-                stack: list[Path] = [root]
-                while stack:
-                    cur = stack.pop()
-                    try:
-                        children = list(cur.iterdir())
-                    except OSError:
-                        continue
-                    for p in children:
-                        try:
-                            is_dir  = p.is_dir()
-                            is_file = p.is_file()
-                        except OSError:
-                            continue
-                        if is_dir:
-                            if p.name in _TOML_SCAN_SKIP_DIRS:
-                                continue
-                            stack.append(p)
-                        elif is_file and p.suffix.lower() == ".toml":
-                            seen.append(p)
-                seen.sort(key=lambda q: str(q.relative_to(root)).lower())
+                # Uncertainty files live in their own tab.
+                seen = [p for p in find_toml_files(root) if not is_uq_toml(p)]
                 for p in seen:
                     full_rel = str(p.relative_to(root)).replace("\\", "/")
                     # Compact display: keep just `<parent>/<file>` (or
@@ -486,12 +474,12 @@ class MainWindow(QMainWindow):
 
         # File ---------------------------------------------------------
         m_file = mb.addMenu("&File")
-        m_file.addAction(self._make_action("&New",        self._action_new,    QKeySequence.StandardKey.New))
+        m_file.addAction(self._make_action("&New",        self._menu_new,      QKeySequence.StandardKey.New))
         m_file.addAction(self._make_action("&Open...",    self._action_open,   QKeySequence.StandardKey.Open))
         self._recent_menu = m_file.addMenu("Open &Recent")
         m_file.addSeparator()
-        m_file.addAction(self._make_action("&Save",       self._action_save,   QKeySequence.StandardKey.Save))
-        m_file.addAction(self._make_action("Save &As...", self._action_save_as, QKeySequence.StandardKey.SaveAs))
+        m_file.addAction(self._make_action("&Save",       self._menu_save,     QKeySequence.StandardKey.Save))
+        m_file.addAction(self._make_action("Save &As...", self._menu_save_as,  QKeySequence.StandardKey.SaveAs))
         m_file.addSeparator()
         m_file.addAction(self._make_action("&Quit",       self.close,          QKeySequence.StandardKey.Quit))
 
@@ -548,6 +536,21 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # File actions
     # ------------------------------------------------------------------
+    # File > New / Save / Save As act on the tab being shown: the
+    # Uncertainty tab edits its own file. The `_action_*` slots below
+    # stay Run-form only (the form's save prompt calls them).
+    def _uq_shown(self) -> bool:
+        return self._tabs.currentWidget() is self._uq
+
+    def _menu_new(self) -> None:
+        self._uq.action_new() if self._uq_shown() else self._action_new()
+
+    def _menu_save(self) -> None:
+        self._uq.action_save() if self._uq_shown() else self._action_save()
+
+    def _menu_save_as(self) -> None:
+        self._uq.action_save_as() if self._uq_shown() else self._action_save_as()
+
     def _action_new(self) -> None:
         if not self._maybe_save():
             return
@@ -566,6 +569,11 @@ class MainWindow(QMainWindow):
             self._open_path(Path(path))
 
     def _open_path(self, path: Path) -> None:
+        if is_uq_toml(path):
+            # An uncertainty file is not a scenario: it has its own tab.
+            if self._uq.maybe_save() and self._uq.load_path(path):
+                self._tabs.setCurrentWidget(self._uq)
+            return
         if not self._form.load_path(path):
             return   # form already showed a message box on failure
         self._on_form_loaded_or_saved(path)
@@ -648,6 +656,17 @@ class MainWindow(QMainWindow):
         if isinstance(et, (int, float)):
             self._analysis.set_default_epoch(float(et))
 
+    def _on_uq_loaded_or_saved(self, path: Path) -> None:
+        """Recent list and working dir after the Uncertainty tab opened
+        or saved a file: the same rule as `_on_form_loaded_or_saved`
+        (adopt the file's project root only when it lies outside the
+        current working dir)."""
+        self._store.add_recent_file(str(path), RECENT_FILES_MAX)
+        self._refresh_recent_menu()
+        if (self._working_dir is None
+                or not _path_is_under(path, self._working_dir)):
+            self._set_working_dir(_project_root_for_toml(path))
+
     def _maybe_save(self) -> bool:
         """Prompt to save if the form has unsaved edits. Returns False
         if the user cancels (the caller should abort whatever it was
@@ -720,6 +739,63 @@ class MainWindow(QMainWindow):
         # the original source TOML would launch from.
         run_cwd = _project_root_for_toml(current)
         self._runner.run(spody_bin, subcommand, current, cwd=run_cwd)
+
+    def _owner_terminal(self) -> TerminalView:
+        return self._uq.terminal if self._run_owner == "uq" else self._terminal
+
+    def _on_runner_line(self, line: str) -> None:
+        """Engine output to the launching tab's terminal. For a Monte
+        Carlo, also catch the log's `run folder:` line (relative to the
+        run's CWD) for "Open results in Analysis"."""
+        self._owner_terminal().append_line(line)
+        if self._run_owner == "uq":
+            key, _, value = line.strip().partition(":")
+            if key.strip() == "run folder" and value.strip():
+                self._uq_run_folder = (self._uq_run_cwd / value.strip()).resolve()
+
+    def _action_uq_run(self, samples_only: bool) -> None:
+        """`spody uncertainty montecarlo <file> [--samples-only]` through
+        the shared runner, output in the Uncertainty tab's terminal.
+        Same gating as `_action_run`: binary set, data ready, file
+        saved; CWD = the project root, so the scenario's relative
+        output_dir lands where a propagate of it would."""
+        if self._runner.is_running():
+            QMessageBox.warning(self, "Monte Carlo",
+                "A spody process is already running; stop it first.")
+            return
+        spody_bin = self._store.spody_binary()
+        if not spody_bin or not Path(spody_bin).exists():
+            QMessageBox.warning(
+                self, "spody binary not set",
+                "Set the path to spody.exe in Settings > Paths first."
+            )
+            return
+        if not self._require_data_ready("Cannot run"):
+            return
+        path = self._uq.file_to_run()
+        if path is None:
+            return
+        extra = ["--samples-only"] if samples_only else []
+        term = self._uq.terminal
+        term.clear()
+        term.append_line(f"$ {Path(spody_bin).name} uncertainty montecarlo "
+                         f"{path.name} {' '.join(extra)}".rstrip())
+        self._run_owner = "uq"
+        self._uq_samples_only = samples_only
+        self._uq_run_folder = None
+        self._uq_run_cwd = _project_root_for_toml(path)
+        self._runner.run(spody_bin, "uncertainty montecarlo", path,
+                         cwd=self._uq_run_cwd, extra_args=extra)
+        if not self._runner.is_running():
+            self._run_owner = "run"          # launch failed: error already shown
+
+    def _open_uq_results(self, moments: Path) -> None:
+        """Analysis tab on a finished Monte Carlo's moments file."""
+        if (self._working_dir is None
+                or not _path_is_under(moments, self._working_dir)):
+            self._set_working_dir(_project_root_for_toml(moments))
+        self._tabs.setCurrentWidget(self._analysis)
+        self._analysis.load_file(moments)
 
     def _action_stop(self) -> None:
         self._runner.stop()
@@ -803,6 +879,7 @@ class MainWindow(QMainWindow):
         self._a_batch.setEnabled(False)
         self._a_stop.setEnabled(True)
         self._form.set_running(True)
+        self._uq.set_running(True)
         self._status_timer.start()
         self._refresh_run_status()
 
@@ -813,10 +890,16 @@ class MainWindow(QMainWindow):
         self._a_batch.setEnabled(True)
         self._a_stop.setEnabled(False)
         self._form.set_running(False)
+        self._uq.set_running(False)
         elapsed = self._runner.elapsed_seconds()
         verdict = "OK" if exit_code == 0 else f"exit {exit_code}"
         self._status_run.setText(f"{verdict} ({elapsed:.1f}s)")
-        self._terminal.append_line(f"[{verdict} in {elapsed:.1f}s]")
+        self._owner_terminal().append_line(f"[{verdict} in {elapsed:.1f}s]")
+        if self._run_owner == "uq":
+            self._run_owner = "run"
+            self._uq.run_finished(exit_code, self._uq_samples_only, self._uq_run_folder)
+            self._analysis.set_working_dir(self._working_dir)
+            return
         # On a successful run, stamp the engine's final status line
         # into the notes block of the per-run input.toml snapshot so
         # a user reopening the snapshot later sees how the run went
@@ -1013,7 +1096,7 @@ class MainWindow(QMainWindow):
             return
 
     def _on_run_error(self, message: str) -> None:
-        self._terminal.append_line(f"[runner error: {message}]")
+        self._owner_terminal().append_line(f"[runner error: {message}]")
         # A calibrate that failed to launch never reaches finished;
         # clear the button's busy state here (idempotent when the
         # finished signal does follow). The RUN/Stop pair resyncs to
@@ -1021,6 +1104,7 @@ class MainWindow(QMainWindow):
         # conditions while a process is still in flight.
         self._finish_calibrate(-1)
         self._form.set_running(self._runner.is_running())
+        self._uq.set_running(self._runner.is_running())
 
     def _refresh_run_status(self) -> None:
         if self._runner.is_running():
@@ -1232,9 +1316,11 @@ class MainWindow(QMainWindow):
     # Title + close
     # ------------------------------------------------------------------
     def _refresh_title(self) -> None:
-        current = self._form.current_path()
+        # The file of the tab being shown: the Uncertainty tab has its own.
+        doc = self._uq if hasattr(self, "_tabs") and self._uq_shown() else self._form
+        current = doc.current_path()
         label = str(current) if current else "(unsaved)"
-        dirty = "*" if self._form.is_modified() else ""
+        dirty = "*" if doc.is_modified() else ""
         self.setWindowTitle(f"SpOdy -- {label}{dirty}")
         self._status_path.setText(label + dirty)
 
@@ -1243,7 +1329,7 @@ class MainWindow(QMainWindow):
         # killed run cannot be undone -- asked the other way round, a
         # Cancel on the save prompt kept the window open with its run
         # already gone.
-        if not self._maybe_save():
+        if not self._maybe_save() or not self._uq.maybe_save():
             event.ignore()
             return
         if self._runner.is_running():

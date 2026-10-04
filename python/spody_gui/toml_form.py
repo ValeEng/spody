@@ -75,6 +75,23 @@ from .form.catalog import (
 from .form.widgets import AssetCombo, tidy_float
 
 
+# RUN / Stop button looks, shared by every tab that launches spody
+# (Run, Uncertainty) so they read the same.
+RUN_BUTTON_QSS = (
+    "QPushButton { background-color: #2ea043; color: white; "
+    "font-weight: bold; padding: 4px 16px; border-radius: 3px; }"
+    "QPushButton:hover  { background-color: #3fb950; }"
+    "QPushButton:pressed{ background-color: #238636; }"
+    "QPushButton:disabled{ background-color: #555555; color: #999999; }"
+)
+STOP_BUTTON_QSS = (
+    "QPushButton { background-color: #da3633; color: white; "
+    "font-weight: bold; padding: 4px 16px; border-radius: 3px; }"
+    "QPushButton:hover  { background-color: #f85149; }"
+    "QPushButton:pressed{ background-color: #b62324; }"
+    "QPushButton:disabled{ background-color: #555555; color: #999999; }"
+)
+
 class TomlForm(SectionBuildersMixin, WidgetFactoriesMixin,
                VisibilityMixin, RoundTripMixin, HandlersMixin,
                QWidget):
@@ -188,21 +205,9 @@ class TomlForm(SectionBuildersMixin, WidgetFactoriesMixin,
         self._path_label.setStyleSheet("color: gray;")
         btn_val  = QPushButton("Validate")
         btn_run  = QPushButton("RUN")
-        btn_run.setStyleSheet(
-            "QPushButton { background-color: #2ea043; color: white; "
-            "font-weight: bold; padding: 4px 16px; border-radius: 3px; }"
-            "QPushButton:hover  { background-color: #3fb950; }"
-            "QPushButton:pressed{ background-color: #238636; }"
-            "QPushButton:disabled{ background-color: #555555; color: #999999; }"
-        )
+        btn_run.setStyleSheet(RUN_BUTTON_QSS)
         btn_stop = QPushButton("Stop")
-        btn_stop.setStyleSheet(
-            "QPushButton { background-color: #da3633; color: white; "
-            "font-weight: bold; padding: 4px 16px; border-radius: 3px; }"
-            "QPushButton:hover  { background-color: #f85149; }"
-            "QPushButton:pressed{ background-color: #b62324; }"
-            "QPushButton:disabled{ background-color: #555555; color: #999999; }"
-        )
+        btn_stop.setStyleSheet(STOP_BUTTON_QSS)
         btn_stop.setEnabled(False)
         btn_stop.setToolTip("Kill the running spody process (Ctrl+.)")
         btn_val.clicked.connect(self._on_validate_clicked)

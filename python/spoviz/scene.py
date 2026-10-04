@@ -1650,6 +1650,36 @@ class Scene3D:
         actor.SetMapper(mapper)
         self._renderer.AddActor(actor)
 
+    def add_ellipsoid(self, center_km, axes_km,
+                       color: tuple[float, float, float] = (0.85, 0.85, 0.85),
+                       opacity: float = 0.15) -> None:
+        """Translucent ellipsoid: the unit sphere mapped by the 3x3
+        matrix `axes_km` (columns = semi-axis vectors) and moved to
+        `center_km`. A sphere of radius r is `axes_km = r * I`. Used
+        for uncertainty ellipsoids, where points outside the shell must
+        stay visible through it."""
+        sphere = vtkSphereSource()
+        sphere.SetRadius(1.0)
+        sphere.SetThetaResolution(48)
+        sphere.SetPhiResolution(24)
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputConnection(sphere.GetOutputPort())
+        a = np.asarray(axes_km, dtype=float)
+        c = np.asarray(center_km, dtype=float)
+        mat = vtkMatrix4x4()
+        for i in range(3):
+            for j in range(3):
+                mat.SetElement(i, j, float(a[i, j]))
+            mat.SetElement(i, 3, float(c[i]))
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        actor.SetUserMatrix(mat)
+        actor.GetProperty().SetColor(*color)
+        actor.GetProperty().SetOpacity(opacity)
+        actor.GetProperty().SetAmbient(0.6)
+        actor.GetProperty().SetDiffuse(0.4)
+        self._renderer.AddActor(actor)
+
     def add_legend(self, items: list[tuple[str, tuple[float, float, float]]],
                     max_label_chars: int = 36) -> None:
         """Multi-line legend in the top-left corner of the viewport.

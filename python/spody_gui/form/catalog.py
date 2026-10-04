@@ -106,6 +106,7 @@ BATCH_TARGETS: tuple[tuple[str, str | None], ...] = (
     ("initial_state.velocity_kms[2]",  None),
     ("force_model.srp",                None),
     ("force_model.drag",               None),
+    ("force_model.density_scale",      None),
     ("integrator.rel_tol",             None),
     ("integrator.h_init_s",            None),
     ("integrator.h_min_s",             None),

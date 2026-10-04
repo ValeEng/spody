@@ -87,3 +87,10 @@ class PlotSpec:
     only one (impact lat/lon on a body-fixed frame -- meaningless in
     the synodic CR3BP frame) advertises `("high_fidelity",)`.
     Default `("high_fidelity", "cr3bp")` means 'works for both'."""
+    options_bar: Callable | None = None
+    """Optional factory `options_bar(replot) -> QWidget` for a view
+    with controls of its own. The panel builds the bar once, shows it
+    above the canvas only while this view is active, and the bar calls
+    `replot()` after each change. A 3D view with an options bar is a
+    dedicated scene: the orbit scene's sun row, animation bar and
+    Scene options stay hidden (e.g. the Monte Carlo cloud)."""

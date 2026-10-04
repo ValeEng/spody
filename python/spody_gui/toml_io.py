@@ -363,3 +363,107 @@ def _format_string(s: str) -> str:
                .replace("\n", "\\n")
                .replace("\t", "\\t"))
     return f'"{escaped}"'
+
+
+# ---------------------------------------------------------------------------
+# File discovery and uncertainty files (<name>.uq.toml, manual ch. 14)
+# ---------------------------------------------------------------------------
+
+UQ_SUFFIX = ".uq.toml"
+
+# Directory names never entered when listing TOMLs (build / venv / VCS
+# noise, expensive on large build trees). `output/` is intentionally
+# NOT here: per-run snapshots inside output folders are valid load
+# targets so the user can re-run them (the WIP-save mechanism protects
+# them from accidental overwrite).
+TOML_SCAN_SKIP_DIRS: frozenset[str] = frozenset({
+    "__pycache__", ".git", ".venv", "venv",
+    "build", "dist", "node_modules",
+})
+
+# Key order of the [montecarlo] table and of its initial_state table,
+# as the manual documents them.
+_UQ_KEY_ORDER = ("name", "scenario", "samples", "seed", "thread_number",
+                 "output_dir", "snapshots_s", "case_outputs")
+_UQ_STATE_ORDER = ("axes", "position_sigma_km", "velocity_sigma_kms",
+                   "correlation", "covariance")
+
+
+def is_uq_toml(path: Path) -> bool:
+    """True for an uncertainty file (`<name>.uq.toml`), which runs with
+    `spody uncertainty montecarlo` instead of propagate / batch."""
+    return Path(path).name.lower().endswith(UQ_SUFFIX)
+
+
+def find_toml_files(root: Path) -> list[Path]:
+    """Every *.toml under `root`, subfolders included, pruning
+    `TOML_SCAN_SKIP_DIRS`, sorted by relative path. A manual walk
+    rather than rglob so a pruned subtree is never entered."""
+    found: list[Path] = []
+    stack: list[Path] = [Path(root)]
+    while stack:
+        cur = stack.pop()
+        try:
+            children = list(cur.iterdir())
+        except OSError:
+            continue
+        for p in children:
+            try:
+                is_dir, is_file = p.is_dir(), p.is_file()
+            except OSError:
+                continue
+            if is_dir:
+                if p.name not in TOML_SCAN_SKIP_DIRS:
+                    stack.append(p)
+            elif is_file and p.suffix.lower() == ".toml":
+                found.append(p)
+    found.sort(key=lambda q: str(q.relative_to(root)).lower())
+    return found
+
+
+def uq_header_comment(raw_text: str) -> str:
+    """The comment block at the top of an uncertainty file (every line
+    before the first key or table), kept so a GUI save does not throw
+    away the explanation a hand-written file starts with."""
+    lines = []
+    for line in raw_text.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
+            break
+        lines.append(line.rstrip())
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+def format_uq_toml(mc: dict[str, Any], header: str = "") -> str:
+    """Render the [montecarlo] table `mc` (the dict tomli returns under
+    "montecarlo") as an uncertainty file: `header` comment block,
+    [montecarlo] keys in the documented order, [montecarlo.initial_state]
+    with the 6x6 matrix one row per line, [montecarlo.parameters] one
+    inline table per dispersed target."""
+    out: list[str] = []
+    if header.strip():
+        out += [header.rstrip(), ""]
+    out.append("[montecarlo]")
+    for k in _UQ_KEY_ORDER:
+        if k in mc:
+            out.append(f"{k} = {_format_value(mc[k])}")
+    state = mc.get("initial_state")
+    if state:
+        out += ["", "[montecarlo.initial_state]"]
+        for k in _UQ_STATE_ORDER:
+            if k not in state:
+                continue
+            v = state[k]
+            if k in ("correlation", "covariance"):
+                rows = ",\n".join("    " + _format_value([float(x) for x in r]) for r in v)
+                out.append(f"{k} = [\n{rows},\n]")
+            else:
+                out.append(f"{k} = {_format_value(v)}")
+    params = mc.get("parameters")
+    if params:
+        out += ["", "[montecarlo.parameters]"]
+        for target, spec in params.items():
+            out.append(f"{_format_string(target)} = {_format_value(spec)}")
+    return "\n".join(out) + "\n"
