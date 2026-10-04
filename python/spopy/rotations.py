@@ -11,9 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Rotation matrices between the ICRF (J2000-aligned) frame and the
-Moon Principal Axes (PA) body-fixed frame, parametrised by the lunar
-mantle Euler 313 angles `(phi, theta, psi)`.
+"""Rotation matrices between the ICRF (J2000-aligned) frame and
+
+- the Moon Principal Axes (PA) body-fixed frame (below), and
+- the RIC frame of a reference state (`ric_to_icrf` / `icrf_to_ric`,
+  twins of `spody_getrotmatrix_ric2icrf` / `_icrf2ric` in
+  spody-core `spody_math.c`, bit-identical: same operations, same
+  order, same thresholds).
+
+Moon PA is parametrised by the lunar mantle Euler 313 angles
+`(phi, theta, psi)`.
 
 Mirrors `spody_getrotmatrix_icrf2moonpa` and
 `spody_getrotmatrix_moonpa2icrf` in
@@ -38,7 +45,54 @@ return value straight into `icrf_to_moon_pa`.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
+
+
+def ric_to_icrf(r, v) -> np.ndarray:
+    """3x3 rotation matrix R with x_ICRF = R @ x_RIC for the reference
+    state (r [km], v [km/s]), central-inertial ICRF. Columns are
+
+        r_hat = r / |r|
+        i_hat = c_hat x r_hat          (in-track, not v unless circular)
+        c_hat = (r x v) / |r x v|      (cross-track)
+
+    Rotation only, no omega x r (the RTN convention of CCSDS
+    covariances). Twin of `spody_getrotmatrix_ric2icrf`: scalar float
+    arithmetic in the C operation order (not np.linalg.norm / np.cross,
+    which sum differently), so the matrix is bit-identical.
+
+    Raises ValueError when |r| < 1e-9 km or |r x v| < 1e-12 (axes
+    undefined), the thresholds of the C function."""
+    min_r_km = 1.0e-9      # private thresholds, verbatim from spody_math.c
+    min_h = 1.0e-12
+    r0, r1, r2 = (float(x) for x in r)
+    v0, v1, v2 = (float(x) for x in v)
+    rn = math.sqrt(r0 * r0 + r1 * r1 + r2 * r2)
+    if rn < min_r_km:
+        raise ValueError("reference position is at the origin; RIC undefined")
+    h0 = r1 * v2 - r2 * v1
+    h1 = r2 * v0 - r0 * v2
+    h2 = r0 * v1 - r1 * v0
+    hn = math.sqrt(h0 * h0 + h1 * h1 + h2 * h2)
+    if hn < min_h:
+        raise ValueError("reference r and v are parallel (r x v = 0); "
+                         "RIC undefined")
+    rh0, rh1, rh2 = r0 / rn, r1 / rn, r2 / rn
+    ch0, ch1, ch2 = h0 / hn, h1 / hn, h2 / hn
+    ih0 = ch1 * rh2 - ch2 * rh1
+    ih1 = ch2 * rh0 - ch0 * rh2
+    ih2 = ch0 * rh1 - ch1 * rh0
+    return np.array([[rh0, ih0, ch0],
+                     [rh1, ih1, ch1],
+                     [rh2, ih2, ch2]])
+
+
+def icrf_to_ric(r, v) -> np.ndarray:
+    """Inverse of `ric_to_icrf`: x_RIC = R @ x_ICRF, the exact
+    transpose. Twin of `spody_getrotmatrix_icrf2ric`."""
+    return ric_to_icrf(r, v).T.copy()
 
 
 def icrf_to_moon_pa(phi: float, theta: float, psi: float) -> np.ndarray:

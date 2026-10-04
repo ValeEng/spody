@@ -618,12 +618,16 @@ class VisibilityMixin:
     @staticmethod
     def _rotation_helpers(frame: str):
         """Return `(basis_fn, rotate_csv_fn)` for a rotating frame.
-        Both helpers come from `spody_gui.frames` and share the same
-        contract; the dispatch maps the combo value to the right pair.
-        Raises ValueError for an unrecognised frame."""
+        The CSV rotations come from `spody_gui.frames`; the RIC basis is
+        the engine's, through its twin `spopy.rotations.ric_to_icrf`.
+        Both basis functions share the same contract (R @ x_local =
+        x_target, ValueError on a degenerate state); the dispatch maps
+        the combo value to the right pair. Raises ValueError for an
+        unrecognised frame."""
         from .. import frames as _frames
+        from spopy.rotations import ric_to_icrf
         if frame == "ric":
-            return _frames.ric_basis,  _frames.rotate_state_csv_ric_to_icrf
+            return ric_to_icrf,  _frames.rotate_state_csv_ric_to_icrf
         if frame == "lvlh":
             return _frames.lvlh_basis, _frames.rotate_state_csv_lvlh_to_icrf
         raise ValueError(f"no rotation helpers for frame {frame!r}")

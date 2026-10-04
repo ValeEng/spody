@@ -32,7 +32,10 @@ historical and describe the common case, not a constraint.
 
 Convention used here for RIC
 ----------------------------
-The RIC (radial / in-track / cross-track) basis is the instantaneous local
+The RIC rotation is the engine's (`spody_getrotmatrix_ric2icrf` in
+spody-core), taken through its bit-identical twin
+`spopy.rotations.ric_to_icrf`; it is not redefined here. The RIC
+(radial / in-track / cross-track) basis is the instantaneous local
 frame of a reference orbit:
 
     r_hat = r_ref / |r_ref|
@@ -96,53 +99,7 @@ from pathlib import Path
 
 import numpy as np
 
-
-def ric_basis(r_ref: np.ndarray, v_ref: np.ndarray) -> np.ndarray:
-    """Build the rotation matrix R_RIC2ECI from a reference state in ICRF.
-
-    Columns are (r_hat, s_hat, c_hat). Multiplying R by a vector expressed
-    in RIC components returns the same vector expressed in ICRF components.
-
-    Parameters
-    ----------
-    r_ref : array_like, shape (3,)
-        Reference position in ICRF central-inertial [km].
-    v_ref : array_like, shape (3,)
-        Reference velocity in ICRF central-inertial [km/s].
-
-    Returns
-    -------
-    R : ndarray, shape (3, 3)
-        Rotation matrix that maps RIC -> ICRF.
-
-    Raises
-    ------
-    ValueError
-        If r_ref is zero or r_ref and v_ref are parallel (no angular
-        momentum, RIC frame undefined).
-    """
-    r = np.asarray(r_ref, dtype=float).reshape(3)
-    v = np.asarray(v_ref, dtype=float).reshape(3)
-
-    r_norm = np.linalg.norm(r)
-    if r_norm < 1.0e-9:
-        raise ValueError("reference position is at the origin; RIC undefined")
-
-    h = np.cross(r, v)
-    h_norm = np.linalg.norm(h)
-    if h_norm < 1.0e-12:
-        raise ValueError(
-            "reference r_ref and v_ref are parallel (h = r x v = 0); "
-            "RIC frame undefined"
-        )
-
-    r_hat = r / r_norm
-    c_hat = h / h_norm
-    s_hat = np.cross(c_hat, r_hat)
-
-    # Column-stacked: each column is one axis expressed in ICRF coordinates,
-    # so R @ x_ric == x_eci by construction.
-    return np.column_stack((r_hat, s_hat, c_hat))
+from spopy.rotations import ric_to_icrf
 
 
 def lvlh_basis(r_ref: np.ndarray, v_ref: np.ndarray) -> np.ndarray:
@@ -380,7 +337,7 @@ def rotate_state_csv_ric_to_icrf(
         - both pos_columns and vel_columns are None (nothing to do)
         - a declared state column is absent from the header
         - a row has a non-numeric value in a declared state column
-        - r_ref / v_ref are degenerate (raised by `ric_basis`)
+        - r_ref / v_ref are degenerate (raised by `spopy.rotations.ric_to_icrf`)
     """
     in_path  = Path(input_path)
     out_path = Path(output_path)
@@ -396,7 +353,7 @@ def rotate_state_csv_ric_to_icrf(
             "nor vel_columns -- nothing to rotate")
 
     # Fail before any I/O if the reference orbit is degenerate.
-    R = ric_basis(r_ref_km, v_ref_kms)
+    R = ric_to_icrf(r_ref_km, v_ref_kms)
     r_ref = np.asarray(r_ref_km,  dtype=float).reshape(3)
     v_ref = np.asarray(v_ref_kms, dtype=float).reshape(3)
 
@@ -501,14 +458,14 @@ if __name__ == "__main__":
     #    -> RIC axes coincide with ICRF (R = identity).
     r_ref = np.array([7000.0, 0.0, 0.0])
     v_ref = np.array([0.0, 7.0, 0.0])
-    R = ric_basis(r_ref, v_ref)
+    R = ric_to_icrf(r_ref, v_ref)
     _check("canonical basis is identity",
            np.allclose(R, np.eye(3), atol=1.0e-12),
            f"R=\n{R}")
 
     # 2. Degenerate basis: r and v parallel -> raises.
     try:
-        ric_basis(np.array([1.0, 0.0, 0.0]), np.array([2.0, 0.0, 0.0]))
+        ric_to_icrf(np.array([1.0, 0.0, 0.0]), np.array([2.0, 0.0, 0.0]))
         _check("parallel r,v raises", False, "did not raise")
     except ValueError:
         _check("parallel r,v raises", True)

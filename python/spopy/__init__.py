@@ -23,6 +23,9 @@ Today the package covers:
 - `rotations.icrf_to_moon_pa` / `rotations.moon_pa_to_icrf`: rotation
   matrices from libration angles, matching
   `spody_getrotmatrix_icrf2moonpa` in the same C file.
+- `rotations.ric_to_icrf` / `rotations.icrf_to_ric`: RIC <-> ICRF
+  rotation of a reference state, bit-identical twins of
+  `spody_getrotmatrix_ric2icrf` / `_icrf2ric` in `src/spody_math.c`.
 - `eop.MappedEOP`: parser + interpolator for the IERS finals2000A.all
   table. Mirrors `spody_setup_MappedEOPData` /
   `spody_interpolate_eop` in `src/spody_eop.c`.
@@ -56,7 +59,8 @@ from .ephemeris import (
     NAIF_MOON, NAIF_MARS, NAIF_JUPITER, NAIF_SATURN, NAIF_URANUS,
     NAIF_NEPTUNE, NAIF_PLUTO,
 )
-from .rotations import bf_angular_velocity_icrf, icrf_to_moon_pa, moon_pa_to_icrf
+from .rotations import (bf_angular_velocity_icrf, icrf_to_moon_pa,
+                        icrf_to_ric, moon_pa_to_icrf, ric_to_icrf)
 from .eop import MappedEOP
 from .earth_orientation import icrf_to_itrs, icrf_to_itrs_many
 from .kepler import (
@@ -75,6 +79,7 @@ __all__ = [
     "NAIF_MOON", "NAIF_MARS", "NAIF_JUPITER", "NAIF_SATURN", "NAIF_URANUS",
     "NAIF_NEPTUNE", "NAIF_PLUTO",
     "icrf_to_moon_pa", "moon_pa_to_icrf", "bf_angular_velocity_icrf",
+    "ric_to_icrf", "icrf_to_ric",
     "MappedEOP", "icrf_to_itrs", "icrf_to_itrs_many",
     "kepler_solve_E", "mean_to_true_anom", "true_to_mean_anom",
     "keplerian_to_cartesian", "cartesian_to_keplerian",
