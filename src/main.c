@@ -33,6 +33,7 @@
  *   spody convert    oem <input.oem> [input.oem ...] <output.bin>
  *   spody convert    gp --epoch-mjd <utc> --n <rev/day> --ecc <-> --incl <deg> --raan <deg> --argp <deg> --ma <deg> --bstar <1/ER> --eop <file> --iau2006-dir <dir>
  *   spody calibrate  <input.toml> <reference.bin> [--window <hours>]
+ *   spody uncertainty montecarlo <name.uq.toml> [--samples-only]
  *   spody info
  */
 #include <errno.h>
@@ -62,6 +63,7 @@
 #include "sim_setup.h"
 #include "sim_run.h"
 #include "calibrate.h"
+#include "uncertainty.h"
 #include "app_sha256.h"
 
 /* Monotonic wall-clock seconds. Resolution + thread-safety: with
@@ -1589,6 +1591,28 @@ static int cmd_calibrate(int argc, char **argv) {
     return spody_calibrate_run(toml_path, ref_path, window_h);
 }
 
+static int cmd_uncertainty(int argc, char **argv) {
+    if (argc < 3 || strcmp(argv[1], "montecarlo") != 0) {
+        fprintf(stderr,
+            "usage: spody uncertainty montecarlo <name.uq.toml> [--samples-only]\n"
+            "  Propagates the uncertainty of the scenario the .uq.toml names\n"
+            "  by Monte Carlo (case 0 = nominal, cases 1..samples dispersed).\n"
+            "  --samples-only writes the drawn samples and stops.\n");
+        return 1;
+    }
+    int samples_only = 0;
+    for (int i = 3; i < argc; ++i) {
+        if (strcmp(argv[i], "--samples-only") == 0) {
+            samples_only = 1;
+        } else {
+            fprintf(stderr, "uncertainty montecarlo: unrecognised arg '%s'\n",
+                    argv[i]);
+            return 1;
+        }
+    }
+    return spody_uncertainty_montecarlo_run(argv[2], samples_only);
+}
+
 static void usage(const char *prog) {
     fprintf(stderr,
         "SpOdy %s -- Simultaneous Propagation of Orbital DYnamics\n"
@@ -1617,6 +1641,8 @@ static void usage(const char *prog) {
         "                                          (multi-file: concatenated, overlaps first-file-wins)\n"
         "  calibrate  <input.toml> <reference.bin> [--window <hours>]\n"
         "                                          fit density-scale k(t) nodes vs a state reference\n"
+        "  uncertainty montecarlo <name.uq.toml> [--samples-only]\n"
+        "                                          Monte Carlo uncertainty of a scenario\n"
         "  info                                    print version and capabilities\n"
         "  maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>\n"
         "                                          largest useful harmonics degree\n"
@@ -1652,6 +1678,7 @@ int main(int argc, char **argv) {
     else if (strcmp(cmd, "validate")  == 0) return cmd_validate (argc - 1, argv + 1);
     else if (strcmp(cmd, "convert")   == 0) return cmd_convert  (argc - 1, argv + 1);
     else if (strcmp(cmd, "calibrate") == 0) return cmd_calibrate(argc - 1, argv + 1);
+    else if (strcmp(cmd, "uncertainty") == 0) return cmd_uncertainty(argc - 1, argv + 1);
     else if (strcmp(cmd, "info")      == 0) return cmd_info     (argc - 1, argv + 1);
     else if (strcmp(cmd, "maxhgdegree") == 0) return cmd_maxhgdegree(argc - 1, argv + 1);
     else if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {

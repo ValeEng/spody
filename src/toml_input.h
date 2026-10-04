@@ -28,6 +28,7 @@
 #define SPODY_TOML_INPUT_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "app_diagnostics.h"   /* SpodyError, SpodyErrorCode */
 #include "spody_math.h"        /* SpodyBodyShape */
@@ -410,6 +411,67 @@ typedef struct {
 } InputConfig;
 
 /* --------------------------------------------------------------------------
+ * Monte Carlo uncertainty configuration: the `<name>.uq.toml` file read by
+ * `spody uncertainty montecarlo`. A separate file that points at a
+ * propagate scenario; nothing of it lives in InputConfig. Fixed-size
+ * arrays only (no heap), so the struct can be copied freely.
+ * -------------------------------------------------------------------------- */
+#define SPODY_UQ_MAX_PARAMS     16
+#define SPODY_UQ_MAX_SNAPSHOTS  64
+#define SPODY_UQ_MAX_TARGET     64
+
+typedef enum {
+    SPODY_UQ_DIST_NORMAL    = 0,
+    SPODY_UQ_DIST_LOGNORMAL = 1
+} SpodyUqDistribution;
+
+typedef enum {
+    SPODY_UQ_SIGMA_ABSOLUTE = 0,   /* `sigma`, in the parameter's unit       */
+    SPODY_UQ_SIGMA_PERCENT  = 1,   /* `sigma_percent`, of the scenario value */
+    SPODY_UQ_SIGMA_LN       = 2    /* `sigma_ln`, std of ln p (lognormal)    */
+} SpodyUqSigmaKind;
+
+typedef enum {
+    SPODY_UQ_VALUE_IS_NONE   = 0,  /* normal: mean and median coincide */
+    SPODY_UQ_VALUE_IS_MEAN   = 1,
+    SPODY_UQ_VALUE_IS_MEDIAN = 2
+} SpodyUqValueIs;
+
+typedef struct {
+    char                  target[SPODY_UQ_MAX_TARGET];  /* batch target path */
+    const SpodyFieldDesc *field;        /* into toml_input.c's FIELD_TABLE  */
+    SpodyUqDistribution   distribution;
+    SpodyUqSigmaKind      sigma_kind;
+    double                sigma;        /* as written (percent stays percent) */
+    SpodyUqValueIs        scenario_value_is;
+    uint64_t              substream;    /* spody_random_substream_id(target) */
+} SpodyUqParameter;
+
+typedef struct {
+    char     path[SPODY_MAX_PATH];        /* the .uq.toml itself              */
+    char     name[SPODY_MAX_SIM_NAME];
+    char     scenario[SPODY_MAX_PATH];    /* resolved scenario TOML           */
+    char     output_dir[SPODY_MAX_PATH];  /* resolved; "" = the scenario's    */
+    int      samples;                     /* dispersed cases (nominal extra)  */
+    uint64_t seed;
+    int      thread_number;
+    int      n_snapshots;
+    double   snapshots_s[SPODY_UQ_MAX_SNAPSHOTS];
+    int      case_outputs;
+
+    /* [montecarlo.initial_state]: absent = the initial state is exact. */
+    int      has_initial_state;
+    int      axes_ric;                    /* 1 = RIC, 0 = ICRF                */
+    int      covariance_given;            /* 1 = `covariance`, 0 = sigmas     */
+    double   sigma[6];                    /* km x3, km/s x3 (sigma form)      */
+    double   correlation[36];             /* row-major, identity if absent    */
+    double   covariance[36];              /* row-major, `covariance` form     */
+
+    int              n_params;
+    SpodyUqParameter params[SPODY_UQ_MAX_PARAMS];
+} SpodyUqConfig;
+
+/* --------------------------------------------------------------------------
  * API
  * -------------------------------------------------------------------------- */
 
@@ -455,6 +517,35 @@ void spody_apply_batch_case(const InputConfig *base,
  * Returns SPODY_OK or an error code with *err filled in.
  */
 int spody_validate_input(const InputConfig *cfg, SpodyError *err);
+
+/*
+ * Parse a `<name>.uq.toml` Monte Carlo file into *uq (zeroed on entry).
+ * Only the [montecarlo] table and its two sub-tables are allowed, and an
+ * unknown key anywhere is an error (a misspelt key must not vanish). Paths
+ * resolve against the file's directory. Shape checks only; everything that
+ * needs the scenario is in spody_validate_uq_input.
+ */
+int spody_load_uq_input(const char *path, SpodyUqConfig *uq, SpodyError *err);
+
+/*
+ * Check *uq against the scenario it names (already loaded AND validated):
+ * high-fidelity, no [batch], output.mode = "fixed", snapshots on the
+ * output grid, every parameter target dispersible and present in the
+ * scenario, positive scenario values where the distribution needs them,
+ * a valid correlation / covariance (positive definite on the components
+ * with nonzero variance; the most negative eigenvalue is reported
+ * otherwise), and no two quantities on the same random substream.
+ */
+int spody_validate_uq_input(const SpodyUqConfig *uq,
+                            const InputConfig *scenario, SpodyError *err);
+
+/*
+ * The 6x6 initial-state covariance of *uq in its own axes (RIC or ICRF,
+ * uq->axes_ric), km / km/s units, row-major: the `covariance` matrix as
+ * given, or sigma_i sigma_j rho_ij. Zero matrix without an
+ * [montecarlo.initial_state] table.
+ */
+void spody_uq_initial_covariance(const SpodyUqConfig *uq, double P[36]);
 
 /*
  * Resolve a third-body name (e.g. "Earth", "Sun") to its NAIF id, the

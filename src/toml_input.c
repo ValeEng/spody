@@ -40,6 +40,7 @@
 #include "spody_kepler.h"        /* keplerian -> Cartesian conversion   */
 #include "central_body.h"        /* spody_central_body_get for mu lookup */
 #include "app_io.h"              /* spody_io_check_output_name          */
+#include "spody_random.h"        /* substream ids for .uq.toml params    */
 
 /* --------------------------------------------------------------------------
  * Path helpers
@@ -1892,6 +1893,14 @@ int spody_load_input(const char *toml_path, InputConfig *cfg, SpodyError *err) {
     parent_dir(toml_path, toml_dir, sizeof toml_dir);
 
     int rc;
+    /* An uncertainty file is not a scenario: refuse it by content
+     * instead of silently ignoring its [montecarlo] table. */
+    if (toml_table_in(root, "montecarlo")) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "this file has a [montecarlo] table: it is an uncertainty "
+                "file, run it with 'spody uncertainty montecarlo'");
+        rc = SPODY_ERR_BAD_VALUE; goto out;
+    }
     if ((rc = parse_simulation   (root,            cfg, err))) goto out;
 
     /* Reject any registered-but-not-implemented dynamics model BEFORE we
@@ -2642,5 +2651,609 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
         }
     }
 
+    return SPODY_OK;
+}
+
+/* ==========================================================================
+ * Monte Carlo uncertainty file (`<name>.uq.toml`)
+ *
+ * A separate file that points at a propagate scenario; see SpodyUqConfig.
+ * Unlike the scenario parser, every table here is closed: an unknown key
+ * is an error, so a misspelt `sigma_precent` cannot silently vanish.
+ * ========================================================================== */
+
+/* Tolerances of the checks below, private to them. */
+static const double uq_grid_rel_tol = 1.0e-9;   /* snapshot on the output grid */
+static const double uq_sym_rel_tol  = 1.0e-12;  /* covariance symmetry, in rho */
+
+static int uq_reject_unknown(toml_table_t *t, const char *section,
+                             const char *const *known, SpodyError *err) {
+    for (int i = 0; ; ++i) {
+        const char *k = toml_key_in(t, i);
+        if (!k) return SPODY_OK;
+        int ok = 0;
+        for (const char *const *q = known; *q; ++q)
+            if (strcmp(k, *q) == 0) { ok = 1; break; }
+        if (!ok) {
+            char list[512] = "";
+            for (const char *const *q = known; *q; ++q) {
+                if (list[0]) strncat(list, ", ", sizeof list - strlen(list) - 1);
+                strncat(list, *q, sizeof list - strlen(list) - 1);
+            }
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "unknown key '%s' in [%s] (accepted: %s)", k, section, list);
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+}
+
+/* Optional number (TOML float or integer). *present = 0 when absent;
+ * a present key of another type is an error. */
+static int uq_opt_number(toml_table_t *t, const char *section, const char *key,
+                         double *out, int *present, SpodyError *err) {
+    *present = 0;
+    if (!toml_key_exists(t, key)) return SPODY_OK;
+    toml_datum_t d = toml_double_in(t, key);
+    if (d.ok) { *out = d.u.d; *present = 1; return SPODY_OK; }
+    toml_datum_t di = toml_int_in(t, key);
+    if (di.ok) { *out = (double)di.u.i; *present = 1; return SPODY_OK; }
+    spody_error_set(err, SPODY_ERR_BAD_VALUE,
+            "'%s.%s' must be a number", section, key);
+    return SPODY_ERR_BAD_VALUE;
+}
+
+static int uq_read_matrix6(toml_table_t *t, const char *section,
+                           const char *key, double out[36], SpodyError *err) {
+    toml_array_t *a = toml_array_in(t, key);
+    int ok = a && toml_array_nelem(a) == 6;
+    for (int i = 0; ok && i < 6; ++i) {
+        toml_array_t *row = toml_array_at(a, i);
+        ok = row && toml_array_nelem(row) == 6;
+        for (int j = 0; ok && j < 6; ++j) {
+            toml_datum_t d = toml_double_at(row, j);
+            if (d.ok) { out[i * 6 + j] = d.u.d; continue; }
+            toml_datum_t di = toml_int_at(row, j);
+            if (di.ok) { out[i * 6 + j] = (double)di.u.i; continue; }
+            ok = 0;
+        }
+    }
+    if (!ok) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "'%s.%s' must be a 6x6 array of numbers "
+                "([[...6...], ...6 rows...])", section, key);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    return SPODY_OK;
+}
+
+static int uq_parse_initial_state(toml_table_t *t, SpodyUqConfig *uq,
+                                  SpodyError *err) {
+    static const char *const known[] = { "axes", "position_sigma_km",
+        "velocity_sigma_kms", "correlation", "covariance", NULL };
+    const char *sec = "montecarlo.initial_state";
+    int rc;
+    if ((rc = uq_reject_unknown(t, sec, known, err))) return rc;
+    uq->has_initial_state = 1;
+
+    char axes[16] = "";
+    if ((rc = req_string(t, sec, "axes", axes, sizeof axes, err))) return rc;
+    if (strcmp(axes, "ric") == 0)       uq->axes_ric = 1;
+    else if (strcmp(axes, "icrf") == 0) uq->axes_ric = 0;
+    else {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s.axes = '%s' (accepted: \"ric\", \"icrf\")", sec, axes);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    int has_cov  = toml_key_exists(t, "covariance");
+    int has_sig  = toml_key_exists(t, "position_sigma_km")
+                || toml_key_exists(t, "velocity_sigma_kms");
+    int has_corr = toml_key_exists(t, "correlation");
+    if (has_cov && (has_sig || has_corr)) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[%s]: give either 'covariance' or 'position_sigma_km' + "
+                "'velocity_sigma_kms' (+ optional 'correlation'), not both", sec);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (has_cov) {
+        uq->covariance_given = 1;
+        return uq_read_matrix6(t, sec, "covariance", uq->covariance, err);
+    }
+    if ((rc = req_vec3(t, sec, "position_sigma_km",  &uq->sigma[0], err))) return rc;
+    if ((rc = req_vec3(t, sec, "velocity_sigma_kms", &uq->sigma[3], err))) return rc;
+    for (int i = 0; i < 6; ++i) {
+        if (!(uq->sigma[i] >= 0.0) || !isfinite(uq->sigma[i])) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "[%s]: %s[%d] = %g must be finite and >= 0", sec,
+                    i < 3 ? "position_sigma_km" : "velocity_sigma_kms",
+                    i % 3, uq->sigma[i]);
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+    for (int i = 0; i < 36; ++i) uq->correlation[i] = (i % 7 == 0) ? 1.0 : 0.0;
+    if (has_corr)
+        return uq_read_matrix6(t, sec, "correlation", uq->correlation, err);
+    return SPODY_OK;
+}
+
+static int uq_parse_parameter(toml_table_t *params, const char *target,
+                              SpodyUqParameter *p, SpodyError *err) {
+    static const char *const known[] = { "distribution", "sigma",
+        "sigma_percent", "sigma_ln", "scenario_value_is", NULL };
+    static const char *const sk[3] = { "sigma", "sigma_percent", "sigma_ln" };
+    char sec[SPODY_UQ_MAX_TARGET + 32];
+    snprintf(sec, sizeof sec, "montecarlo.parameters.\"%s\"", target);
+    toml_table_t *t = toml_table_in(params, target);
+    if (!t) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s must be an inline table, e.g. { distribution = "
+                "\"lognormal\", sigma_percent = 10.0, scenario_value_is = "
+                "\"mean\" }", sec);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    int rc;
+    if ((rc = uq_reject_unknown(t, sec, known, err))) return rc;
+    if (strlen(target) >= sizeof p->target) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE, "%s: target name too long", sec);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    snprintf(p->target, sizeof p->target, "%s", target);
+    p->field = resolve_field(target);
+    if (!p->field) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[montecarlo.parameters]: '%s' is not a batch target "
+                "(the dispersible keys are the [batch.columns] targets, "
+                "manual ch. 7)", target);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    p->substream = spody_random_substream_id(target);
+
+    char dist[16] = "";
+    if ((rc = req_string(t, sec, "distribution", dist, sizeof dist, err))) return rc;
+    if (strcmp(dist, "normal") == 0)         p->distribution = SPODY_UQ_DIST_NORMAL;
+    else if (strcmp(dist, "lognormal") == 0) p->distribution = SPODY_UQ_DIST_LOGNORMAL;
+    else {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s.distribution = '%s' (accepted: \"normal\", \"lognormal\")",
+                sec, dist);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    double v[3] = { 0 };
+    int pr[3] = { 0 };
+    for (int k = 0; k < 3; ++k)
+        if ((rc = uq_opt_number(t, sec, sk[k], &v[k], &pr[k], err))) return rc;
+    int is_normal = p->distribution == SPODY_UQ_DIST_NORMAL;
+    /* normal: sigma | sigma_percent; lognormal: sigma_percent | sigma_ln */
+    int forbidden = is_normal ? 2 : 0;
+    if (pr[forbidden]) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s: '%s' is not accepted for a %s distribution (use %s)",
+                sec, sk[forbidden], dist,
+                is_normal ? "'sigma' or 'sigma_percent'"
+                          : "'sigma_percent' or 'sigma_ln'");
+        return SPODY_ERR_BAD_VALUE;
+    }
+    int n_given = pr[0] + pr[1] + pr[2];
+    if (n_given != 1) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s: give exactly one of %s (got %d)", sec,
+                is_normal ? "'sigma', 'sigma_percent'"
+                          : "'sigma_percent', 'sigma_ln'", n_given);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    int k = pr[0] ? 0 : pr[1] ? 1 : 2;
+    p->sigma_kind = (SpodyUqSigmaKind)k;
+    p->sigma = v[k];
+    if (!(p->sigma > 0.0) || !isfinite(p->sigma)) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s.%s = %g must be finite and > 0 (remove the parameter "
+                "to keep it exact)", sec, sk[k], p->sigma);
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    char vis[16] = "";
+    int has_vis = 0;
+    opt_string(t, "scenario_value_is", vis, sizeof vis, &has_vis);
+    if (is_normal) {
+        if (has_vis) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s: 'scenario_value_is' is only for a lognormal "
+                    "distribution (a normal's mean and median coincide)", sec);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        p->scenario_value_is = SPODY_UQ_VALUE_IS_NONE;
+        return SPODY_OK;
+    }
+    if (!has_vis) {
+        spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                "%s: a lognormal needs 'scenario_value_is' = \"mean\" or "
+                "\"median\" (which one the scenario value is)", sec);
+        return SPODY_ERR_MISSING_KEY;
+    }
+    if (strcmp(vis, "mean") == 0)        p->scenario_value_is = SPODY_UQ_VALUE_IS_MEAN;
+    else if (strcmp(vis, "median") == 0) p->scenario_value_is = SPODY_UQ_VALUE_IS_MEDIAN;
+    else {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s.scenario_value_is = '%s' (accepted: \"mean\", \"median\")",
+                sec, vis);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    return SPODY_OK;
+}
+
+static int uq_parse_snapshots(toml_table_t *mc, SpodyUqConfig *uq,
+                              SpodyError *err) {
+    toml_array_t *a = toml_array_in(mc, "snapshots_s");
+    int m = a ? toml_array_nelem(a) : -1;
+    if (m < 0 || m > SPODY_UQ_MAX_SNAPSHOTS) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "montecarlo.snapshots_s must be an array of at most %d "
+                "times in seconds", SPODY_UQ_MAX_SNAPSHOTS);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    for (int i = 0; i < m; ++i) {
+        toml_datum_t d = toml_double_at(a, i);
+        double s;
+        if (d.ok) {
+            s = d.u.d;
+        } else {
+            toml_datum_t di = toml_int_at(a, i);
+            if (!di.ok) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "montecarlo.snapshots_s[%d] is not a number", i);
+                return SPODY_ERR_BAD_VALUE;
+            }
+            s = (double)di.u.i;
+        }
+        if (!(s >= 0.0) || !isfinite(s)
+            || (i > 0 && !(s > uq->snapshots_s[i - 1]))) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "montecarlo.snapshots_s[%d] = %g: times must be finite, "
+                    ">= 0 and strictly increasing", i, s);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        uq->snapshots_s[i] = s;
+    }
+    uq->n_snapshots = m;
+    return SPODY_OK;
+}
+
+int spody_load_uq_input(const char *path, SpodyUqConfig *uq, SpodyError *err) {
+    spody_error_clear(err);
+    memset(uq, 0, sizeof *uq);
+    if (err) snprintf(err->file, sizeof err->file, "%s", path);
+    snprintf(uq->path, sizeof uq->path, "%s", path);
+
+    static const char suffix[] = ".uq.toml";
+    size_t n = strlen(path), ns = sizeof suffix - 1;
+    if (n <= ns || strcmp(path + n - ns, suffix) != 0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "an uncertainty file must be named <name>.uq.toml");
+        return SPODY_ERR_BAD_VALUE;
+    }
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        spody_error_set(err, SPODY_ERR_IO, "cannot open '%s'", path);
+        return SPODY_ERR_IO;
+    }
+    char tomlerr[256] = {0};
+    toml_table_t *root = toml_parse_file(fp, tomlerr, sizeof tomlerr);
+    fclose(fp);
+    if (!root) {
+        spody_error_set(err, SPODY_ERR_TOML_PARSE, "TOML parse error: %s", tomlerr);
+        return SPODY_ERR_TOML_PARSE;
+    }
+    char dir[SPODY_MAX_PATH];
+    parent_dir(path, dir, sizeof dir);
+
+    static const char *const known_root[] = { "montecarlo", NULL };
+    static const char *const known_mc[] = { "name", "scenario", "samples",
+        "seed", "output_dir", "thread_number", "snapshots_s",
+        "case_outputs", "initial_state", "parameters", NULL };
+    const char *sec = "montecarlo";
+    char rel[SPODY_MAX_PATH] = "";
+    toml_table_t *mc = NULL;
+    int rc;
+    if ((rc = uq_reject_unknown(root, "top level", known_root, err))) goto out;
+    mc = toml_table_in(root, "montecarlo");
+    if (!mc) {
+        spody_error_set(err, SPODY_ERR_MISSING_KEY, "missing the [montecarlo] table");
+        rc = SPODY_ERR_MISSING_KEY; goto out;
+    }
+    if ((rc = uq_reject_unknown(mc, sec, known_mc, err))) goto out;
+
+    if ((rc = req_string(mc, sec, "name", uq->name, sizeof uq->name, err))) goto out;
+    if ((rc = spody_io_check_output_name(uq->name, "montecarlo.name", err))) goto out;
+
+    if ((rc = req_string(mc, sec, "scenario", rel, sizeof rel, err))) goto out;
+    resolve_path(dir, rel, uq->scenario, sizeof uq->scenario);
+
+    if ((rc = req_int(mc, sec, "samples", &uq->samples, err))) goto out;
+    if (uq->samples < 2) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "montecarlo.samples = %d must be >= 2", uq->samples);
+        rc = SPODY_ERR_BAD_VALUE; goto out;
+    }
+
+    {
+        toml_datum_t d = toml_int_in(mc, "seed");
+        if (!d.ok) {
+            spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                    "missing required integer 'montecarlo.seed'");
+            rc = SPODY_ERR_MISSING_KEY; goto out;
+        }
+        if (d.u.i < 0) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "montecarlo.seed = %lld must be >= 0", (long long)d.u.i);
+            rc = SPODY_ERR_BAD_VALUE; goto out;
+        }
+        uq->seed = (uint64_t)d.u.i;
+    }
+
+    {
+        int has_out = 0;
+        rel[0] = '\0';
+        opt_string(mc, "output_dir", rel, sizeof rel, &has_out);
+        if (has_out && rel[0])
+            resolve_path(dir, rel, uq->output_dir, sizeof uq->output_dir);
+    }
+
+    uq->thread_number = 1;
+    if (toml_key_exists(mc, "thread_number")) {
+        if ((rc = req_int(mc, sec, "thread_number", &uq->thread_number, err))) goto out;
+        if (uq->thread_number < 1) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "montecarlo.thread_number = %d must be >= 1",
+                    uq->thread_number);
+            rc = SPODY_ERR_BAD_VALUE; goto out;
+        }
+    }
+    if (toml_key_exists(mc, "case_outputs")
+        && (rc = req_bool(mc, sec, "case_outputs", &uq->case_outputs, err))) goto out;
+    if (toml_key_exists(mc, "snapshots_s")
+        && (rc = uq_parse_snapshots(mc, uq, err))) goto out;
+
+    {
+        toml_table_t *is = toml_table_in(mc, "initial_state");
+        if (is && (rc = uq_parse_initial_state(is, uq, err))) goto out;
+    }
+    {
+        toml_table_t *pt = toml_table_in(mc, "parameters");
+        for (int i = 0; pt; ++i) {
+            const char *k = toml_key_in(pt, i);
+            if (!k) break;
+            if (uq->n_params == SPODY_UQ_MAX_PARAMS) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "[montecarlo.parameters]: at most %d parameters",
+                        SPODY_UQ_MAX_PARAMS);
+                rc = SPODY_ERR_BAD_VALUE; goto out;
+            }
+            if ((rc = uq_parse_parameter(pt, k, &uq->params[uq->n_params], err))) goto out;
+            ++uq->n_params;
+        }
+    }
+    if (!uq->has_initial_state && uq->n_params == 0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "nothing to disperse: give [montecarlo.initial_state] and/or "
+                "[montecarlo.parameters]");
+        rc = SPODY_ERR_BAD_VALUE; goto out;
+    }
+    rc = SPODY_OK;
+out:
+    toml_free(root);
+    return rc;
+}
+
+void spody_uq_initial_covariance(const SpodyUqConfig *uq, double P[36]) {
+    for (int i = 0; i < 36; ++i) P[i] = 0.0;
+    if (!uq->has_initial_state) return;
+    if (uq->covariance_given) {
+        memcpy(P, uq->covariance, 36 * sizeof(double));
+        return;
+    }
+    for (int i = 0; i < 6; ++i)
+        for (int j = 0; j < 6; ++j)
+            P[i * 6 + j] = uq->sigma[i] * uq->sigma[j] * uq->correlation[i * 6 + j];
+}
+
+static int uq_starts(const char *s, const char *prefix) {
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+/* A dispersible target: a double field outside the initial state /
+ * simulation / integrator / output families, of the scenario's object
+ * mode, acting through a force the scenario switches on. */
+static int uq_check_target(const SpodyUqParameter *p, const InputConfig *sc,
+                           SpodyError *err) {
+    const char *t = p->target;
+    if (uq_starts(t, "initial_state.") || uq_starts(t, "simulation.")
+        || uq_starts(t, "integrator.") || uq_starts(t, "output.")
+        || p->field->kind != SPODY_FIELD_DOUBLE) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[montecarlo.parameters]: '%s' cannot be dispersed (the "
+                "initial state goes in [montecarlo.initial_state]; "
+                "simulation, integrator, output keys and on/off switches "
+                "are not uncertain quantities)", t);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    int debris = uq_starts(t, "debris.");
+    if (debris != (sc->debris_mode != 0)) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[montecarlo.parameters]: '%s' needs a scenario with %s",
+                t, debris ? "[debris]" : "[spacecraft]");
+        return SPODY_ERR_BAD_VALUE;
+    }
+    int is_density = strcmp(t, "force_model.density_scale") == 0;
+    int is_drag = uq_starts(t, "spacecraft.drag.") || strcmp(t, "debris.am_drag") == 0
+               || strcmp(t, "debris.Cd") == 0 || is_density;
+    int is_srp  = uq_starts(t, "spacecraft.srp.") || strcmp(t, "debris.am_srp") == 0
+               || strcmp(t, "debris.Cr") == 0;
+    int radiation = sc->enable_srp || sc->enable_earth_radiation_pressure;
+    const char *why = NULL;
+    if (is_drag && !(sc->enable_drag && sc->has_drag_block))
+        why = "force_model.drag is off in the scenario";
+    else if (is_srp && !(radiation && sc->has_srp_block))
+        why = "neither force_model.srp nor earth_radiation_pressure is on";
+    else if (is_density && sc->density_scale_file[0])
+        why = "the scenario uses density_scale_file (a constant factor would "
+              "replace it)";
+    else if (strcmp(t, "spacecraft.mass_kg") == 0 && !(sc->enable_drag || radiation))
+        why = "no force of the scenario depends on the mass";
+    if (why) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[montecarlo.parameters]: '%s' cannot be dispersed: %s", t, why);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    double v0 = *(const double *)((const char *)sc + p->field->offset);
+    if ((p->distribution == SPODY_UQ_DIST_LOGNORMAL
+         || p->sigma_kind == SPODY_UQ_SIGMA_PERCENT) && !(v0 > 0.0)) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[montecarlo.parameters]: '%s' has scenario value %g; a "
+                "lognormal or a sigma_percent needs a value > 0", t, v0);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    return SPODY_OK;
+}
+
+static const char *const uq_state_names[6] = {
+    "x/R", "y/I", "z/C", "vx/vR", "vy/vI", "vz/vC" };
+
+static int uq_check_covariance(const SpodyUqConfig *uq, SpodyError *err) {
+    const char *sec = "montecarlo.initial_state";
+    if (!uq->covariance_given) {
+        const double *c = uq->correlation;
+        for (int i = 0; i < 6; ++i)
+            for (int j = 0; j < 6; ++j) {
+                double r = c[i * 6 + j];
+                int bad = (i == j) ? (r != 1.0)
+                                   : (!(fabs(r) <= 1.0) || r != c[j * 6 + i]);
+                if (bad) {
+                    spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                            "%s.correlation[%d][%d] = %g: a correlation "
+                            "matrix is symmetric, 1 on the diagonal and "
+                            "within [-1, 1]", sec, i, j, r);
+                    return SPODY_ERR_BAD_VALUE;
+                }
+            }
+    }
+    double P[36];
+    spody_uq_initial_covariance(uq, P);
+    int idx[6], m = 0;
+    for (int i = 0; i < 6; ++i) {
+        double d = P[i * 6 + i];
+        if (!(d >= 0.0) || !isfinite(d)) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s: variance of %s = %g must be finite and >= 0",
+                    sec, uq_state_names[i], d);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (d > 0.0) idx[m++] = i;
+    }
+    for (int i = 0; i < 6; ++i)
+        for (int j = 0; j < 6; ++j) {
+            double a = P[i * 6 + j], b = P[j * 6 + i];
+            double s = sqrt(P[i * 6 + i] * P[j * 6 + j]);
+            if (!isfinite(a) || (s == 0.0 ? a != 0.0
+                                          : fabs(a - b) > uq_sym_rel_tol * s)) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "%s.covariance[%d][%d] = %g: the matrix must be "
+                        "symmetric, and a component with zero variance "
+                        "(%s) must have zero covariances", sec, i, j, a,
+                        uq_state_names[P[i * 6 + i] == 0.0 ? i : j]);
+                return SPODY_ERR_BAD_VALUE;
+            }
+        }
+    if (m == 0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[%s]: every variance is zero (remove the table to keep the "
+                "initial state exact)", sec);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    double S[36], L[36];
+    for (int a = 0; a < m; ++a)
+        for (int b = 0; b < m; ++b) S[a * m + b] = P[idx[a] * 6 + idx[b]];
+    if (spody_symmat_cholesky(m, S, L) == 0) return SPODY_OK;
+    /* Not positive definite: report the most negative eigenvalue and its
+     * direction, in correlation units (scale-free across km and km/s). */
+    double C[36], w[6], V[36];
+    for (int a = 0; a < m; ++a)
+        for (int b = 0; b < m; ++b)
+            C[a * m + b] = S[a * m + b] / sqrt(S[a * m + a] * S[b * m + b]);
+    spody_symmat_eigen_jacobi(m, C, w, V);
+    char dirs[256] = "";
+    for (int a = 0; a < m; ++a) {
+        char one[48];
+        snprintf(one, sizeof one, "%s%s %+.3f", a ? ", " : "",
+                 uq_state_names[idx[a]], V[a * m + 0]);
+        strncat(dirs, one, sizeof dirs - strlen(dirs) - 1);
+    }
+    spody_error_set(err, SPODY_ERR_BAD_VALUE,
+            "[%s]: the %s matrix is not positive definite: smallest "
+            "eigenvalue of the correlation matrix %.3g along (%s)", sec,
+            uq->covariance_given ? "covariance" : "sigma/correlation",
+            w[0], dirs);
+    return SPODY_ERR_BAD_VALUE;
+}
+
+int spody_validate_uq_input(const SpodyUqConfig *uq,
+                            const InputConfig *sc, SpodyError *err) {
+    spody_error_clear(err);
+    if (err) snprintf(err->file, sizeof err->file, "%s", uq->path);
+    if (sc->dynamics_model != SPODY_DYN_HIGH_FIDELITY) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "montecarlo.scenario '%s': only high_fidelity scenarios "
+                "(RIC/ICRF dispersions have no meaning in the CR3BP "
+                "synodic frame)", uq->scenario);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (sc->batch) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "montecarlo.scenario '%s' has a [batch] section: point the "
+                "uncertainty file at a single-run scenario", uq->scenario);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if (sc->output_mode != SPODY_OUT_FIXED) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "montecarlo.scenario '%s': output.mode must be \"fixed\" "
+                "(every case on the same epochs)", uq->scenario);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    for (int i = 0; i < uq->n_snapshots; ++i) {
+        double s = uq->snapshots_s[i], dt = sc->output_interval_s;
+        double tol = uq_grid_rel_tol * fmax(1.0, s);
+        double k = floor(s / dt + 0.5);
+        int on_grid = fabs(k * dt - s) <= tol || fabs(s - sc->duration_s) <= tol;
+        if (!on_grid || s > sc->duration_s + tol) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "montecarlo.snapshots_s[%d] = %g s is not an output "
+                    "epoch of the scenario (multiples of output.interval_s "
+                    "= %g s up to duration_s = %g s)", i, s, dt,
+                    sc->duration_s);
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+    int rc;
+    if (uq->has_initial_state && (rc = uq_check_covariance(uq, err))) return rc;
+    for (int i = 0; i < uq->n_params; ++i) {
+        if ((rc = uq_check_target(&uq->params[i], sc, err))) return rc;
+        /* Substream 0 is the initial state; no two quantities may share
+         * one (they would draw identical numbers). */
+        if (uq->params[i].substream == 0) {
+            spody_error_set(err, SPODY_ERR_INTERNAL,
+                    "'%s' hashes to random substream 0, reserved for the "
+                    "initial state", uq->params[i].target);
+            return SPODY_ERR_INTERNAL;
+        }
+        for (int j = 0; j < i; ++j) {
+            if (uq->params[j].substream == uq->params[i].substream) {
+                spody_error_set(err, SPODY_ERR_INTERNAL,
+                        "'%s' and '%s' map to the same random substream",
+                        uq->params[j].target, uq->params[i].target);
+                return SPODY_ERR_INTERNAL;
+            }
+        }
+    }
     return SPODY_OK;
 }

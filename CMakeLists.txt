@@ -67,6 +67,7 @@ add_executable(spody
     src/toml_input.c
     src/sim_setup.c
     src/sim_run.c
+    src/uncertainty.c
 )
 target_link_libraries(spody PRIVATE spody_core tomlc99)
 target_include_directories(spody PRIVATE src)
