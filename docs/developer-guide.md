@@ -209,9 +209,21 @@ backward-compatible.
   derivative, mirroring `spody_get_ephvelocity`/`spody_get_ephstate`),
   `eop.py`, `earth_orientation.py`, `rotations.py`, `kepler.py`,
   `cr3bp.py`, `time.py` (the zero-ULP twin of `spody_time.c`).
+  `rotations.py` also holds `ric_to_icrf` / `icrf_to_ric`, the
+  zero-ULP twins of `spody_getrotmatrix_ric2icrf` / `_icrf2ric`
+  (`spody_math.c`).
   **When you change a core function, check for a spopy sibling and
   keep it in lockstep** — several are verified bit-identical against
   the C side.
+  **The dependency runs GUI → engine, never the other way.** When the
+  GUI needs a computation the core already does (or gains), add its
+  1:1 twin to `spopy` (same operations in the same order, the core's
+  private constants copied inside the function, a zero-ULP twin
+  check) and call that; never keep a GUI-only re-implementation.
+  The core's documentation names its spopy twin, not the GUI. Example:
+  the batch RIC rotation used `spody_gui.frames.ric_basis`
+  (`np.linalg.norm` / `np.cross`, last-bit different from the engine
+  on ~20 % of states); it now calls `spopy.rotations.ric_to_icrf`.
 - `spody_io/` — pure readers for the wire formats above; no Qt, no
   spopy dependency.
 - `spoviz/` — the 3D astrodynamics visualization library (see §5.12
@@ -414,7 +426,23 @@ time. Follow them for new/touched code; don't mass-rename old code.
 2. **C naming.** Functions exposed in a public header are `spody_*`;
    new file-local `static` functions and data take **no leading
    underscore**. Conversion constants use the `X2Y` style (`MAS2RAD`,
-   `KM2AU`), never `_TO_`.
+   `KM2AU`), never `_TO_`. A public name must say **what it returns
+   and in which direction**, and must not be confusable with a
+   neighbour; generic words alone (`basis`, `eigen`, `matrix`) are not
+   names. Two families are fixed:
+   - **Rotation matrices between frames:**
+     `spody_getrotmatrix_<from>2<to>(..., R)` returns R with
+     x_to = R x_from. Provide **both directions** whenever both make
+     sense: `spody_getrotmatrix_icrf2moonpa` / `_moonpa2icrf`,
+     `spody_getrotmatrix_ric2icrf` / `_icrf2ric`. Their Python twins in
+     `spopy/rotations.py` are named `<from>_to_<to>`
+     (`moon_pa_to_icrf`, `ric_to_icrf`, `icrf_to_ric`).
+   - **Routines on n x n matrices** (row-major `a[i*n + j]`) carry
+     their precondition in the prefix and, when more than one method
+     could exist, the method in the suffix:
+     `spody_symmat_cholesky`, `spody_symmat_eigen_jacobi` (both valid
+     for symmetric matrices only). The historical 3 x 3 helpers
+     (`spody_transpose_matrix`, `spody_rotate_vector`) keep their names.
 3. **Constants live in one place.** Every numeric constant belongs in
    `spody-core/include/spody_const.h` — as a *plain number literal*,
    because the GUI parses the header textually (§4.4). Calendar /
@@ -429,6 +457,15 @@ time. Follow them for new/touched code; don't mass-rename old code.
    π/180 to double precision *on purpose*); "fixing" them or moving
    them to `spody_const.h` changes the model output and breaks the
    reference-driver equality (§7).
+   **Second exemption: constants private to one algorithm** stay in
+   that module as file-local `static const` (or an `enum` for counts):
+   the Philox multipliers and Weyl increments and the AS241
+   coefficient tables in `spody_random.c`, the RK45 tableau in
+   `spody_integrators.c`, the RIC degeneracy thresholds in
+   `spody_math.c`. `spody_const.h` is for constants shared across
+   modules or physical in meaning. When such a module has a `spopy`
+   twin, the twin copies the private constants verbatim inside the
+   function (`spopy.rotations.ric_to_icrf`).
 4. **Python reads the same constants.** `spody_gui/constants.py`
    parses `spody_const.h` (dev checkout and bundled install alike)
    and exposes named values; GUI code never hardcodes a physical

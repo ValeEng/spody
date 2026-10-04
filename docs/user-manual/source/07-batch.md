@@ -195,8 +195,10 @@ The contract between the three keys is:
   1. reads the column-mapping table to find which CSV columns
      target `initial_state.position_km[i]` /
      `initial_state.velocity_kms[i]`;
-  2. computes the rotation `R = ric_basis(r_ref, v_ref)` or
-     `R = lvlh_basis(r_ref, v_ref)` according to the combo &mdash;
+  2. computes the rotation `R = ric_to_icrf(r_ref, v_ref)` (the
+     engine's RIC rotation, through its bit-identical Python twin in
+     `spopy.rotations`) or `R = lvlh_basis(r_ref, v_ref)` according
+     to the combo &mdash;
      the reference orbit `(r_ref, v_ref)` comes straight from
      `[initial_state]`, so no extra input is required;
   3. rotates each row's position triplet and velocity triplet by

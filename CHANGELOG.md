@@ -287,6 +287,15 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Batch cases in RIC use the engine's rotation.** The GUI rotated
+  RIC cases with its own `spody_gui.frames.ric_basis`; it now calls
+  `spopy.rotations.ric_to_icrf`, the bit-identical Python twin of the
+  new spody-core `spody_getrotmatrix_ric2icrf` (`icrf_to_ric` /
+  `_icrf2ric` give the inverse). Checked on 200008 states: no matrix
+  differs in any bit, the same degenerate states are refused. The old
+  copy differed from the engine in the last bit (up to 5.6e-16) on
+  about 20 % of states; the `debris_ric_demo` rotated cases file is
+  byte-identical before and after.
 - **`spody propagate` times the integration with a monotonic
   microsecond clock.** The `done in` line now prints six decimals and
   uses the same wall clock as `spody batch` (`omp_get_wtime`) instead
