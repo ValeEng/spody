@@ -326,13 +326,19 @@ What to write and how often.
 | `output_dir`         | string (path)  | parent of the per-run timestamp folder               |
 | `csv_file`           | string (path)  | optional; **presence enables CSV trajectory**        |
 | `bin_file`           | string (path)  | optional; **presence enables binary trajectory**     |
-| `log_file`           | string (path)  | optional; **presence enables stdout/stderr tee**     |
+| `log_file`           | string (path)  | **deprecated, ignored** (warning): the log is always written as `<ts>_<sim_name>.log` |
 | `accelerations_file` | string (path)  | optional; **presence enables per-force breakdown** (binary; `high_fidelity` only) |
 | `events_log`         | string (path)  | optional; **presence enables event-trigger log** (binary)   |
 
 Omitting all `*_file` keys is allowed -- the propagation runs and
-prints only the final state on stdout. Useful for benchmarking or
-sanity-checking the config.
+writes only its log. Useful for benchmarking or sanity-checking the
+config.
+
+**Log.** Every run writes its log (everything printed on the terminal)
+as `<ts>_<sim_name>.log` in the run folder; with `--out`, or without
+`output_dir`, it is `<sim_name>_<ts>.log` there or beside the TOML.
+It cannot be turned off, and the run does not start if it cannot be
+opened.
 
 **Run folder.** Each invocation creates
 `<output_dir>/<UTC-ISO8601>/` and writes everything inside it,
@@ -366,15 +372,14 @@ interval_s         = 60.0
 output_dir         = "output"
 csv_file           = "output/lro_6day_state_icrf.csv"
 bin_file           = "output/lro_6day_state_icrf.bin"
-# log_file           = "output/lro_6day.log"
 # accelerations_file = "output/lro_6day_acc_icrf.bin"
 # events_log         = "output/lro_6day_events.bin"
 ```
 
-The five stream paths follow the `<sim_name>_<subject>_<frame>`
+The four stream paths follow the `<sim_name>_<subject>_<frame>`
 convention the GUI auto-generates when you tick the corresponding
 checkbox in the form -- `_state_icrf` for the trajectory, `_acc_icrf`
-for the acceleration breakdown, plain `_events` / `.log` for the rest. A
+for the acceleration breakdown, plain `_events` for the events. A
 CLI-only user is free to pick any path; the convention only matters for
 the round-trip with the GUI form.
 

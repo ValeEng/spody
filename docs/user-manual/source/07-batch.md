@@ -429,7 +429,7 @@ failed cases:
 
 The other cases run normally and their results are unaffected. A
 batch with any skipped or failed case exits with status 1, and
-everything above lands in the batch log when `log_file` is set.
+everything above lands in the batch log, which every batch writes.
 
 The case's own lines &mdash; done, failed, skipped, and the notice of
 an impact that ends it

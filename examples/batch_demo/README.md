@@ -44,7 +44,7 @@ Output files land in a per-run folder [`output/<ts>/`](output/),
 `<ts>` being its UTC-ISO8601 timestamp — which is also prefixed to
 every file inside: `<ts>_mass_srp_sweep_<id>_state_icrf.{csv,bin}`,
 a snapshot of the source TOML as `<ts>_input.toml`, and
-`<ts>_mass_srp_sweep.log` since `log_file` is enabled in the input.
+the batch log `<ts>_mass_srp_sweep.log`, which every batch writes.
 
 The position residual across the three cases at `t = 1 h` is on the
 order of centimetres -- consistent with SRP being a tiny perturbation

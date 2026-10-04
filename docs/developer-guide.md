@@ -496,8 +496,7 @@ time. Follow them for new/touched code; don't mass-rename old code.
     a run is set up or executed — progress, warnings, errors, and every
     diagnosis inside the library (loaders, integrator, converters) —
     uses `spody_log_printf` (stdout) or `spody_log_eprintf` (stderr).
-    Both write the terminal *and* the `[output].log_file` mirror when
-    it is open; a bare `printf` / `fprintf(stderr, ...)` / `perror`
+    Both write the terminal *and* the run-log mirror when it is open; a bare `printf` / `fprintf(stderr, ...)` / `perror`
     reaches the terminal only, so the saved log silently misses it
     (this happened to the EOP-prediction and density-scale warnings,
     and to every core diagnosis until the mirror moved into the
@@ -510,13 +509,41 @@ time. Follow them for new/touched code; don't mass-rename old code.
     - warning or error → `spody_log_eprintf`, prefixed `spody:
       warning:` (or `<subcommand>: WARNING --` in a subcommand);
     - progress / summary → `spody_log_printf`;
-    - check it with a TOML that sets `log_file` and `grep` the log.
+    - check it with any run and `grep` its log.
     Exempt: usage lines and argument errors printed before any TOML
     is read; debug-build traces inside `#if DEBUG_*` blocks (they stay
     bare `printf` on purpose). The
-    `convert` / `maxhgdegree` / `info` subcommands never open a mirror,
-    so there the functions behave like plain printf — use them anyway,
-    so a future conversion log gets the lines for free.
+    `validate` / `maxhgdegree` / `info` subcommands never open a
+    mirror, so there the functions behave like plain printf — use
+    them anyway.
+
+    **The run log is unconditional.** Every subcommand that runs a
+    simulation opens its mirror itself, before its banner, and refuses
+    to start if it cannot (`spody_log_open_mirror` ≠ 0 → error, exit
+    1), exactly as `convert` does with `<output>.log`:
+
+    | subcommand | log file |
+    |---|---|
+    | `propagate` | `<ts>_<simulation.name>.log` in the run folder; `<name>_<ts>.log` in `--out` or beside the TOML when there is no `output_dir` |
+    | `batch` | `<ts>_<batch.name>.log` (`spody_io_batch_log_path`) |
+    | `calibrate` | `<ts>_<simulation.name>.log` in its run folder |
+    | `uncertainty montecarlo` | `<ts>_<name>.uq.log`, opened right after the run folder so refusals are logged |
+
+    `output.log_file` is **deprecated**: the parser still accepts it
+    and stores the value in `cfg.log_file`, whose only reader is
+    `spody_input_warn_deprecated` (toml_input.c). Each command calls
+    that function right after opening its log, so the warning lands
+    in the log too, and the run goes on. Checklist for a new
+    subcommand that runs a simulation:
+    - open the log before the banner, with the name pattern above;
+    - call `spody_input_warn_deprecated(&cfg)` once the log is open;
+    - close it on every exit path (`spody_log_close_mirror` is a no-op
+      when nothing is open, so the early returns can call it too).
+    Checklist for deprecating another key: keep parsing it, add one
+    `if` + `spody_log_eprintf("spody: warning: ...")` to
+    `spody_input_warn_deprecated`, drop it from what the GUI emits
+    (and pop it on load in `form/roundtrip.py`), mark it deprecated in
+    manual ch. 6.
 11. **Every file written is checked at close.** Output goes through
     stdio buffers (1 MiB for the run outputs), so on a full disk the
     `fwrite` / `fprintf` calls keep succeeding and the loss shows up
@@ -529,7 +556,7 @@ time. Follow them for new/touched code; don't mass-rename old code.
     ```
     The failure becomes the command's error (exit ≠ 0), never a
     warning, unless the file is only a copy of something already
-    delivered: the `[output].log_file` mirror prints a stderr
+    delivered: the run-log mirror prints a stderr
     warning and keeps the exit code. In `sim_run.c` use
     `close_output`, which keeps the first error. A new writer (output
     file, converter, export) follows the same pattern. *Symptom of

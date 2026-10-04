@@ -287,6 +287,23 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Changed
 
+- **Every run writes its log; `output.log_file` is deprecated.** The
+  log used to exist only when the scenario set `output.log_file`; now
+  every command that runs a simulation writes one, and does not start
+  if it cannot open it (as `spody convert` already did):
+  `spody propagate` writes `<ts>_<simulation.name>.log` in the run
+  folder (`<name>_<ts>.log` with `--out`, or beside the TOML when there
+  is no `output_dir`); `spody batch` writes `<ts>_<batch>.log` as
+  before, now always; `spody calibrate` writes
+  `<ts>_<simulation.name>.log` in its run folder (it had no log);
+  `spody uncertainty montecarlo` writes `<ts>_<name>.uq.log`, refusals
+  included. A scenario that still sets `output.log_file` runs as
+  before, with a `spody: warning:` line saying the key is ignored; its
+  value no longer names the file. The GUI shows the log checkbox
+  checked and locked, no longer writes the key, and drops it when it
+  loads a TOML, so saving cleans the scenario. Trajectory, batch and
+  conversion outputs are unchanged: 75 of 75 regression files
+  bit-identical.
 - **Batch cases in RIC use the engine's rotation.** The GUI rotated
   RIC cases with its own `spody_gui.frames.ric_basis`; it now calls
   `spopy.rotations.ric_to_icrf`, the bit-identical Python twin of the

@@ -276,8 +276,9 @@ Ordered roughly by what unlocks the most for users.
       in `spody_time.c`, zero-ULP Python twin in `spopy/time.py`)
 - [x] Aggregated batch events file (SPDYEVTB, single
       `<batch>_events.bin` with `case_idx` per record)
-- [x] Tee log output (`output.log_file` mirrors stdout/stderr to a
-      timestamped file)
+- [x] Run log always written (stdout/stderr mirrored to
+      `<ts>_<name>.log` in the run folder by every command that runs
+      a simulation; `output.log_file` is deprecated)
 - [x] Per-force acceleration breakdown (`output.accelerations_file`,
       binary `ForceBreakdown` records; ~3% overhead at 1-minute cadence
       on LRO)

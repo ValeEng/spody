@@ -104,7 +104,7 @@ Moon, no space weather without drag). Size and modification date tell
 two downloads of the same file apart when you compare logs. The *run
 window* lines say whether the run rests on final or measured data or
 reaches into a forecast; the two forecast cases also print a warning
-(chapter 13). With `output.log_file` set the block heads the saved log.
+(chapter 13). The block heads the run log, which every run writes.
 
 **CR3BP parameter block.** Under `dynamics_model = "cr3bp"` the
 opening block gains the three lines below (`spody batch` and
@@ -121,7 +121,7 @@ log belongs to:
 
 `mu = mu2 / (mu1 + mu2)` and `omega = sqrt((mu1 + mu2) / L^3)` are
 derived from the three resolved values, printed at 15 significant
-digits. Enable `output.log_file` to keep them next to the results;
+digits. The run log keeps them next to the results;
 the form additionally writes the same values as a comment under
 `[cr3bp]` in the TOML it saves (ch. 6).
 
