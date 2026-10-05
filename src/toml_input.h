@@ -48,7 +48,8 @@ typedef enum {
 } SpodyOutputMode;
 
 typedef enum {
-    SPODY_INTEG_TYPE_RKDP45 = 0
+    SPODY_INTEG_TYPE_RKDP45 = 0,
+    SPODY_INTEG_TYPE_DOP853 = 1
 } SpodyIntegratorType;
 
 /* force_model.solid_tides: the tide system of the gravity file. */
@@ -371,6 +372,11 @@ typedef struct {
     double              h_init_s;
     double              h_min_s;
     double              h_max_s;
+    /* discontinuity_stops: OPTIONAL bool, default true for dop853 and
+     * false for rkdp45 (earlier results reproduce bit for bit). Steps
+     * stop on the known jumps of the force model, see
+     * spody_next_force_discontinuity. */
+    int                 discontinuity_stops;
     /* time_scale: OPTIONAL, "tdb" (default) | "tt". The time coordinate
      * the integrator advances: TDB, the time of the ephemerides, for
      * every body; or TT, the time IERS 2010 (TN36 sec. 10.3) prescribes

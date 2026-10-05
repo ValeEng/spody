@@ -690,14 +690,17 @@ int spody_build_worker(const InputConfig *cfg,
         w->ctx.cr3bp_L   = cfg->cr3bp_L_km;
         spody_init_CR3BPContext(&w->ctx);
 
+        const spody_integrator_method method =
+            (cfg->integrator_type == SPODY_INTEG_TYPE_DOP853)
+                ? SPODY_INTEG_DOP853 : SPODY_INTEG_RK45;
         IntegratorOptions opt;
-        spody_default_integrator_options(SPODY_INTEG_RK45, &opt);
+        spody_default_integrator_options(method, &opt);
         opt.rel_tol = cfg->rel_tol;
         opt.h_init  = cfg->h_init_s;
         opt.h_min   = cfg->h_min_s;
         opt.h_max   = cfg->h_max_s;
 
-        if (spody_setup_integrator(&w->integ, SPODY_INTEG_RK45, &opt,
+        if (spody_setup_integrator(&w->integ, method, &opt,
                                    6, spody_force_rhs_cr3bp,
                                    &w->ctx) != SPODY_INTEG_OK) {
             spody_error_set(err, SPODY_ERR_INTERNAL,
@@ -906,8 +909,11 @@ int spody_build_worker(const InputConfig *cfg,
 
     /* Integrator. Map cfg options onto IntegratorOptions and bind the
      * default RHS + force context. */
+    const spody_integrator_method method =
+        (cfg->integrator_type == SPODY_INTEG_TYPE_DOP853)
+            ? SPODY_INTEG_DOP853 : SPODY_INTEG_RK45;
     IntegratorOptions opt;
-    spody_default_integrator_options(SPODY_INTEG_RK45, &opt);
+    spody_default_integrator_options(method, &opt);
     opt.rel_tol = cfg->rel_tol;
     opt.h_init  = cfg->h_init_s;
     opt.h_min   = cfg->h_min_s;
@@ -915,7 +921,7 @@ int spody_build_worker(const InputConfig *cfg,
     /* safety / max_steps left at library defaults: those are not
      * exposed in the v0 TOML schema. */
 
-    if (spody_setup_integrator(&w->integ, SPODY_INTEG_RK45, &opt,
+    if (spody_setup_integrator(&w->integ, method, &opt,
                                6, spody_force_rhs_default,
                                &w->ctx) != SPODY_INTEG_OK) {
         spody_error_set(err, SPODY_ERR_INTERNAL,

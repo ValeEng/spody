@@ -378,9 +378,12 @@ static int parse_integrator_type(const char *name, SpodyIntegratorType *out,
     if (strcmp(name, "rkdp45") == 0) {
         *out = SPODY_INTEG_TYPE_RKDP45; return SPODY_OK;
     }
+    if (strcmp(name, "dop853") == 0) {
+        *out = SPODY_INTEG_TYPE_DOP853; return SPODY_OK;
+    }
     spody_error_set(err, SPODY_ERR_BAD_VALUE,
-            "integrator.type = '%s' is not supported in v0 "
-            "(supported: 'rkdp45')", name);
+            "integrator.type = '%s' is not supported "
+            "(supported: 'rkdp45', 'dop853')", name);
     return SPODY_ERR_BAD_VALUE;
 }
 
@@ -1104,6 +1107,18 @@ static int parse_integrator(toml_table_t *root, InputConfig *cfg,
                     "integrator.time_scale must be \"tdb\" (default) or \"tt\"");
             return SPODY_ERR_BAD_VALUE;
         }
+    }
+
+    /* discontinuity_stops: optional, default on for dop853 only */
+    cfg->discontinuity_stops = (cfg->integrator_type == SPODY_INTEG_TYPE_DOP853);
+    if (toml_key_exists(t, "discontinuity_stops")) {
+        toml_datum_t d = toml_bool_in(t, "discontinuity_stops");
+        if (!d.ok) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "integrator.discontinuity_stops must be true or false");
+            return SPODY_ERR_BAD_VALUE;
+        }
+        cfg->discontinuity_stops = d.u.b ? 1 : 0;
     }
     return SPODY_OK;
 }
