@@ -690,6 +690,15 @@ class SectionBuildersMixin:
         self._add_float(f, "integrator.h_init_s", "h_init_s")
         self._add_float(f, "integrator.h_min_s",  "h_min_s")
         self._add_float(f, "integrator.h_max_s",  "h_max_s")
+        # Stops on the jumps of the force model: the default follows the
+        # scheme (on for dop853, off for rkdp45) whenever the user picks
+        # one; a loaded TOML keeps what it says.
+        self._add_bool (f, "integrator.discontinuity_stops", "discontinuity_stops")
+        type_w = self._widgets.get("integrator.type")
+        stops_w = self._widgets.get("integrator.discontinuity_stops")
+        if isinstance(type_w, QComboBox) and isinstance(stops_w, QCheckBox):
+            type_w.currentTextChanged.connect(
+                lambda t: None if self._loading else stops_w.setChecked(t == "dop853"))
         # Time coordinate the integrator advances: TDB (default, every
         # body) or TT (IERS geocentric, Earth only; hidden otherwise).
         self._int_form = f

@@ -86,7 +86,8 @@ _KEY_ORDER: dict[str, tuple[str, ...]] = {
     "force_model":   ("central_body", "body_shape", "harmonics_file", "harmonics_degree",
                       "harmonics_adaptive", "third_bodies", "srp"),
     "ephemeris":     ("file",),
-    "integrator":    ("type", "rel_tol", "h_init_s", "h_min_s", "h_max_s", "time_scale"),
+    "integrator":    ("type", "rel_tol", "h_init_s", "h_min_s", "h_max_s",
+                      "discontinuity_stops", "time_scale"),
     # output_dir is the parent under which spody.exe creates the per-run
     # `<UTC-ISO8601>/` folder for each invocation. The four file paths
     # are still emitted but spody.exe only keeps their basenames when

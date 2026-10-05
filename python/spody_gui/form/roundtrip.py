@@ -383,6 +383,15 @@ class RoundTripMixin:
             # written before the key existed ran on equatorial spheres:
             # load it as that, so saving it again keeps what it ran
             # instead of silently switching to the form's ellipsoid.
+            # integrator.discontinuity_stops is optional in the engine,
+            # with a default that depends on the scheme: load it as the
+            # engine would run it.
+            int_in = data.get("integrator")
+            if isinstance(int_in, dict) and "discontinuity_stops" not in int_in:
+                data = {**data, "integrator": {
+                    **int_in,
+                    "discontinuity_stops": int_in.get("type") == "dop853"}}
+
             fm_in = data.get("force_model")
             if isinstance(fm_in, dict) and "body_shape" not in fm_in:
                 data = {**data, "force_model": {**fm_in,

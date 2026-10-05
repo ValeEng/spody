@@ -76,7 +76,7 @@ CR3BP_PAIRS: tuple[tuple[str, str], ...] = (
 # spody_const.h), shared with the [cr3bp] parameter comment the TOML
 # emitter derives in toml_io.py.
 CR3BP_L_KM: dict[tuple[str, str], float] = constants.CR3BP_PAIR_L_KM
-INTEGRATORS      = ("rkdp45",)
+INTEGRATORS      = ("rkdp45", "dop853")
 OUTPUT_MODES     = ("fixed", "step")
 THIRD_BODIES_ALL = ("Sun", "Mercury", "Venus", "Earth", "Moon",
                     "Mars", "Jupiter", "Saturn", "Uranus", "Neptune")
@@ -171,7 +171,8 @@ TOOLTIPS: dict[str, str] = {
     "force_model.density_scale":     "Constant density-calibration factor k: the drag force uses k × rho(NRLMSISE-00). Empirical thermosphere models run 20-40% hot at 400-500 km around solar max (manual ch. 11). Leave empty for the uncalibrated default (1.0). Mutually exclusive with density_scale_file; drag only.",
     "force_model.density_scale_file": "Time-varying calibration table: text file with one 'mjd,k' pair per line (UTC MJD ascending, k > 0, # comments). Linearly interpolated, end values held outside the node span. The Calibrate... button fits this file from a reference trajectory via 'spody calibrate'. Mutually exclusive with density_scale; drag only.",
     "ephemeris.file":                "DE-series ephemeris in the .spody binary format.",
-    "integrator.type":               "Integration scheme. v0 supports only RK Dormand-Prince 5(4).",
+    "integrator.type":               "Integration scheme. rkdp45: Dormand-Prince 5(4), the reference every validation was made with. dop853: Dormand-Prince 8(5,3), order 8 (Hairer, Norsett, Wanner 1993, sect. II.10); much longer steps at the same accuracy, 2.5-4.9x fewer force evaluations at equal error on GNSS/SLR orbits. rel_tol has the same meaning for both.",
+    "integrator.discontinuity_stops": "Stop the steps on the jumps of the force model instead of integrating across them: the 3-hour UTC grid of the NRLMSISE-00 space-weather inputs (drag on) and the shadow contacts of every occulter (SRP on). A Runge-Kutta step across a jump loses its order. Default on with dop853 (needed by its long steps), off with rkdp45 (earlier runs bit for bit). No effect and no cost without drag and SRP.",
     "integrator.rel_tol":            "Relative tolerance per accepted step; > 0.",
     "integrator.h_init_s":           "Initial step size in seconds; > 0, normally in [h_min_s, h_max_s].",
     "integrator.h_min_s":            "Minimum step size in seconds; > 0.",
