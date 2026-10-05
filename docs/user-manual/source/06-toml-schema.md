@@ -748,7 +748,7 @@ Integration algorithm and tolerances. Required.
 
 | Key         | Type   | Default  | Range  | Description |
 |-------------|--------|----------|--------|-------------|
-| `type`      | string | &mdash;  | `rkdp45`, `dop853` | Integration scheme: Dormand-Prince 5(4) or Dormand-Prince 8(5,3). See *Choosing the integrator* below. The form offers `rkdp45` only for now. |
+| `type`      | string | &mdash;  | `rkdp45`, `dop853` | Integration scheme: Dormand-Prince 5(4) or Dormand-Prince 8(5,3). See *Choosing the integrator* below. |
 | `rel_tol`   | float  | &mdash;  | `> 0`  | Relative error tolerance per accepted step. `1e-11` is the recommended default for orbital regression work. |
 | `h_init_s`  | float  | &mdash;  | `> 0`  | Initial step size in seconds. Normally somewhere between `h_min_s` and `h_max_s`. |
 | `h_min_s`   | float  | &mdash;  | `> 0`  | Minimum allowed step size. The integrator gives up and reports failure if it would need to step smaller than this. |
@@ -808,7 +808,11 @@ step from its start so that it stops there. Measured on LAGEOS-2
 
 The default is on for `dop853` and off for `rkdp45`, so earlier
 `rkdp45` runs reproduce bit for bit. Without drag and SRP the key has
-no effect and costs nothing.
+no effect and costs nothing. In the form the checkbox follows the
+scheme whenever you pick one in `type` (and can then be changed); a
+loaded TOML keeps the value it carries, or the engine default for its
+scheme when it has none. The form always writes the key, so a saved
+scenario says how it runs.
 
 ### Integration time scale
 

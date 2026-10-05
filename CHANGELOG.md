@@ -23,7 +23,7 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   RKDP45. Limits: the fixed output grid and the events still use the
   endpoint quintic Hermite of RKDP45 (DOP853's own dense output is not
   implemented yet). `rkdp45` stays the default of the examples and of
-  the form.
+  a new form; the form's `type` combo offers both schemes.
 - **`integrator.discontinuity_stops`** (optional bool; default `true`
   with `dop853`, `false` with `rkdp45`). The NRLMSISE-00 inputs (3-hour
   Ap bins, daily F10.7, day of year) jump on the 3-hour UTC grid; a
@@ -44,7 +44,9 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   Off, earlier `rkdp45` results reproduce bit for bit; Monte Carlo
   outputs stay identical at 1 and 8 threads with the stops on.
   spody-core: `spody_next_force_discontinuity`,
-  `SPODY_DISC_STOP_EPS_S`.
+  `SPODY_DISC_STOP_EPS_S`. In the form: a `discontinuity_stops`
+  checkbox under `[integrator]` that follows the scheme when one is
+  picked; the key is always written.
 - **Monte Carlo uncertainty propagation: `spody uncertainty
   montecarlo <name>.uq.toml`** (manual ch. 14, new). A separate
   uncertainty file (closed schema, table `[montecarlo]`) names a
