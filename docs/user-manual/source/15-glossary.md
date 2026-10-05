@@ -91,6 +91,14 @@ of the plot tree. Subtracts trajectory B from trajectory A
 sample-by-sample (with cubic Hermite interpolation when the
 grids do not match). [Chapter 9, chapter 11.]
 
+**Discontinuity stop.** &mdash; A step boundary placed on a known jump
+of the force model (the 3-hour space-weather grid of NRLMSISE-00), so
+that no step integrates across it. [Chapter 6.]
+
+**DOP853.** &mdash; Runge-Kutta Dormand-Prince 8(5,3): order 8, with
+error estimators of order 5 and 3. Longer steps than RKDP45 for the
+same accuracy. [Chapter 6.]
+
 **Earth radiation pressure.** &mdash; The push of sunlight reflected by
 the Earth (albedo) and of its thermal infrared on the satellite, set
 by `force_model.earth_radiation_pressure`. [Chapter 6.]
@@ -232,8 +240,8 @@ RIC diff plot. Equivalent to the RSW frame in Vallado's
 nomenclature and the Hill frame in Clohessy-Wiltshire studies.
 [Chapter 10.]
 
-**RKDP / RKDP45.** &mdash; Runge-Kutta Dormand-Prince 5(4), the
-adaptive integrator SpOdy uses. The 5/4 numbers refer to the order
+**RKDP / RKDP45.** &mdash; Runge-Kutta Dormand-Prince 5(4), SpOdy's
+reference adaptive integrator. The 5/4 numbers refer to the order
 of the embedded error estimate. [Chapter 6.]
 
 **Run-guard.** &mdash; See *Hard run-guard*.

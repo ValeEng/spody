@@ -8,6 +8,35 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Second adaptive integrator: `integrator.type = "dop853"`**
+  (manual ch. 6). Dormand-Prince 8(5,3), order 8 with embedded
+  estimators of order 5 and 3 (Hairer, Norsett, Wanner, *Solving ODE
+  I*, 2nd ed., 1993, sect. II.10); coefficients identical to Hairer and
+  Wanner's `dop853.f`. `rel_tol` keeps its meaning: the RSS-step block
+  norm of RKDP45, applied to the combined estimate
+  err5^2 / sqrt(err5^2 + 0.01 err3^2). Measured at equal error against
+  RKDP45: GPS G11 (7 d) 2.5x fewer RHS evaluations, LAGEOS-2 (7 d,
+  no shadow) 4.5-4.9x, ISS with NRLMSISE drag (3 d, with the stops
+  below) 2.6x; cost on par with Orekit's DormandPrince853; 1e-14 runs
+  agree with RKDP45 within 0.4 mm. ISS Monte Carlo, 200 cases at
+  `rel_tol = 1e-11`: 24.7 s -> 6.6 s, sigma and bias within 1 mm of
+  RKDP45. Limits: the fixed output grid and the events still use the
+  endpoint quintic Hermite of RKDP45 (DOP853's own dense output is not
+  implemented yet); with SRP and frequent shadow passes the long steps
+  cross the penumbra and DOP853 does not reach 1 cm (LAGEOS-2 with
+  SRP: 0.33 m at 1e-12, as Orekit's DP853), so keep `rkdp45` there.
+  `rkdp45` stays the default of the examples and of the form.
+- **`integrator.discontinuity_stops`** (optional bool; default `true`
+  with `dop853`, `false` with `rkdp45`). The NRLMSISE-00 inputs (3-hour
+  Ap bins, daily F10.7, day of year) jump on the 3-hour UTC grid; a
+  Runge-Kutta step across a jump loses its order (Hairer, Norsett,
+  Wanner 1993, sect. II.6). With the stops on and drag active, the step
+  lands 1 ms before each boundary and a step of at most 2 ms crosses
+  it. ISS, `rel_tol = 1e-11`: error 2 m -> 1.1 mm with `dop853`, 4 cm
+  -> 0.14 mm with `rkdp45`, for +1.1 % / +0.1 % RHS evaluations; the
+  1e-14 runs of the two integrators move from 27 mm to 0.09 mm apart.
+  Off, earlier `rkdp45` results reproduce bit for bit.
+  spody-core: `spody_next_force_discontinuity`.
 - **Monte Carlo uncertainty propagation: `spody uncertainty
   montecarlo <name>.uq.toml`** (manual ch. 14, new). A separate
   uncertainty file (closed schema, table `[montecarlo]`) names a

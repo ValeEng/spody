@@ -748,17 +748,55 @@ Integration algorithm and tolerances. Required.
 
 | Key         | Type   | Default  | Range  | Description |
 |-------------|--------|----------|--------|-------------|
-| `type`      | string | &mdash;  | `rkdp45` | Integration scheme. Only Dormand-Prince 5(4) is supported in this release. |
+| `type`      | string | &mdash;  | `rkdp45`, `dop853` | Integration scheme: Dormand-Prince 5(4) or Dormand-Prince 8(5,3). See *Choosing the integrator* below. The form offers `rkdp45` only for now. |
 | `rel_tol`   | float  | &mdash;  | `> 0`  | Relative error tolerance per accepted step. `1e-11` is the recommended default for orbital regression work. |
 | `h_init_s`  | float  | &mdash;  | `> 0`  | Initial step size in seconds. Normally somewhere between `h_min_s` and `h_max_s`. |
 | `h_min_s`   | float  | &mdash;  | `> 0`  | Minimum allowed step size. The integrator gives up and reports failure if it would need to step smaller than this. |
 | `h_max_s`   | float  | &mdash;  | `> h_min_s` | Maximum allowed step size. Useful as a guard against the integrator picking very large steps in low-perturbation regions and missing events. |
+| `discontinuity_stops` | bool | `true` with `dop853`, `false` with `rkdp45` | &ndash; | Stop the steps on the known jumps of the force model (today: the 3-hour UTC grid of the NRLMSISE-00 space-weather inputs, when drag is on). See *Discontinuity stops* below. |
 | `time_scale` | string | `"tdb"` | `"tdb"`, `"tt"` | Time coordinate the integrator advances: TDB for every central body, or TT, the IERS geocentric time, Earth only. A missing key means `"tdb"`; the form and the bundled examples write it anyway, so a scenario says which time it runs. Output files are labelled in ET either way. See *Integration time scale* below. |
 
 A typical low-lunar-orbit setup uses `rel_tol = 1e-11`,
 `h_init_s = 60`, `h_min_s = 1e-5`, `h_max_s = 2700`. The relatively
 large `h_max_s` (45 minutes) is harmless because the adaptive
 controller picks smaller steps where the dynamics need them.
+
+### Choosing the integrator
+
+`rkdp45` (Dormand-Prince 5(4)) is the reference: every validation in
+this manual was made with it. `dop853` (Dormand-Prince 8(5,3), order 8; Hairer, N&oslash;rsett,
+Wanner, *Solving Ordinary Differential Equations I*, 2nd ed., 1993,
+sect. II.10) takes much longer steps for the same accuracy: measured at
+equal error, 2.5&times; fewer force evaluations on a GPS orbit, 4.5 to
+4.9&times; on LAGEOS-2, 2.6&times; on the ISS with drag; a 200-case ISS
+Monte Carlo runs in 6.6 s instead of 24.7 s. `rel_tol` has the same
+meaning for both (error per step relative to the step's own change), but
+at the same `rel_tol` `dop853` is usually more accurate.
+
+Use `rkdp45` when SRP is on and the orbit crosses the Earth's shadow
+often: the long steps of `dop853` jump across the penumbra and it does
+not reach the centimetre (LAGEOS-2 with SRP: 0.33 m at `rel_tol =
+1e-12`). The fixed output grid and the events are interpolated inside
+each step with the same quintic Hermite for both integrators; with the
+long `dop853` steps this interpolation is less accurate than the
+integration itself.
+
+### Discontinuity stops
+
+Some force-model inputs change in jumps, not smoothly. The NRLMSISE-00
+density takes its solar and geomagnetic indices from the space-weather
+table as daily F10.7 and 3-hour Ap values, and the day of year as an
+integer: all of them switch on the 3-hour UTC grid (00, 03, ..., 21 h).
+A Runge-Kutta step that straddles such a jump loses its order and its
+error estimate does not see it. With `discontinuity_stops = true` and
+drag on, the step lands 1 ms before each boundary and a step of at most
+2 ms crosses it.
+
+Measured on the ISS (3 days, `rel_tol = 1e-11`): the position error
+drops from 2 m to 1.1 mm with `dop853` and from 4 cm to 0.14 mm with
+`rkdp45`, for 1.1 % and 0.1 % more force evaluations. The default is on
+for `dop853` and off for `rkdp45`, so earlier `rkdp45` runs reproduce
+bit for bit. Without drag the key has no effect.
 
 ### Integration time scale
 

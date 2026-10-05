@@ -1792,6 +1792,23 @@ the others. Forgetting it does not crash and does not fail a test that
 checks accuracy; it shows up as the knob-on run no longer matching the
 knob-off run bit for bit, which is check (b) below.
 
+**Second example — discontinuity stops.** The same place hosts a
+hook that changes no model, only where the steps fall:
+`spody_next_force_discontinuity` (spody-core, next to
+`spody_adapt_hgdegree`) returns the integrator time of the next known
+jump of the force model — today the 3-hour UTC grid of the NRLMSISE-00
+inputs when drag is on — and `clip_to_discontinuity` in `sim_run.c`
+shortens the step to land `STOP_EPS_S` (1 ms) before it, crosses it
+with a step of at most 2 ms, then invalidates FSAL (the carried
+derivative was evaluated before the jump) and restores the step the
+controller had proposed. A new piecewise-constant input (a table
+switched by date, a mode change) belongs in that function, not in a
+new loop hook. Gated by `integrator.discontinuity_stops`, default on
+for DOP853, off for RKDP45 (bit-identical). The UTC -> ET inversion
+goes through `spody_et_to_mjd_utc` so the stop falls exactly where
+`spody_space_weather_msis_inputs` switches bin, leap seconds included
+(the chain folds 23:59:60 into the next day).
+
 **Rule 2 — tunable state goes in the per-thread handle.** The
 harmonics split is the template: `HarmonicGravityData` (coefficients)
 is shared read-only across workers and lives in `SimulationShared`,
@@ -2013,17 +2030,23 @@ Each entry: the rule, and the symptom you'll see if you break it.
   *Symptom of breakage: an angular error that looks large but moves the
   orbit little, or Earth-fixed outputs (impact lat/lon, ground tracks)
   offset by metres while the orbit looks fine.*
-- **RK45 is the only adaptive integrator, and its tolerance is
-  relative to the step.** `spody_integrator_method` has `RK4` (fixed
-  step) and `RK45`; a new method enters the enum only with its step
-  function, never as a stub. `rel_tol` is the only tolerance: per
-  3-component block the embedded error estimate is divided by the
-  step's own change of that block (absolute when its square is below
-  0.1), GMAT's RSS-step control, so `rel_tol` is not comparable with
-  another integrator's `atol + rtol|y|`. Changing the norm moves every
-  result (LRO included) and belongs with a new, higher-order
-  integrator. *Symptom of breakage: every output changes with no input
-  change; a method in the enum that fails its first step.*
+- **The adaptive integrators share one tolerance, relative to the
+  step.** `spody_integrator_method` has `RK4` (fixed step), `RK45`
+  (Dormand-Prince 5(4)) and `DOP853` (Dormand-Prince 8(5,3)); a new
+  method enters the enum only with its step function, never as a stub.
+  `rel_tol` is the only tolerance: per 3-component block the embedded
+  error estimate (for DOP853 the combination
+  err5^2 / sqrt(err5^2 + 0.01 err3^2)) is divided by the step's own
+  change of that block (absolute when its square is below 0.1), GMAT's
+  RSS-step control, so `rel_tol` is not comparable with another tool's
+  `atol + rtol|y|`. Changing the norm moves every result (LRO
+  included). Both adaptive methods are FSAL and fill `f_now`/`f_new`
+  the same way, which is what lets `spody_dense_state_rv6` and the
+  event refinement serve both; DOP853's own dense output is not wired
+  in, so its grid samples come from the endpoint quintic. *Symptom of
+  breakage: every output changes with no input change; a method in
+  the enum that fails its first step; DOP853 grid samples that drift
+  from the step-mode states.*
 - **The integrator cost counters count attempts, not successes.**
   `n_rhs` in `IntegratorAllData` is incremented at the RHS call site,
   so it includes evaluations spent on trial steps that were later
