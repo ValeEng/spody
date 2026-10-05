@@ -1792,22 +1792,46 @@ the others. Forgetting it does not crash and does not fail a test that
 checks accuracy; it shows up as the knob-on run no longer matching the
 knob-off run bit for bit, which is check (b) below.
 
-**Second example — discontinuity stops.** The same place hosts a
-hook that changes no model, only where the steps fall:
-`spody_next_force_discontinuity` (spody-core, next to
-`spody_adapt_hgdegree`) returns the integrator time of the next known
-jump of the force model — today the 3-hour UTC grid of the NRLMSISE-00
-inputs when drag is on — and `clip_to_discontinuity` in `sim_run.c`
-shortens the step to land `STOP_EPS_S` (1 ms) before it, crosses it
-with a step of at most 2 ms, then invalidates FSAL (the carried
-derivative was evaluated before the jump) and restores the step the
-controller had proposed. A new piecewise-constant input (a table
+**Second example — discontinuity stops.** The same loops host a hook
+that changes no model, only where the steps fall. One core function,
+`spody_next_force_discontinuity(ctx, integ)` (next to
+`spody_adapt_hgdegree`), is called once per step, **right after it**,
+and returns the first jump of the force model after the start of that
+step:
+
+- *known in advance* — the 3-hour UTC grid of the NRLMSISE-00 inputs
+  (drag on with space weather): the next boundary after `integ->t`.
+  The UTC -> ET inversion goes through `spody_et_to_mjd_utc`, so the
+  stop falls exactly where `spody_space_weather_msis_inputs` switches
+  bin, leap seconds included (the chain folds 23:59:60 into the next
+  day);
+- *located after the fact* — the shadow contacts of every SRP
+  occulter: `spody_get_eclipse_residual` with threshold 1 (penumbra)
+  and 0 (umbra) at the step ends, interior dense samples only when the
+  residual is within reach of zero (grazing passes), Brent on
+  `spody_dense_state_rv6`. A contact found is kept in
+  `ctx->disc_contact` (per thread, reset to INFINITY by the loop before
+  a run) because it is the stop of the steps that redo the interval.
+
+In `sim_run.c`, `next_stop_or_undo` calls it after the step: a result
+`<= integ.t` means the step crossed a contact, so the state goes back
+to `(t_old, y_old)` with `spody_set_integrator_state` and the loop
+`continue`s **before** events and grid samples see that step.
+Otherwise the result is the stop for `clip_to_discontinuity`, which
+lands `SPODY_DISC_STOP_EPS_S` (1 ms, `spody_const.h`, shared by core
+and app) before it, crosses it with a step of at most 2 ms, then
+invalidates FSAL (the carried derivative was evaluated before the
+jump) and restores the step the controller had proposed. Contacts
+within 2 eps of a step start belong to that crossing step and are not
+reported, which is what keeps the crossing from being undone forever.
+
+Gated by `integrator.discontinuity_stops` (default on for DOP853, off
+for RKDP45, bit-identical) **and** by drag or SRP being on: without
+them the loop never calls the function. A new piecewise input (a table
 switched by date, a mode change) belongs in that function, not in a
-new loop hook. Gated by `integrator.discontinuity_stops`, default on
-for DOP853, off for RKDP45 (bit-identical). The UTC -> ET inversion
-goes through `spody_et_to_mjd_utc` so the stop falls exactly where
-`spody_space_weather_msis_inputs` switches bin, leap seconds included
-(the chain folds 23:59:60 into the next day).
+new loop hook. *Symptom of breakage: a run that never ends (a crossing
+undone again and again), or outputs that differ between 1 and N
+threads (the contact kept in a shared struct).*
 
 **Rule 2 — tunable state goes in the per-thread handle.** The
 harmonics split is the template: `HarmonicGravityData` (coefficients)

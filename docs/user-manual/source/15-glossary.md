@@ -91,9 +91,9 @@ of the plot tree. Subtracts trajectory B from trajectory A
 sample-by-sample (with cubic Hermite interpolation when the
 grids do not match). [Chapter 9, chapter 11.]
 
-**Discontinuity stop.** &mdash; A step boundary placed on a known jump
-of the force model (the 3-hour space-weather grid of NRLMSISE-00), so
-that no step integrates across it. [Chapter 6.]
+**Discontinuity stop.** &mdash; A step boundary placed on a jump of the
+force model (the 3-hour space-weather grid of NRLMSISE-00, a shadow
+contact), so that no step integrates across it. [Chapter 6.]
 
 **DOP853.** &mdash; Runge-Kutta Dormand-Prince 8(5,3): order 8, with
 error estimators of order 5 and 3. Longer steps than RKDP45 for the

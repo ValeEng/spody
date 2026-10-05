@@ -22,10 +22,8 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   `rel_tol = 1e-11`: 24.7 s -> 6.6 s, sigma and bias within 1 mm of
   RKDP45. Limits: the fixed output grid and the events still use the
   endpoint quintic Hermite of RKDP45 (DOP853's own dense output is not
-  implemented yet); with SRP and frequent shadow passes the long steps
-  cross the penumbra and DOP853 does not reach 1 cm (LAGEOS-2 with
-  SRP: 0.33 m at 1e-12, as Orekit's DP853), so keep `rkdp45` there.
-  `rkdp45` stays the default of the examples and of the form.
+  implemented yet). `rkdp45` stays the default of the examples and of
+  the form.
 - **`integrator.discontinuity_stops`** (optional bool; default `true`
   with `dop853`, `false` with `rkdp45`). The NRLMSISE-00 inputs (3-hour
   Ap bins, daily F10.7, day of year) jump on the 3-hour UTC grid; a
@@ -35,8 +33,18 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   it. ISS, `rel_tol = 1e-11`: error 2 m -> 1.1 mm with `dop853`, 4 cm
   -> 0.14 mm with `rkdp45`, for +1.1 % / +0.1 % RHS evaluations; the
   1e-14 runs of the two integrators move from 27 mm to 0.09 mm apart.
-  Off, earlier `rkdp45` results reproduce bit for bit.
-  spody-core: `spody_next_force_discontinuity`.
+  With SRP, the shadow contacts (penumbra and umbra entry/exit of every
+  occulter) are located after each step on the step's dense output
+  (eclipse-event residuals + Brent); a step that crossed one is redone
+  from its start and stops on it. LAGEOS-2 with SRP (7 d, 46 shadow
+  passes): `dop853` error 2.16 m -> 7.9 mm at 1e-10 and 0.28 m ->
+  0.15 mm at 1e-12 (+18 % RHS), 1 cm reached with 27796 RHS against
+  117059 for `rkdp45`; the 1e-14 runs of the two integrators move from
+  32 mm to 0.45 mm apart. No drag and no SRP: no check is made.
+  Off, earlier `rkdp45` results reproduce bit for bit; Monte Carlo
+  outputs stay identical at 1 and 8 threads with the stops on.
+  spody-core: `spody_next_force_discontinuity`,
+  `SPODY_DISC_STOP_EPS_S`.
 - **Monte Carlo uncertainty propagation: `spody uncertainty
   montecarlo <name>.uq.toml`** (manual ch. 14, new). A separate
   uncertainty file (closed schema, table `[montecarlo]`) names a

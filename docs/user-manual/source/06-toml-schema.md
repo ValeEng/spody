@@ -753,7 +753,7 @@ Integration algorithm and tolerances. Required.
 | `h_init_s`  | float  | &mdash;  | `> 0`  | Initial step size in seconds. Normally somewhere between `h_min_s` and `h_max_s`. |
 | `h_min_s`   | float  | &mdash;  | `> 0`  | Minimum allowed step size. The integrator gives up and reports failure if it would need to step smaller than this. |
 | `h_max_s`   | float  | &mdash;  | `> h_min_s` | Maximum allowed step size. Useful as a guard against the integrator picking very large steps in low-perturbation regions and missing events. |
-| `discontinuity_stops` | bool | `true` with `dop853`, `false` with `rkdp45` | &ndash; | Stop the steps on the known jumps of the force model (today: the 3-hour UTC grid of the NRLMSISE-00 space-weather inputs, when drag is on). See *Discontinuity stops* below. |
+| `discontinuity_stops` | bool | `true` with `dop853`, `false` with `rkdp45` | &ndash; | Stop the steps on the jumps of the force model: the 3-hour UTC grid of the NRLMSISE-00 space-weather inputs (drag on) and the shadow contacts (SRP on). See *Discontinuity stops* below. |
 | `time_scale` | string | `"tdb"` | `"tdb"`, `"tt"` | Time coordinate the integrator advances: TDB for every central body, or TT, the IERS geocentric time, Earth only. A missing key means `"tdb"`; the form and the bundled examples write it anyway, so a scenario says which time it runs. Output files are labelled in ET either way. See *Integration time scale* below. |
 
 A typical low-lunar-orbit setup uses `rel_tol = 1e-11`,
@@ -773,12 +773,12 @@ Monte Carlo runs in 6.6 s instead of 24.7 s. `rel_tol` has the same
 meaning for both (error per step relative to the step's own change), but
 at the same `rel_tol` `dop853` is usually more accurate.
 
-Use `rkdp45` when SRP is on and the orbit crosses the Earth's shadow
-often: the long steps of `dop853` jump across the penumbra and it does
-not reach the centimetre (LAGEOS-2 with SRP: 0.33 m at `rel_tol =
-1e-12`). The fixed output grid and the events are interpolated inside
-each step with the same quintic Hermite for both integrators; with the
-long `dop853` steps this interpolation is less accurate than the
+`dop853` relies on the discontinuity stops below, on by default with
+it: without them its long steps jump across the space-weather changes
+and the penumbra, and it does not reach the centimetre with drag or
+SRP. The fixed output grid and the events are interpolated inside each
+step with the same quintic Hermite for both integrators; with the long
+`dop853` steps this interpolation is less accurate than the
 integration itself.
 
 ### Discontinuity stops
@@ -794,9 +794,21 @@ drag on, the step lands 1 ms before each boundary and a step of at most
 
 Measured on the ISS (3 days, `rel_tol = 1e-11`): the position error
 drops from 2 m to 1.1 mm with `dop853` and from 4 cm to 0.14 mm with
-`rkdp45`, for 1.1 % and 0.1 % more force evaluations. The default is on
-for `dop853` and off for `rkdp45`, so earlier `rkdp45` runs reproduce
-bit for bit. Without drag the key has no effect.
+`rkdp45`, for 1.1 % and 0.1 % more force evaluations.
+
+Solar radiation pressure switches on and off at the shadow contacts:
+the satellite enters and leaves the penumbra and the umbra of each
+occulter (the Earth, the Moon, ...). These instants are not known in
+advance; after every step the engine checks whether the step crossed
+one, finds it on the step's interpolated trajectory, and redoes the
+step from its start so that it stops there. Measured on LAGEOS-2
+(7 days, 46 shadow passes): with `dop853` the error at `rel_tol =
+1e-12` drops from 0.28 m to 0.15 mm for 18 % more force evaluations;
+`rkdp45`, with its shorter steps, moves from 1.9 mm to 1.0 mm.
+
+The default is on for `dop853` and off for `rkdp45`, so earlier
+`rkdp45` runs reproduce bit for bit. Without drag and SRP the key has
+no effect and costs nothing.
 
 ### Integration time scale
 
