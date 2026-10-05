@@ -685,6 +685,15 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   offsets; the `high_fidelity` path still writes `_wrt_icrf.csv` with
   identical numbers.
 
+### Deprecated
+
+- **spody-core `spody_dense_eval`** (cubic Hermite inside an RK45
+  step): unused by the engine, whose output grid, events and
+  discontinuity stops all go through `spody_dense_state_rv6`. A caller
+  now gets a compiler warning (`SPODY_DEPRECATED`; define
+  `SPODY_ALLOW_DEPRECATED` to silence it). The name is kept for a
+  future dense output independent of the integrator.
+
 ### Removed
 
 - **spody-core 2.0.0: unused and unfinished API removed.** The
