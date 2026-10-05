@@ -107,26 +107,40 @@ static int write_bin_header(FILE *fp) {
     return 0;
 }
 
-/* Discontinuity stops (integrator.discontinuity_stops). A step that
- * would cross the next jump of the force model
- * (spody_next_force_discontinuity) is shortened to land STOP_EPS_S
- * before it; from there a step of at most 2 * STOP_EPS_S crosses it.
- * Returns 1 for that crossing step, with the step the controller had
- * proposed in *h_keep: the caller restores it and drops the FSAL
- * derivative, evaluated before the jump, once the step is done. */
-#define STOP_EPS_S 1.0e-3
-
-static int clip_to_discontinuity(SimulationWorker *w, double *h_keep) {
-    double gap = spody_next_force_discontinuity(&w->ctx, w->integ.t)
-               - w->integ.t;
+/* Discontinuity stops (integrator.discontinuity_stops). t_disc is the
+ * next known jump of the force model, from spody_next_force_discontinuity
+ * after the previous step. A step that would cross it is shortened to
+ * land SPODY_DISC_STOP_EPS_S before it; from there a step of at most
+ * twice that crosses it. Returns 1 for that crossing step, with the step
+ * the controller had proposed in *h_keep: the caller restores it and
+ * drops the FSAL derivative, evaluated before the jump, once the step
+ * is done. */
+static int clip_to_discontinuity(SimulationWorker *w, double t_disc,
+                                 double *h_keep) {
+    double gap = t_disc - w->integ.t;
     if (isinf(gap)) return 0;
-    if (gap <= 1.5 * STOP_EPS_S) {
+    if (gap <= 1.5 * SPODY_DISC_STOP_EPS_S) {
         *h_keep = w->integ.h;
-        if (w->integ.h > gap + STOP_EPS_S) w->integ.h = gap + STOP_EPS_S;
+        if (w->integ.h > gap + SPODY_DISC_STOP_EPS_S)
+            w->integ.h = gap + SPODY_DISC_STOP_EPS_S;
         return 1;
     }
-    if (w->integ.h > gap - STOP_EPS_S) w->integ.h = gap - STOP_EPS_S;
+    if (w->integ.h > gap - SPODY_DISC_STOP_EPS_S)
+        w->integ.h = gap - SPODY_DISC_STOP_EPS_S;
     return 0;
+}
+
+/* After a step: the next stop, or 1 when the step crossed a located
+ * discontinuity (a shadow contact) and has been undone -- state back
+ * to the start of the step, the proposed step kept; the next pass of
+ * the loop stops on the contact. */
+static int next_stop_or_undo(SimulationWorker *w, double *t_disc) {
+    *t_disc = spody_next_force_discontinuity(&w->ctx, &w->integ);
+    if (*t_disc > w->integ.t) return 0;
+    double h_prop = w->integ.h;
+    spody_set_integrator_state(&w->integ, w->integ.t_old, w->integ.y_old);
+    w->integ.h = h_prop;
+    return 1;
 }
 
 static int emit_trajectory(FILE *csv, FILE *bin, const SimulationWorker *w,
@@ -664,7 +678,14 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
      * sees the same field. Off, the run keeps the fixed
      * `harmonics_degree` and reproduces earlier outputs bit for bit. */
     const int adapt_hg = cfg->harmonics_adaptive;
-    const int stops    = cfg->discontinuity_stops;
+    /* no drag and no SRP: no discontinuity to look for, no call per step */
+    const int stops    = cfg->discontinuity_stops
+                         && (cfg->enable_drag || cfg->enable_srp);
+    double t_disc = INFINITY;
+    if (stops) {
+        w->ctx.disc_contact = INFINITY;
+        t_disc = spody_next_force_discontinuity(&w->ctx, &w->integ);
+    }
 
     if (cfg->output_mode == SPODY_OUT_FIXED) {
         const double dt = cfg->output_interval_s;
@@ -683,7 +704,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             double h_remain = t_end - w->integ.t;
             if (w->integ.h > h_remain) w->integ.h = h_remain;
             double h_keep = 0.0;
-            const int crossing = stops && clip_to_discontinuity(w, &h_keep);
+            const int crossing = stops && clip_to_discontinuity(w, t_disc, &h_keep);
 
             /* A changed degree is a changed vector field: the FSAL
              * derivative the integrator kept from the previous step was
@@ -704,6 +725,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 spody_integrator_invalidate_fsal(&w->integ);
                 w->integ.h = h_keep;
             }
+            if (stops && next_stop_or_undo(w, &t_disc)) continue;
 
             /* Events first: a stop-class trigger inside this step caps
              * the grid drain below, so no sample past the impact -- a
@@ -796,7 +818,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
             double h_remain = t_end - w->integ.t;
             if (w->integ.h > h_remain) w->integ.h = h_remain;
             double h_keep = 0.0;
-            const int crossing = stops && clip_to_discontinuity(w, &h_keep);
+            const int crossing = stops && clip_to_discontinuity(w, t_disc, &h_keep);
 
             /* A changed degree is a changed vector field: the FSAL
              * derivative the integrator kept from the previous step was
@@ -817,6 +839,7 @@ int spody_run_simulation(const InputConfig *cfg, SimulationWorker *w,
                 spody_integrator_invalidate_fsal(&w->integ);
                 w->integ.h = h_keep;
             }
+            if (stops && next_stop_or_undo(w, &t_disc)) continue;
             /* Events first, for the same reason as in fixed mode: the
              * accepted step that contains a stop-class trigger ends
              * inside the body, and that state must not be the record

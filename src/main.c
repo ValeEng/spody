@@ -176,8 +176,8 @@ static void print_config_summary(const InputConfig *cfg) {
            cfg->rel_tol, cfg->h_min_s, cfg->h_max_s, cfg->h_init_s,
            cfg->dynamics_model == SPODY_DYN_CR3BP ? ""
            : cfg->time_scale_tt ? "  time TT" : "  time TDB",
-           cfg->discontinuity_stops && cfg->enable_drag
-           ? "  stops on space-weather bins" : "");
+           cfg->discontinuity_stops && (cfg->enable_drag || cfg->enable_srp)
+           ? "  discontinuity stops" : "");
     spody_log_printf("  output mode      : %s",
            cfg->output_mode == SPODY_OUT_FIXED ? "fixed" : "step");
     if (cfg->output_mode == SPODY_OUT_FIXED) {
