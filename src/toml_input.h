@@ -492,6 +492,16 @@ typedef struct {
     double         pn_density_tau_s;
     double         pn_density_interval_s;
     SpodyUqValueIs pn_density_value_is;   /* MEAN or MEDIAN */
+
+    /* [montecarlo.process_noise].acceleration: every dispersed case
+     * feels an acceleration in its own RIC axes, one first-order
+     * Gauss-Markov process per axis (stationary sigma, common tau),
+     * sampled every interval_s and interpolated linearly. pn_accel = 0:
+     * none. */
+    int            pn_accel;
+    double         pn_accel_sigma_kms2[3]; /* R, I, C; 0 = exact axis   */
+    double         pn_accel_tau_s;
+    double         pn_accel_interval_s;
 } SpodyUqConfig;
 
 /* --------------------------------------------------------------------------
