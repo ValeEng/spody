@@ -23,6 +23,20 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   agrees with the linear theory within 2-4 % at 6, 12 and 24 h (96 m
   at 24 h); halving `interval_s` moves it by 0.04 %; 1 and 8 threads
   give identical moments.
+- **Process noise: Gauss-Markov RIC acceleration per case**
+  (`[montecarlo.process_noise].acceleration = { sigma_m_s2 = [R, I,
+  C], tau_s, interval_s }`, manual ch. 14), for the forces the model
+  leaves out. One Gauss-Markov process per axis, interpolated
+  linearly and applied in each case's own RIC axes; its streams are
+  separate from the density noise and the once-per-case draws.
+  Checked on a two-body 490 km orbit (1000 cases, 24 h): R, I, C
+  sigmas agree with the Clohessy-Wiltshire covariance driven by the
+  same process within 1-3 % (in-track, cross-track) and 1-9 %
+  (radial), sampling error 2.2 %.
+- **spody-core `SpodyEmpiricalAccel` / `spody_force_empirical`**: an
+  empirical acceleration given as a node table in the satellite's RIC
+  axes (`ForceModelContext.empirical_accel`); NULL keeps every run
+  bit-identical.
 - **spody-core `spody_gauss_markov_nodes`**: exact sampling of a
   first-order Gauss-Markov process at given times, and stream domains
   (`spody_random_stream_init_domain`); every existing stream is

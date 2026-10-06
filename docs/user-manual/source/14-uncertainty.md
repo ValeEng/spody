@@ -170,12 +170,15 @@ the cloud grows slower than the real error. Process noise lets the
 error **change along the trajectory**, a different history in every
 case.
 
-Today one entry, `density`:
+Two entries, `density` and `acceleration`, each optional:
 
 ```toml
 [montecarlo.process_noise]
-density = { sigma_ln = 0.08, tau_s = 21600.0, interval_s = 1800.0, scenario_value_is = "median" }
+density      = { sigma_ln = 0.08, tau_s = 21600.0, interval_s = 1800.0, scenario_value_is = "median" }
+acceleration = { sigma_m_s2 = [0.0, 0.0, 1.6e-7], tau_s = 1800.0, interval_s = 180.0 }
 ```
+
+#### `density`
 
 | Key | Meaning |
 |---|---|
@@ -220,6 +223,45 @@ g(t&minus;v) e<sup>&minus;|u&minus;v|/&tau;</sup> du dv, g the
 measured in-track response to a density step, within 2&ndash;4 % at 6,
 12 and 24 h (sampling error 2.2 %); halving `interval_s` changes the
 24 h sigma by 0.04 %.
+
+#### `acceleration`
+
+An acceleration in each case's own radial / in-track / cross-track
+axes, standing for the forces the model leaves out (ocean tides,
+thermal and attitude-dependent effects, the box-wing shape of a real
+spacecraft). Each axis is its own Gauss-Markov process.
+
+| Key | Meaning |
+|---|---|
+| `sigma_m_s2` | Three numbers &ge; 0: stationary standard deviation of the R, I, C acceleration [m/s&sup2;]. An axis with 0 stays exact; at least one must be &gt; 0. |
+| `tau_s` | Correlation time [s], common to the three axes. |
+| `interval_s` | Spacing of the nodes [s], at most `tau_s` (`tau_s / 10` or less recommended). |
+
+The values are computed exactly at nodes every `interval_s` and
+interpolated linearly in time; the force rotates them into the RIC
+axes of the case's current state (rotation only, the CCSDS RTN
+convention), so a cross-track noise stays cross-track along the
+orbit. It reads its own random streams (three, one per axis), separate
+from the density noise and from the once-per-case draws: the drawn
+states, parameters and density histories stay the same when it is
+added. The nominal has no noise.
+
+**Choosing the values.** A noise in an axis grows the error in that
+axis and, through the orbital dynamics, in the coupled one (a radial
+or in-track acceleration ends up mostly in-track). Sized from orbit
+fits (manual values; they depend on the orbit and the model):
+GRACE-FO cross-track &asymp; 1.6e-7 m/s&sup2;, LAGEOS-2 cross-track
+&asymp; 1.3e-8 m/s&sup2;, both with `tau_s` &asymp; 30 min. In a
+low orbit the in-track error is usually the density's: use the
+`density` entry for it rather than an in-track acceleration.
+
+**Checked against theory.** Two-body orbit at 490 km, noise on all
+three axes (2, 1, 3 &times; 10&#8315;&#8311; m/s&sup2;, 30 min), 1000
+cases: the R, I, C sigmas of the Monte Carlo agree with the linear
+Clohessy-Wiltshire covariance driven by the same process (Van Loan
+discretisation) within 1&ndash;3 % in-track and cross-track and within
+1&ndash;9 % radially at 1, 6, 12 and 24 h (sampling error 2.2 %);
+halving `interval_s` moves them within the sampling error.
 
 ## What a run does
 
@@ -551,6 +593,12 @@ against about 15 for a Gaussian.
 - D. T. Gillespie, *Exact numerical simulation of the
   Ornstein-Uhlenbeck process and its integral*, Physical Review E 54
   (1996) 2084&ndash;2091.
+- W. H. Clohessy, R. S. Wiltshire, *Terminal guidance system for
+  satellite rendezvous*, Journal of the Aerospace Sciences 27 (1960)
+  653&ndash;658.
+- C. F. Van Loan, *Computing integrals involving the matrix
+  exponential*, IEEE Transactions on Automatic Control 23 (1978)
+  395&ndash;404.
 - B. P. Welford, *Note on a method for calculating corrected sums of
   squares and products*, Technometrics 4 (1962) 419&ndash;420.
 - D. A. Vallado, S. Alfano, *Curvilinear coordinate transformations

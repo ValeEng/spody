@@ -328,7 +328,12 @@ substreams 0, 1, 2 are reserved for the R, I, C random acceleration
 and 3 is the density (`pn_substream_density` in `uncertainty.c`).
 See §7 for the invariants.
 
-**Process noise (`[montecarlo.process_noise]`).** Today the density:
+**Process noise (`[montecarlo.process_noise]`).** Two entries. The
+acceleration: `noise_accel_table` builds, per dispersed case, the
+node arrays of a spody-core `SpodyEmpiricalAccel` (three Gauss-Markov
+processes, substreams 0-2), and `run_case` points that worker's
+`ctx.empirical_accel` at it; `spody_force_empirical` interpolates in
+ET and rotates into the case's RIC axes. The density:
 `noise_density_table` builds, per dispersed case, a
 `MappedDensityScale` with nodes every `interval_s` (Gauss-Markov
 values from `spody_gauss_markov_nodes`, times the case's own
@@ -336,10 +341,20 @@ calibration), and `run_case` points that worker's
 `ctx.density_scale` at it after `spody_build_worker`. The table is
 owned by the case loop (allocated and freed per case, per thread),
 never by `SimulationShared`. The force interpolates it linearly, so
-no discontinuity stops are needed. Local check:
-`tests/uq_input/check_uq_process_noise.py` (input refusals,
+no discontinuity stops are needed. Local checks:
+`tests/uq_input/check_uq_process_noise.py` (density: input refusals,
 bit-identity without noise, common random numbers, thread
-invariance, linear theory, node spacing).
+invariance, linear theory, node spacing) and
+`check_uq_process_noise_accel.py` (acceleration: the same, against
+the Clohessy-Wiltshire covariance); spody-core
+`tvb/tests/test_empirical.c` for the force itself.
+
+**`SpodyEmpiricalAccel` (spody-core).** A generic force, not tied to
+the Monte Carlo: any caller can fill a node table (ET, R/I/C in
+km/s^2) and set `ForceModelContext.empirical_accel`. It is summed
+after relativity in the RHS and enters `spody_force_breakdown`'s
+total (keeping total == RHS) but has no SPDYACC_ column; a scenario
+key for a deterministic empirical acceleration does not exist yet.
 
 **GUI side.** The Uncertainty tab (`uncertainty_panel.py`, §1.3)
 writes the file and launches the run; the Analysis tab reads the two
