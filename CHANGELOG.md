@@ -33,10 +33,19 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   sigmas agree with the Clohessy-Wiltshire covariance driven by the
   same process within 1-3 % (in-track, cross-track) and 1-9 %
   (radial), sampling error 2.2 %.
+- **Process noise: once-per-revolution acceleration**
+  (`[montecarlo.process_noise].acceleration_1rev`, same keys as
+  `acceleration`): per RIC axis A cos u + B sin u with A, B
+  Gauss-Markov, for the coherent orbit-periodic forces that make the
+  cross-track error grow linearly (GRACE-FO, February 2024: 0.31 m at
+  6 h, 0.83 m at 24 h). Checked against the linear CW variance within
+  1-5 % on R, I, C up to 24 h. `tau_s` of both acceleration entries
+  may now be one number or `[R, I, C]`.
 - **spody-core `SpodyEmpiricalAccel` / `spody_force_empirical`**: an
   empirical acceleration given as a node table in the satellite's RIC
-  axes (`ForceModelContext.empirical_accel`); NULL keeps every run
-  bit-identical.
+  axes (`ForceModelContext.empirical_accel`), with optional
+  once-per-revolution columns (cos u, sin u of the argument of
+  latitude); NULL keeps every run bit-identical.
 - **spody-core `spody_gauss_markov_nodes`**: exact sampling of a
   first-order Gauss-Markov process at given times, and stream domains
   (`spody_random_stream_init_domain`); every existing stream is

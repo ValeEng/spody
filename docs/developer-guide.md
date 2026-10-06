@@ -328,12 +328,16 @@ substreams 0, 1, 2 are reserved for the R, I, C random acceleration
 and 3 is the density (`pn_substream_density` in `uncertainty.c`).
 See §7 for the invariants.
 
-**Process noise (`[montecarlo.process_noise]`).** Two entries. The
-acceleration: `noise_accel_table` builds, per dispersed case, the
-node arrays of a spody-core `SpodyEmpiricalAccel` (three Gauss-Markov
-processes, substreams 0-2), and `run_case` points that worker's
-`ctx.empirical_accel` at it; `spody_force_empirical` interpolates in
-ET and rotates into the case's RIC axes. The density:
+**Process noise (`[montecarlo.process_noise]`).** Three entries. The
+accelerations (`acceleration`, `acceleration_1rev`):
+`noise_accel_table` builds, per dispersed case, the node columns of a
+spody-core `SpodyEmpiricalAccel` on one grid (the smaller
+`interval_s` of the two): `a_ric` from substreams 0-2, `a_cos` from
+4-6, `a_sin` from 7-9, one Gauss-Markov process per axis with its own
+tau; `run_case` points that worker's `ctx.empirical_accel` at it, and
+`spody_force_empirical` interpolates in ET, multiplies the 1/rev
+columns by cos u / sin u of the current state and rotates into its
+RIC axes. The density:
 `noise_density_table` builds, per dispersed case, a
 `MappedDensityScale` with nodes every `interval_s` (Gauss-Markov
 values from `spody_gauss_markov_nodes`, times the case's own
@@ -351,7 +355,10 @@ the Clohessy-Wiltshire covariance); spody-core
 
 **`SpodyEmpiricalAccel` (spody-core).** A generic force, not tied to
 the Monte Carlo: any caller can fill a node table (ET, R/I/C in
-km/s^2) and set `ForceModelContext.empirical_accel`. It is summed
+km/s^2, plus optional cos u / sin u columns; each column may be NULL)
+and set `ForceModelContext.empirical_accel`. A three-field
+initialiser `{ et, a_ric, n }` stays valid (the 1/rev columns default
+to NULL). It is summed
 after relativity in the RHS and enters `spody_force_breakdown`'s
 total (keeping total == RHS) but has no SPDYACC_ column; a scenario
 key for a deterministic empirical acceleration does not exist yet.
@@ -2473,7 +2480,8 @@ Each entry: the rule, and the symptom you'll see if you break it.
   `spody_random_substream_id`), and extend the collision check.
   Process noise lives in its own stream domain
   (`SPODY_RANDOM_DOMAIN_PROCESS_NOISE`, counter word 2 = 1), so its
-  small fixed substreams (0-2 acceleration, 3 density) cannot meet a
+  small fixed substreams (0-2 acceleration, 3 density, 4-6 / 7-9 the
+  cos / sin once-per-revolution coefficients) cannot meet a
   domain-0 draw by construction; a new process-noise quantity takes
   the next free number there and documents it next to
   `pn_substream_density`.

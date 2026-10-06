@@ -170,12 +170,14 @@ the cloud grows slower than the real error. Process noise lets the
 error **change along the trajectory**, a different history in every
 case.
 
-Two entries, `density` and `acceleration`, each optional:
+Three entries, `density`, `acceleration` and `acceleration_1rev`,
+each optional:
 
 ```toml
 [montecarlo.process_noise]
-density      = { sigma_ln = 0.08, tau_s = 21600.0, interval_s = 1800.0, scenario_value_is = "median" }
-acceleration = { sigma_m_s2 = [0.0, 0.0, 1.6e-7], tau_s = 1800.0, interval_s = 180.0 }
+density           = { sigma_ln = 0.05, tau_s = 345600.0, interval_s = 3600.0, scenario_value_is = "mean" }
+acceleration      = { sigma_m_s2 = [9.4e-8, 0.0, 7.4e-8], tau_s = [300.0, 300.0, 3600.0], interval_s = 30.0 }
+acceleration_1rev = { sigma_m_s2 = [3.2e-8, 8.0e-9, 2.1e-8], tau_s = 345600.0, interval_s = 600.0 }
 ```
 
 #### `density`
@@ -234,8 +236,8 @@ spacecraft). Each axis is its own Gauss-Markov process.
 | Key | Meaning |
 |---|---|
 | `sigma_m_s2` | Three numbers &ge; 0: stationary standard deviation of the R, I, C acceleration [m/s&sup2;]. An axis with 0 stays exact; at least one must be &gt; 0. |
-| `tau_s` | Correlation time [s], common to the three axes. |
-| `interval_s` | Spacing of the nodes [s], at most `tau_s` (`tau_s / 10` or less recommended). |
+| `tau_s` | Correlation time [s]: one number for the three axes, or `[R, I, C]`. |
+| `interval_s` | Spacing of the nodes [s], at most the shortest `tau_s` of an axis with sigma &gt; 0 (a tenth of it or less recommended). |
 
 The values are computed exactly at nodes every `interval_s` and
 interpolated linearly in time; the force rotates them into the RIC
@@ -262,6 +264,41 @@ Clohessy-Wiltshire covariance driven by the same process (Van Loan
 discretisation) within 1&ndash;3 % in-track and cross-track and within
 1&ndash;9 % radially at 1, 6, 12 and 24 h (sampling error 2.2 %);
 halving `interval_s` moves them within the sampling error.
+
+#### `acceleration_1rev`
+
+The same keys as `acceleration`, for the **once-per-revolution** part:
+on each axis
+
+&nbsp;&nbsp;&nbsp;&nbsp;a<sub>k</sub> = A<sub>k</sub> cos u + B<sub>k</sub> sin u,
+
+u the argument of latitude of the case's current state (angle in the
+orbit plane from the ascending node on the ICRF equator), A<sub>k</sub>
+and B<sub>k</sub> two independent Gauss-Markov processes with the
+`sigma_m_s2` and `tau_s` of axis k. A force that repeats once per
+orbit &mdash; thermospheric winds, unmodelled tides, a radiation
+pressure tied to the orbit geometry &mdash; drives the cross-track
+motion at its own frequency, so the cross-track error grows
+**linearly** in time; a noise constant in RIC only makes it grow like
+&radic;t and cannot follow it. These are the once-per-revolution terms
+of empirical orbit models (Beutler et al. 1994; J&auml;ggi et al.
+2006). Its random streams are separate from every other noise.
+
+**When to use it.** Measured on GRACE-FO (February 2024, orbit fits on
+10 days): the cross-track error grew from 0.31 m at 6 h to 0.83 m at
+24 h, nearly linearly; with the constant RIC acceleration alone the
+calibrated cloud fell short at 24 h by a factor 2.2 in cross-track
+variance, with the once-per-revolution terms added the
+predicted/observed variance stayed within 0.8&ndash;1.25 on every axis
+from 1 to 24 h.
+
+**Checked against theory.** Noise-only Monte Carlo, two-body orbit at
+490 km, sigma 1, 0.5, 2 &times; 10&#8315;&#8311; m/s&sup2; on R, I, C,
+tau 6 h, 1000 cases: R, I, C sigmas agree with the linear
+Clohessy-Wiltshire variance Var x(T) = h&#7488;Kh, K<sub>ij</sub> =
+e<sup>&minus;|t<sub>i</sub>&minus;t<sub>j</sub>|/&tau;</sup> cos
+n(t<sub>i</sub>&minus;t<sub>j</sub>), h the CW impulse response, within
+1&ndash;5 % at 1, 6, 12 and 24 h.
 
 ## What a run does
 
@@ -593,6 +630,13 @@ against about 15 for a Gaussian.
 - D. T. Gillespie, *Exact numerical simulation of the
   Ornstein-Uhlenbeck process and its integral*, Physical Review E 54
   (1996) 2084&ndash;2091.
+- G. Beutler, E. Brockmann, W. Gurtner, U. Hugentobler, L. Mervart,
+  M. Rothacher, A. Verdun, *Extended orbit modeling techniques at the
+  CODE processing center of the International GPS Service for
+  Geodynamics (IGS)*, Manuscripta Geodaetica 19 (1994) 367&ndash;386.
+- A. J&auml;ggi, U. Hugentobler, G. Beutler, *Pseudo-stochastic orbit
+  modeling techniques for low-Earth orbiters*, Journal of Geodesy 80
+  (2006) 47&ndash;60.
 - W. H. Clohessy, R. S. Wiltshire, *Terminal guidance system for
   satellite rendezvous*, Journal of the Aerospace Sciences 27 (1960)
   653&ndash;658.
