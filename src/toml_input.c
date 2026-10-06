@@ -1635,11 +1635,9 @@ static const SpodyFieldDesc FIELD_TABLE[] = {
     { "initial_state.velocity_kms[2]",   SPODY_FIELD_VEC3_AT,
       offsetof(InputConfig, velocity_kms),       2, SPODY_VAL_ANY      },
 
-    /* force_model -- toggles only; harmonics_* and central_body are shared. */
-    { "force_model.srp",                 SPODY_FIELD_INT,
-      offsetof(InputConfig, enable_srp),         0, SPODY_VAL_BOOL     },
-    { "force_model.drag",                SPODY_FIELD_INT,
-      offsetof(InputConfig, enable_drag),        0, SPODY_VAL_BOOL     },
+    /* force_model -- the force switches (srp, drag), harmonics_* and
+     * central_body are not targets: they choose the physical model and
+     * the resources the scenario opens once for every case. */
     { "force_model.density_scale",       SPODY_FIELD_DOUBLE,
       offsetof(InputConfig, density_scale),      0, SPODY_VAL_POSITIVE },
 
@@ -1826,9 +1824,13 @@ static int parse_batch(toml_table_t *root, const char *toml_dir,
 
         const SpodyFieldDesc *fd = resolve_field(target_path);
         if (!fd) {
+            int sw = strcmp(target_path, "force_model.srp") == 0
+                  || strcmp(target_path, "force_model.drag") == 0;
             spody_error_set(err, SPODY_ERR_BAD_VALUE,
                     "[batch.columns].%s target '%s' is not a recognised "
-                    "per-case override target", col, target_path);
+                    "per-case override target%s", col, target_path,
+                    sw ? " (the force switches belong to the scenario: run "
+                         "one batch per configuration)" : "");
             rc = SPODY_ERR_BAD_VALUE; goto fail;
         }
         /* Cross-validate target against the object mode: spacecraft.* paths
@@ -2011,9 +2013,6 @@ void spody_apply_batch_case(const InputConfig *base, const BatchConfig *batch,
         switch (fd->kind) {
             case SPODY_FIELD_DOUBLE:
                 *(double *)base_ptr = is_delta ? *(double *)base_ptr + v : v;
-                break;
-            case SPODY_FIELD_INT:
-                *(int *)base_ptr = is_delta ? *(int *)base_ptr + (int)v : (int)v;
                 break;
             case SPODY_FIELD_VEC3_AT: {
                 double *slot = &((double *)base_ptr)[fd->vec_idx];
@@ -2663,14 +2662,6 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
                             return SPODY_ERR_BAD_VALUE;
                         }
                         break;
-                    case SPODY_VAL_BOOL:
-                        if (v != 0.0 && v != 1.0) {
-                            spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                                    "batch case '%s': %s must be 0 or 1 (got %g)",
-                                    id, fd->path, v);
-                            return SPODY_ERR_BAD_VALUE;
-                        }
-                        break;
                 }
             }
         }
@@ -3104,8 +3095,8 @@ static int uq_check_target(const SpodyUqParameter *p, const InputConfig *sc,
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
                 "[montecarlo.parameters]: '%s' cannot be dispersed (the "
                 "initial state goes in [montecarlo.initial_state]; "
-                "simulation, integrator, output keys and on/off switches "
-                "are not uncertain quantities)", t);
+                "simulation, integrator and output keys are not uncertain "
+                "quantities)", t);
         return SPODY_ERR_BAD_VALUE;
     }
     int debris = uq_starts(t, "debris.");

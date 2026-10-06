@@ -164,7 +164,6 @@ typedef struct {
  * -------------------------------------------------------------------------- */
 typedef enum {
     SPODY_FIELD_DOUBLE   = 0,   /* a single `double` field            */
-    SPODY_FIELD_INT      = 1,   /* a single `int`    field            */
     SPODY_FIELD_VEC3_AT  = 2    /* one element of a `double[3]` field */
 } SpodyFieldKind;
 
@@ -175,8 +174,7 @@ typedef enum {
 typedef enum {
     SPODY_VAL_ANY      = 0,    /* finite, nothing else                            */
     SPODY_VAL_POSITIVE = 1,    /* > 0                                              */
-    SPODY_VAL_NON_NEG  = 2,    /* >= 0                                             */
-    SPODY_VAL_BOOL     = 3     /* exactly 0 or 1 (used with SPODY_FIELD_INT)       */
+    SPODY_VAL_NON_NEG  = 2     /* >= 0                                             */
 } SpodyValRule;
 
 typedef struct {
