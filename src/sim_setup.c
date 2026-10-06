@@ -638,6 +638,17 @@ int spody_check_case(const InputConfig *cfg,
                 cfg->density_scale);
         return SPODY_ERR_BAD_VALUE;
     }
+    /* The space weather table is opened once, from the scenario: a case
+     * cannot switch drag on over a scenario without it (the force would
+     * see no table and silently give zero density). Switching it off is
+     * fine. */
+    if (cfg->enable_drag && !shared->init_sw) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "force_model.drag = true in a case needs drag = true in the "
+                "scenario: the space weather table is opened once, from the "
+                "scenario");
+        return SPODY_ERR_BAD_VALUE;
+    }
     if (shared->init_med &&
         (rc = check_ephemeris_window(cfg, &shared->med, err)) != SPODY_OK)
         return rc;
