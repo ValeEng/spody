@@ -2022,9 +2022,11 @@ Each entry: the rule, and the symptom you'll see if you break it.
   CSV: case 2 must be bit-identical to a single run with the value
   written in the TOML. The same family: a resource opened only when
   the scenario needs it (the space weather table, for drag) is
-  missing for a case that switches the feature on, so
-  `spody_check_case` refuses such a case rather than letting the
-  force soft-fail to zero.
+  missing for a case that switches the feature on. For this reason
+  the force switches (`force_model.srp`, `force_model.drag`) are
+  **not** batch targets (removed 2026-10-06): do not add an on/off
+  switch to `FIELD_TABLE`; a batch varies values inside the model the
+  scenario chose.
 - **Resolve the initial state to ICRF before applying a batch case.**
   `[initial_state]` can be Keplerian or Cartesian in any of three
   frames, but the propagator consumes exactly one thing: a

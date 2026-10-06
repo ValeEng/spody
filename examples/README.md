@@ -522,8 +522,6 @@ validation (see [Per-case validation](#per-case-validation)).
 - `debris.am_drag` / `debris.Cd` *(debris mode only)*
 - `initial_state.position_km[0..2]`
 - `initial_state.velocity_kms[0..2]`
-- `force_model.srp` (0 or 1)
-- `force_model.drag` (0 or 1)
 - `force_model.density_scale`
 - `integrator.rel_tol`, `h_init_s`, `h_min_s`, `h_max_s`
 - `output.interval_s`
@@ -597,7 +595,6 @@ rule (delta cells are exempt -- see [`[batch.columns]`](#batchcolumns)):
 |-------------------------------------|-------------|
 | `*.mass_kg`, `*.area_m2`, `*.am_*`, `*.Cd`, `duration_s`, `density_scale`, tolerances, step bounds, interval | must be `> 0` |
 | `*.Cr`                              | must be `>= 0` |
-| `force_model.srp`, `force_model.drag` | must be `0` or `1` |
 | `*.position_km[i]`, `*.velocity_kms[i]`, `et_start_s` | any finite double |
 
 Every cell (override or delta) must be a finite number. Errors are

@@ -120,7 +120,7 @@ One line per uncertain parameter, keyed by its **batch target path**
 The scenario value p&#8320; is the centre of the distribution. At most
 16 parameters. A target is refused when it cannot be uncertain or
 would have no effect: the initial state (use the table above),
-`simulation.*`, `integrator.*`, `output.*`, integer switches, a drag
+`simulation.*`, `integrator.*`, `output.*`, a drag
 parameter with drag off, a radiation-pressure parameter with neither
 SRP nor Earth radiation pressure on, `spacecraft.mass_kg` when no
 force depends on the mass, `density_scale` when the scenario uses a
