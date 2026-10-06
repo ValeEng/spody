@@ -495,13 +495,22 @@ typedef struct {
 
     /* [montecarlo.process_noise].acceleration: every dispersed case
      * feels an acceleration in its own RIC axes, one first-order
-     * Gauss-Markov process per axis (stationary sigma, common tau),
+     * Gauss-Markov process per axis (stationary sigma, tau per axis),
      * sampled every interval_s and interpolated linearly. pn_accel = 0:
      * none. */
     int            pn_accel;
     double         pn_accel_sigma_kms2[3]; /* R, I, C; 0 = exact axis   */
-    double         pn_accel_tau_s;
+    double         pn_accel_tau_s[3];
     double         pn_accel_interval_s;
+
+    /* [montecarlo.process_noise].acceleration_1rev: the same for the
+     * once-per-revolution terms a_k = A_k cos u + B_k sin u, A_k and
+     * B_k independent Gauss-Markov processes with sigma and tau of
+     * axis k. pn_1rev = 0: none. */
+    int            pn_1rev;
+    double         pn_1rev_sigma_kms2[3];
+    double         pn_1rev_tau_s[3];
+    double         pn_1rev_interval_s;
 } SpodyUqConfig;
 
 /* --------------------------------------------------------------------------

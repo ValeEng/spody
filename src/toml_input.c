@@ -2969,13 +2969,13 @@ static int uq_pn_times(toml_table_t *d, const char *sec, double *tau,
     return SPODY_OK;
 }
 
-/* [montecarlo.process_noise].acceleration = { sigma_m_s2 = [R, I, C],
- * tau_s, interval_s }: a Gauss-Markov acceleration in the case's own
- * RIC axes, one process per axis (an axis with sigma 0 stays exact,
- * at least one must be > 0). */
-static int uq_parse_pn_accel(toml_table_t *d, SpodyUqConfig *uq, SpodyError *err) {
+/* An RIC process-noise entry: sigma_m_s2 = [R, I, C] (>= 0, at least
+ * one > 0), tau_s = one number or [R, I, C] (> 0), interval_s (> 0, at
+ * most the shortest tau of an axis with sigma > 0). Sigmas returned in
+ * km/s^2. */
+static int uq_parse_pn_ric(toml_table_t *d, const char *sec, double sig_kms2[3],
+                           double tau[3], double *interval, SpodyError *err) {
     static const char *const known[] = { "sigma_m_s2", "tau_s", "interval_s", NULL };
-    const char *sec = "montecarlo.process_noise.acceleration";
     int rc;
     if ((rc = uq_reject_unknown(d, sec, known, err))) return rc;
     double s[3];
@@ -2994,10 +2994,46 @@ static int uq_parse_pn_accel(toml_table_t *d, SpodyUqConfig *uq, SpodyError *err
                 "%s: every sigma_m_s2 is 0 (remove the entry for no noise)", sec);
         return SPODY_ERR_BAD_VALUE;
     }
-    if ((rc = uq_pn_times(d, sec, &uq->pn_accel_tau_s, &uq->pn_accel_interval_s, err)))
-        return rc;
-    for (int k = 0; k < 3; ++k) uq->pn_accel_sigma_kms2[k] = s[k] * 1.0e-3;
-    uq->pn_accel = 1;
+    if (toml_array_in(d, "tau_s")) {
+        if ((rc = req_vec3(d, sec, "tau_s", tau, err))) return rc;
+    } else {
+        int present = 0;
+        if ((rc = uq_opt_number(d, sec, "tau_s", &tau[0], &present, err))) return rc;
+        if (!present) {
+            spody_error_set(err, SPODY_ERR_MISSING_KEY, "%s: missing 'tau_s'", sec);
+            return SPODY_ERR_MISSING_KEY;
+        }
+        tau[1] = tau[2] = tau[0];
+    }
+    {
+        int present = 0;
+        if ((rc = uq_opt_number(d, sec, "interval_s", interval, &present, err))) return rc;
+        if (!present) {
+            spody_error_set(err, SPODY_ERR_MISSING_KEY, "%s: missing 'interval_s'", sec);
+            return SPODY_ERR_MISSING_KEY;
+        }
+        if (!(*interval > 0.0) || !isfinite(*interval)) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s.interval_s = %g must be finite and > 0", sec, *interval);
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+    for (int k = 0; k < 3; ++k) {
+        if (!(tau[k] > 0.0) || !isfinite(tau[k])) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s.tau_s = %g must be finite and > 0", sec, tau[k]);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        if (s[k] > 0.0 && *interval > tau[k]) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s: interval_s = %g s is longer than tau_s = %g s; the "
+                    "linear interpolation between nodes would erase the "
+                    "correlation it is meant to carry (use interval_s <= tau_s / 10)",
+                    sec, *interval, tau[k]);
+            return SPODY_ERR_BAD_VALUE;
+        }
+        sig_kms2[k] = s[k] * 1.0e-3;
+    }
     return SPODY_OK;
 }
 
@@ -3055,14 +3091,16 @@ static int uq_parse_pn_density(toml_table_t *d, SpodyUqConfig *uq,
  * inline table. */
 static int uq_parse_process_noise(toml_table_t *t, SpodyUqConfig *uq,
                                   SpodyError *err) {
-    static const char *const known[] = { "density", "acceleration", NULL };
-    static const char *const example[2] = {
+    static const char *const known[] = { "density", "acceleration",
+                                         "acceleration_1rev", NULL };
+    static const char *const example[3] = {
         "{ sigma_ln = 0.08, tau_s = 21600.0, interval_s = 1800.0, "
         "scenario_value_is = \"median\" }",
-        "{ sigma_m_s2 = [0.0, 0.0, 1.0e-8], tau_s = 1800.0, interval_s = 180.0 }" };
+        "{ sigma_m_s2 = [0.0, 0.0, 1.0e-8], tau_s = 1800.0, interval_s = 180.0 }",
+        "{ sigma_m_s2 = [0.0, 0.0, 3.0e-8], tau_s = 21600.0, interval_s = 600.0 }" };
     int rc;
     if ((rc = uq_reject_unknown(t, "montecarlo.process_noise", known, err))) return rc;
-    for (int k = 0; k < 2; ++k) {
+    for (int k = 0; k < 3; ++k) {
         if (!toml_key_exists(t, known[k])) continue;
         toml_table_t *d = toml_table_in(t, known[k]);
         if (!d) {
@@ -3071,8 +3109,20 @@ static int uq_parse_process_noise(toml_table_t *t, SpodyUqConfig *uq,
                     known[k], example[k]);
             return SPODY_ERR_BAD_VALUE;
         }
-        if ((rc = k == 0 ? uq_parse_pn_density(d, uq, err)
-                         : uq_parse_pn_accel(d, uq, err))) return rc;
+        if (k == 0) {
+            rc = uq_parse_pn_density(d, uq, err);
+        } else if (k == 1) {
+            rc = uq_parse_pn_ric(d, "montecarlo.process_noise.acceleration",
+                                 uq->pn_accel_sigma_kms2, uq->pn_accel_tau_s,
+                                 &uq->pn_accel_interval_s, err);
+            uq->pn_accel = rc == SPODY_OK;
+        } else {
+            rc = uq_parse_pn_ric(d, "montecarlo.process_noise.acceleration_1rev",
+                                 uq->pn_1rev_sigma_kms2, uq->pn_1rev_tau_s,
+                                 &uq->pn_1rev_interval_s, err);
+            uq->pn_1rev = rc == SPODY_OK;
+        }
+        if (rc) return rc;
     }
     return SPODY_OK;
 }
@@ -3202,7 +3252,7 @@ int spody_load_uq_input(const char *path, SpodyUqConfig *uq, SpodyError *err) {
         if (pn && (rc = uq_parse_process_noise(pn, uq, err))) goto out;
     }
     if (!uq->has_initial_state && uq->n_params == 0 && !uq->pn_density
-        && !uq->pn_accel) {
+        && !uq->pn_accel && !uq->pn_1rev) {
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
                 "nothing to disperse: give [montecarlo.initial_state], "
                 "[montecarlo.parameters] and/or [montecarlo.process_noise]");

@@ -47,6 +47,8 @@ enum { MAX_LISTED_BAD = 10 };
  * density. */
 static const uint64_t pn_substream_density = 3;
 static const uint64_t pn_substream_accel[3] = { 0, 1, 2 };
+static const uint64_t pn_substream_1rev_cos[3] = { 4, 5, 6 };
+static const uint64_t pn_substream_1rev_sin[3] = { 7, 8, 9 };
 
 /* Everything the draw of one case needs, computed once. */
 typedef struct {
@@ -378,18 +380,24 @@ static void print_summary(const SpodyUqConfig *uq, const InputConfig *sc,
                              100.0 * (1.0 - 0.5 * (1.0 + exp(-uq->pn_density_interval_s
                                                              / uq->pn_density_tau_s))));
     }
-    if (uq->pn_accel) {
-        spody_log_printf("  noise     : RIC acceleration, Gauss-Markov sigma R/I/C = "
-                         "%g %g %g m/s^2, tau = %g s, nodes every %g s  "
-                         "(process-noise substreams 0-2)\n",
-                         uq->pn_accel_sigma_kms2[0] * 1e3, uq->pn_accel_sigma_kms2[1] * 1e3,
-                         uq->pn_accel_sigma_kms2[2] * 1e3, uq->pn_accel_tau_s,
-                         uq->pn_accel_interval_s);
-        if (uq->pn_accel_interval_s > 0.1 * uq->pn_accel_tau_s)
+    for (int e = 0; e < 2; ++e) {
+        const int on = e ? uq->pn_1rev : uq->pn_accel;
+        if (!on) continue;
+        const double *s  = e ? uq->pn_1rev_sigma_kms2 : uq->pn_accel_sigma_kms2;
+        const double *tau = e ? uq->pn_1rev_tau_s : uq->pn_accel_tau_s;
+        const double dt  = e ? uq->pn_1rev_interval_s : uq->pn_accel_interval_s;
+        spody_log_printf("  noise     : RIC acceleration%s, Gauss-Markov sigma R/I/C = "
+                         "%g %g %g m/s^2, tau = %g %g %g s, nodes every %g s  "
+                         "(process-noise substreams %s)\n",
+                         e ? " once per revolution (cos u, sin u)" : "",
+                         s[0] * 1e3, s[1] * 1e3, s[2] * 1e3, tau[0], tau[1], tau[2], dt,
+                         e ? "4-9" : "0-2");
+        double tmin = INFINITY;
+        for (int k = 0; k < 3; ++k) if (s[k] > 0.0 && tau[k] < tmin) tmin = tau[k];
+        if (dt > 0.1 * tmin)
             spody_log_printf("  noise     : note: interval_s > tau_s / 10; between "
                              "the nodes the variance drops by up to %.0f %%\n",
-                             100.0 * (1.0 - 0.5 * (1.0 + exp(-uq->pn_accel_interval_s
-                                                             / uq->pn_accel_tau_s))));
+                             100.0 * (1.0 - 0.5 * (1.0 + exp(-dt / tmin))));
     }
 }
 
@@ -565,27 +573,36 @@ out:
     return rc;
 }
 
-/* Case c's RIC acceleration under process noise: nodes every
- * interval_s from the case start (the last one at its end), one
- * Gauss-Markov process per axis on stream (seed, c,
- * pn_substream_accel[axis]) of the process-noise domain; an axis with
- * sigma 0 stays exactly zero (its stream is not read). The force
- * (spody_force_empirical) interpolates the nodes linearly in ET and
- * applies them in the case's own RIC axes. On success ea_et and ea_a
- * are heap arrays the caller frees. */
+/* Case c's RIC acceleration under process noise: nodes every dt =
+ * the smaller interval_s of the two acceleration entries, from the
+ * case start (the last one at its end); per axis k one Gauss-Markov
+ * process (sigma_k, tau_k) on stream (seed, c, substream) of the
+ * process-noise domain: pn_substream_accel for the constant part,
+ * pn_substream_1rev_cos / _sin for the once-per-revolution
+ * coefficients. An axis with sigma 0 stays exactly zero (its stream is
+ * not read). The force (spody_force_empirical) interpolates the nodes
+ * linearly in ET and applies them in the case's own RIC axes. On
+ * success ea->et and the non-NULL columns are heap arrays the caller
+ * frees. */
 static int noise_accel_table(const SpodyUqConfig *uq, const InputConfig *ci, int c,
-                             double **ea_et, double **ea_a, size_t *ea_n,
-                             SpodyError *err)
+                             SpodyEmpiricalAccel *ea, SpodyError *err)
 {
-    const double dt = uq->pn_accel_interval_s, dur = ci->duration_s;
+    double dt = INFINITY;
+    if (uq->pn_accel) dt = uq->pn_accel_interval_s;
+    if (uq->pn_1rev && uq->pn_1rev_interval_s < dt) dt = uq->pn_1rev_interval_s;
+    const double dur = ci->duration_s;
     size_t n = (size_t)floor(dur / dt) + 1;
     if (dur - (double)(n - 1) * dt > 1.0e-9 * dt) ++n;
-    double *t  = (double *)malloc(n * sizeof *t);
-    double *x  = (double *)malloc(n * sizeof *x);
-    double *et = (double *)malloc(n * sizeof *et);
-    double *a  = (double *)calloc(3 * n, sizeof *a);
+    double *t   = (double *)malloc(n * sizeof *t);
+    double *x   = (double *)malloc(n * sizeof *x);
+    double *et  = (double *)malloc(n * sizeof *et);
+    double *col[3] = { NULL, NULL, NULL };            /* const, cos, sin */
     int rc = SPODY_OK;
-    if (!t || !x || !et || !a) {
+    for (int m = 0; m < 3; ++m)
+        if (m == 0 ? uq->pn_accel : uq->pn_1rev)
+            col[m] = (double *)calloc(3 * n, sizeof(double));
+    if (!t || !x || !et || (uq->pn_accel && !col[0])
+        || (uq->pn_1rev && (!col[1] || !col[2]))) {
         spody_error_set(err, SPODY_ERR_INTERNAL, "out of memory for the acceleration noise");
         rc = SPODY_ERR_INTERNAL;
         goto out;
@@ -594,31 +611,40 @@ static int noise_accel_table(const SpodyUqConfig *uq, const InputConfig *ci, int
         t[j]  = fmin((double)j * dt, dur);
         et[j] = ci->et_start_s + t[j];
     }
-    for (int k = 0; k < 3; ++k) {
-        if (!(uq->pn_accel_sigma_kms2[k] > 0.0)) continue;
-        SpodyRandomStream st;
-        spody_random_stream_init_domain(&st, uq->seed, (uint64_t)c, pn_substream_accel[k],
-                                        SPODY_RANDOM_DOMAIN_PROCESS_NOISE);
-        if (spody_gauss_markov_nodes(&st, uq->pn_accel_sigma_kms2[k], uq->pn_accel_tau_s,
-                                     t, n, x) != 0) {
-            spody_error_set(err, SPODY_ERR_INTERNAL, "acceleration noise: bad node grid");
-            rc = SPODY_ERR_INTERNAL;
-            goto out;
+    for (int m = 0; m < 3; ++m) {
+        if (!col[m]) continue;
+        const double *sig = m ? uq->pn_1rev_sigma_kms2 : uq->pn_accel_sigma_kms2;
+        const double *tau = m ? uq->pn_1rev_tau_s : uq->pn_accel_tau_s;
+        const uint64_t *sub = m == 0 ? pn_substream_accel
+                            : m == 1 ? pn_substream_1rev_cos : pn_substream_1rev_sin;
+        for (int k = 0; k < 3; ++k) {
+            if (!(sig[k] > 0.0)) continue;
+            SpodyRandomStream st;
+            spody_random_stream_init_domain(&st, uq->seed, (uint64_t)c, sub[k],
+                                            SPODY_RANDOM_DOMAIN_PROCESS_NOISE);
+            if (spody_gauss_markov_nodes(&st, sig[k], tau[k], t, n, x) != 0) {
+                spody_error_set(err, SPODY_ERR_INTERNAL, "acceleration noise: bad node grid");
+                rc = SPODY_ERR_INTERNAL;
+                goto out;
+            }
+            for (size_t j = 0; j < n; ++j) col[m][3 * j + k] = x[j];
         }
-        for (size_t j = 0; j < n; ++j) a[3 * j + k] = x[j];
     }
 out:
     free(t);
     free(x);
     if (rc != SPODY_OK) {
         free(et);
-        free(a);
-        et = a = NULL;
+        for (int m = 0; m < 3; ++m) free(col[m]);
+        et = NULL;
+        col[0] = col[1] = col[2] = NULL;
         n = 0;
     }
-    *ea_et = et;
-    *ea_a  = a;
-    *ea_n  = n;
+    ea->et    = et;
+    ea->a_ric = col[0];
+    ea->a_cos = col[1];
+    ea->a_sin = col[2];
+    ea->n     = n;
     return rc;
 }
 
@@ -1088,23 +1114,23 @@ static int run_montecarlo(const Sampler *s, const InputConfig *sc,
                 snprintf(cname, sizeof cname, "%s_case%0*d.uq.bin", uq->name, width, c);
                 spody_io_run_subdir_filepath(run_dir, cname, cpath, sizeof cpath);
             }
-            MappedDensityScale nds = { NULL, NULL, 0 };
-            double *ea_et = NULL, *ea_a = NULL;
-            size_t  ea_n  = 0;
+            MappedDensityScale  nds = { NULL, NULL, 0 };
+            SpodyEmpiricalAccel ea  = { NULL, NULL, 0, NULL, NULL };
+            const int with_accel = uq->pn_accel || uq->pn_1rev;
             case_rc[i] = uq->pn_density
                        ? noise_density_table(uq, &ci, shared, c, &nds, &e) : SPODY_OK;
-            if (case_rc[i] == SPODY_OK && uq->pn_accel)
-                case_rc[i] = noise_accel_table(uq, &ci, c, &ea_et, &ea_a, &ea_n, &e);
-            if (case_rc[i] == SPODY_OK) {
-                const SpodyEmpiricalAccel ea = { ea_et, ea_a, ea_n };
+            if (case_rc[i] == SPODY_OK && with_accel)
+                case_rc[i] = noise_accel_table(uq, &ci, c, &ea, &e);
+            if (case_rc[i] == SPODY_OK)
                 case_rc[i] = run_case(&ci, shared, c, cpath, &tr[i], ev_fp,
                                       uq->pn_density ? &nds : NULL,
-                                      uq->pn_accel ? &ea : NULL, &e);
-            }
+                                      with_accel ? &ea : NULL, &e);
             free(nds.mjd);
             free(nds.k);
-            free(ea_et);
-            free(ea_a);
+            free((void *)ea.et);
+            free((void *)ea.a_ric);
+            free((void *)ea.a_cos);
+            free((void *)ea.a_sin);
             if (case_rc[i] != SPODY_OK) {
 #ifdef SPODY_HAVE_OPENMP
                 #pragma omp critical(log)
