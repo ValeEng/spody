@@ -83,11 +83,11 @@ typedef struct {
      * Parsed once when force_model.drag = true; read-only afterwards,
      * safe to share across worker threads. */
     MappedSpaceWeatherData sw_data;
-    /* Drag-only, optional: density calibration k(t). Built either
-     * from force_model.density_scale_file (node table) or from the
-     * scalar force_model.density_scale (synthesised single node).
-     * Stateless read-only queries -> shared across workers, no
-     * per-thread handle needed. */
+    /* Drag-only, optional: density calibration k(t) from
+     * force_model.density_scale_file (node table). Stateless read-only
+     * queries -> shared across workers, no per-thread handle needed.
+     * The scalar force_model.density_scale is per worker (see
+     * SimulationWorker.ds_one): it can differ between batch cases. */
     MappedDensityScale     ds_data;
 
     unsigned init_med : 1;
@@ -134,6 +134,12 @@ typedef struct {
      * file's GM, radius and permanent term; ctx.tides points here
      * when force_model.solid_tides is set. */
     SpodySolidTides    tides;
+    /* The case's scalar force_model.density_scale as a one-node k(t)
+     * table (ctx.density_scale points here when there is no node file
+     * and k != 1). Inline storage: no heap, nothing to free. */
+    MappedDensityScale ds_one;
+    double             ds_one_mjd;
+    double             ds_one_k;
     ForceModelContext  ctx;
     IntegratorAllData  integ;
 

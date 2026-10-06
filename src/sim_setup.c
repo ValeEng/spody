@@ -410,11 +410,12 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
         if (check_space_weather_window(cfg, &shared->sw_data, 1, err) != SPODY_OK)
             goto fail;
 
-        /* Optional density calibration k(t): node file, or one node
-         * synthesised from the scalar key (same evaluation path in
-         * spody_force_drag). Outside its node span the table clamps
-         * to the end values by design, so partial overlap with the
-         * run window is a warning, not an error. */
+        /* Optional density calibration k(t) from a node file. Outside
+         * its node span the table clamps to the end values by design,
+         * so partial overlap with the run window is a warning, not an
+         * error. The scalar density_scale is NOT built here: it is a
+         * batch / Monte Carlo target, so each worker takes it from its
+         * own case configuration (spody_build_worker). */
         if (cfg->density_scale_file[0] != '\0') {
             if (spody_setup_MappedDensityScale(&shared->ds_data,
                                                cfg->density_scale_file) != 0) {
@@ -439,18 +440,6 @@ int spody_build_shared(const InputConfig *cfg, SimulationShared *shared,
                             mjd_start, mjd_end, node_lo, node_hi);
                 }
             }
-        } else if (cfg->density_scale != 1.0) {
-            shared->ds_data.mjd = malloc(sizeof *shared->ds_data.mjd);
-            shared->ds_data.k   = malloc(sizeof *shared->ds_data.k);
-            if (!shared->ds_data.mjd || !shared->ds_data.k) {
-                spody_error_set(err, SPODY_ERR_INTERNAL,
-                        "out of memory building the density-scale node");
-                goto fail;
-            }
-            shared->ds_data.mjd[0] = spody_et_to_mjd_utc(cfg->et_start_s);
-            shared->ds_data.k[0]   = cfg->density_scale;
-            shared->ds_data.n      = 1;
-            shared->init_ds = 1;
         }
     }
 
@@ -640,6 +629,15 @@ int spody_check_case(const InputConfig *cfg,
                      const SimulationShared *shared, SpodyError *err) {
     int rc = spody_validate_input(cfg, err);
     if (rc != SPODY_OK) return rc;
+    /* A case override of the scalar sets the value, not has_density_scale,
+     * so the load-time XOR with the node file cannot see it. */
+    if (cfg->density_scale_file[0] != '\0' && cfg->density_scale != 1.0) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "force_model.density_scale = %g and density_scale_file are "
+                "mutually exclusive: a case cannot scale a k(t) node file",
+                cfg->density_scale);
+        return SPODY_ERR_BAD_VALUE;
+    }
     if (shared->init_med &&
         (rc = check_ephemeris_window(cfg, &shared->med, err)) != SPODY_OK)
         return rc;
@@ -874,7 +872,23 @@ int spody_build_worker(const InputConfig *cfg,
     w->ctx.enable_drag         = cfg->enable_drag;
     w->ctx.atmosphere          = body->atmosphere;
     w->ctx.space_weather       = w->init_sw_w ? &w->sw : NULL;
-    w->ctx.density_scale       = shared->init_ds ? &shared->ds_data : NULL;
+    /* Density calibration: the shared node file, or the case's own
+     * scalar density_scale as a one-node table owned by this worker
+     * (the scalar is a batch / Monte Carlo target, so it must come
+     * from *cfg, never from the scenario the shared data was built
+     * from). k = 1 leaves the pointer NULL, the uncalibrated model. */
+    if (shared->init_ds) {
+        w->ctx.density_scale = &shared->ds_data;
+    } else if (cfg->enable_drag && cfg->density_scale != 1.0) {
+        w->ds_one_mjd = spody_et_to_mjd_utc(cfg->et_start_s);
+        w->ds_one_k   = cfg->density_scale;
+        w->ds_one.mjd = &w->ds_one_mjd;
+        w->ds_one.k   = &w->ds_one_k;
+        w->ds_one.n   = 1;
+        w->ctx.density_scale = &w->ds_one;
+    } else {
+        w->ctx.density_scale = NULL;
+    }
     w->ctx.body_spin_rad_s     = body->spin_rad_s;
     /* Solid tide: the body's model, normalized with the gravity file
      * (spody_validate_input guarantees both exist). A zero-tide file
