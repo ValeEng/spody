@@ -1400,9 +1400,9 @@ class SectionBuildersMixin:
         """Angular velocity of the central body's body-fixed frame in
         ICRF at `et_s` (rad/s), for `central_body_fixed_rotating`; None
         when the rotation itself is unavailable. spopy twin of the
-        engine's spody_bf_angular_velocity_icrf: the Earth spins at
-        EARTH_ROT_RATE_RADPS about ITRS z, other bodies are
-        differentiated over +-SPODY_BF_OMEGA_FD_STEP_S."""
+        engine's spody_bf_angular_velocity_icrf: the true rotation of
+        the body-fixed frame over +-SPODY_BF_OMEGA_FD_STEP_S, the Earth
+        included (its axis is the CIP, not the ITRS z axis)."""
         if self._resolve_bf_rotation(et_s) is None:
             return None
         cb_combo = self._widgets.get("force_model.central_body")
@@ -1413,16 +1413,12 @@ class SectionBuildersMixin:
         spec = resolve_central_body(cb_name)
         eph = (self._cached_ephemeris_for_form()
                if spec.name == "Moon" else None)
-        earth_rate = (constants.const("EARTH_ROT_RATE_RADPS",
-                                      7.2921151467e-5)
-                      if spec.naif_id == 399 else None)
         try:
             from spopy import bf_angular_velocity_icrf
             return bf_angular_velocity_icrf(
                 lambda t: spec.bf_orientation(float(t), eph),
                 float(et_s),
-                constants.const("SPODY_BF_OMEGA_FD_STEP_S", 60.0),
-                earth_rate)
+                constants.const("SPODY_BF_OMEGA_FD_STEP_S", 60.0))
         except Exception:
             return None
 

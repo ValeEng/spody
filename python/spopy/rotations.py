@@ -199,8 +199,7 @@ def icrf_to_orbit_plane(pole_icrf, r_pert_km, v_pert_kms) -> np.ndarray:
     return np.stack((x, np.cross(z, x), z))
 
 
-def bf_angular_velocity_icrf(icrf_to_bf, et: float, step_s: float,
-                             earth_rate: float | None = None) -> np.ndarray:
+def bf_angular_velocity_icrf(icrf_to_bf, et: float, step_s: float) -> np.ndarray:
     """Angular velocity of a body-fixed frame in ICRF (rad/s) at `et`.
 
     Twin of `spody_bf_angular_velocity_icrf` in spody-core
@@ -208,24 +207,28 @@ def bf_angular_velocity_icrf(icrf_to_bf, et: float, step_s: float,
     of the transport theorem, v_icrf = R_bf2icrf v_rot + omega x r,
     behind `frame = "central_body_fixed_rotating"`.
 
-    `icrf_to_bf(t)` returns the ICRF -> body-fixed matrix. With
-    `earth_rate` set (the Earth: EARTH_ROT_RATE_RADPS) omega is that
-    rate about the body-fixed z axis, as the GNSS converters take it;
-    otherwise a central difference over +-`step_s`
-    (SPODY_BF_OMEGA_FD_STEP_S), read off the skew matrix dR/dt R^T with
-    R = body-fixed -> ICRF. Same formula as the C; the summation order
-    differs, so agreement is to the last bits, not bit for bit.
+    `icrf_to_bf(t)` returns the ICRF -> body-fixed matrix. With R the
+    body-fixed -> ICRF matrix, D = R(et+h) R(et-h)^T = exp([omega]x 2h)
+    for a fixed axis, and omega is read off D in axis-angle form
+    (Rodrigues): sin(theta) u = vee(D - D^T)/2, cos(theta) =
+    (tr D - 1)/2, omega = u theta / (2h), h = `step_s`
+    (SPODY_BF_OMEGA_FD_STEP_S). The same path for every body: for the
+    Earth that is the rotation about the CIP (polar motion included),
+    not a nominal spin about the ITRS z axis. Same formula as the C;
+    the summation order differs, so agreement is to the last bits, not
+    bit for bit.
     """
-    if earth_rate is not None:
-        return earth_rate * np.asarray(icrf_to_bf(et), dtype=float)[2]
     rp = np.asarray(icrf_to_bf(et + step_s), dtype=float).T
     rm = np.asarray(icrf_to_bf(et - step_s), dtype=float).T
-    r0 = np.asarray(icrf_to_bf(et), dtype=float).T
-    w = (rp - rm) / (2.0 * step_s) @ r0.T
-    return 0.5 * np.array([w[2, 1] - w[1, 2],
-                           w[0, 2] - w[2, 0],
-                           w[1, 0] - w[0, 1]])
-
+    d = rp @ rm.T
+    v = 0.5 * np.array([d[2, 1] - d[1, 2],
+                        d[0, 2] - d[2, 0],
+                        d[1, 0] - d[0, 1]])
+    sin_th = float(np.sqrt(v @ v))
+    if sin_th == 0.0:
+        return np.zeros(3)
+    cos_th = 0.5 * (d[0, 0] + d[1, 1] + d[2, 2] - 1.0)
+    return v * (np.arctan2(sin_th, cos_th) / sin_th / (2.0 * step_s))
 
 if __name__ == "__main__":
     # Self-test: round-trip + orthogonality + agreement with a
