@@ -114,7 +114,9 @@ engine accepts for `[batch.columns]`:
 - `initial_state.position_km[0]`, `[1]`, `[2]`
 - `initial_state.velocity_kms[0]`, `[1]`, `[2]`
 - `force_model.srp`, `force_model.drag`
-- `force_model.density_scale` (the constant density factor k)
+- `force_model.density_scale` (the constant density factor k; not
+  with a scenario that uses `density_scale_file`, where such a case
+  is refused)
 - `integrator.rel_tol`, `integrator.h_init_s`,
   `integrator.h_min_s`, `integrator.h_max_s`
 - `output.interval_s`

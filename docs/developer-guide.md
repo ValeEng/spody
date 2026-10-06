@@ -1214,8 +1214,13 @@ C, `BATCH_TARGETS` in Python) are the whole feature. Remember the
 exclusion rule: keys whose change would invalidate resources shared
 across batch cases (central body, harmonics file/degree) are
 excluded *on purpose* — batch shares one `SimulationShared` across
-cases. **Verify:** 2-case CSV overriding the key, check the two
-outputs differ in exactly the expected way. **Document:** manual
+cases. A value a case can change must reach the force model from the
+case config in `spody_build_worker`, never from `SimulationShared`
+(§7, "A batch target never lives in `SimulationShared`").
+**Verify:** 2-case CSV overriding the key; case 2 must be
+bit-identical to a single run with that value written in the TOML
+(differing from case 1 is not enough: a target read from the shared
+data still makes every case equal to the nominal). **Document:** manual
 ch. 7; CHANGELOG.
 
 ### 5.9 New force model
@@ -2001,6 +2006,21 @@ Each entry: the rule, and the symptom you'll see if you break it.
   under load, when the workers actually interleave.* The check that
   catches it is a repeated N-thread batch compared against the
   1-thread one, bit for bit; see §5.15.
+- **A batch target never lives in `SimulationShared`.**
+  `SimulationShared` is built once, from the scenario, before any
+  case; a value a batch column or a Monte Carlo parameter can change
+  must reach the force model from the *case* config, i.e. in
+  `spody_build_worker`. The scalar `force_model.density_scale` broke
+  this until 2026-10-06: its one-node k(t) table sat in
+  `SimulationShared.ds_data`, so every case ran with the scenario's
+  value. It is now `SimulationWorker.ds_one` (inline storage, built
+  per case); only the `density_scale_file` node table, which no case
+  can change, stays shared. *Symptom of breakage: the batch or Monte
+  Carlo case differs from the nominal in its config and its saved
+  `samples.uq.csv`, but its trajectory is bit-identical to the
+  nominal.* **Verify** every new batch target with the §5.8 two-case
+  CSV: case 2 must be bit-identical to a single run with the value
+  written in the TOML.
 - **Resolve the initial state to ICRF before applying a batch case.**
   `[initial_state]` can be Keplerian or Cartesian in any of three
   frames, but the propagator consumes exactly one thing: a

@@ -726,6 +726,25 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Fixed
 
+- **`force_model.density_scale` as a batch column or Monte Carlo
+  parameter now changes the drag force.** The constant density factor
+  was turned into its one-node k(t) table once, from the scenario, and
+  shared by every case: a batch column or a `[montecarlo.parameters]`
+  entry on it changed the case's configuration but not the force, so
+  every case ran with the scenario's value (since the key became a
+  batch target, 2026-07-06). Measured on GRACE-FO, 6 h: a Monte Carlo
+  dispersing only `density_scale` (lognormal, `sigma_ln = 0.3`) gave
+  sigma = 0 on every axis; it now gives 34.7 m in-track (1000 cases),
+  matching `spacecraft.drag.Cd` with the same distribution (34.1 m,
+  within the 2 % sampling error), and a batch case with k = 1.3 is
+  bit-identical to the single run with `density_scale = 1.3`, which is
+  bit-identical to `Cd` x 1.3. Single runs, `density_scale_file` runs
+  and the 75-file regression suite are bit-identical to before. A
+  case override of `density_scale` on a scenario with
+  `density_scale_file`, silently ignored before, is now refused per
+  case (the Monte Carlo already refused it at load). The bundled
+  `examples/iss_montecarlo` disperses `density_scale`: its spread
+  grows accordingly.
 - **Earth angular velocity: the true rotation, polar motion included**
   (spody-core 5b0a6c0). The &omega; of the transport theorem, used by
   `initial_state.frame = "central_body_fixed_rotating"` and by `spody
