@@ -726,6 +726,30 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Fixed
 
+- **Earth angular velocity: the true rotation, polar motion included**
+  (spody-core 5b0a6c0). The &omega; of the transport theorem, used by
+  `initial_state.frame = "central_body_fixed_rotating"` and by `spody
+  convert gps` / `convert glonass` to turn an ECEF velocity into an
+  inertial one, was the nominal rotation rate about the ITRS z axis.
+  The Earth rotates about the CIP, which polar motion tilts from that
+  axis by a few tenths of an arcsecond (0.25&Prime; on 2024-01-21): the
+  inertial velocity was off by &omega;&theta;r, about 0.7 mm/s in LEO,
+  1 mm/s at LAGEOS and 2 mm/s at GNSS radius, which grows to hundreds
+  of metres along track in a few days. &omega; is now read from the
+  engine's own rotation, for every body, in axis-angle form (exact for
+  a fixed axis; the difference quotient used until now for the Moon
+  under-reads |&omega;| by sin(&omega;h)/(&omega;h), negligible there,
+  6 mm/s at GNSS radius for the Earth). Measured from a precise-orbit
+  state propagated with the full force model: LAGEOS-2 (ILRS) error
+  at 60 h **373 m &rarr; 13.5 m**; GRACE-FO C (GNV1B) at 1 h
+  **8.3 m &rarr; 0.15 m**. Regression: 73 of 75 reference outputs bit
+  for bit; `convert gps` / `convert glonass` velocities move by
+  1.8&ndash;2.3 mm/s, positions unchanged (on broadcast states the
+  change is hidden by the broadcast velocity's own mm/s error: 5 of 10
+  one-day GPS predictions improve). ICRF inputs are untouched.
+  `spopy.bf_angular_velocity_icrf` follows; its `earth_rate` argument
+  is gone.
+
 - **Eclipse events at `eclipse_threshold = 0` and `1` fire at the
   contact.** The event looked for the root of "lit fraction minus
   threshold", but the fraction is exactly 0 all through the umbra and

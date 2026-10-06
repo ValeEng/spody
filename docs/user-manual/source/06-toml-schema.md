@@ -257,13 +257,18 @@ about 0.49 km/s in LEO, 1.93 km/s at GPS altitude, 4.4 m/s in low
 lunar orbit. Entering ECEF data as `central_body_fixed` therefore
 starts the run on a completely different orbit, without any error.
 
-&omega; is the angular velocity of the body-fixed frame. For the Earth
-it is the nominal rotation rate about the ITRS z axis, the same the
-`spody convert sp3 | gps | glonass` converters apply, so an ECEF state
-entered here and the same state converted give the same ICRF state bit
-for bit. For the Moon it is derived from the DE440 libration that
-defines the PA frame (|&omega;| &asymp; 2.66&times;10<sup>-6</sup> rad/s, its
-axis within a few arcminutes of the PA z axis).
+&omega; is the angular velocity of the body-fixed frame, read from the
+engine's own rotation of that frame over &plusmn;60 s, so it is the true
+rotation, not a nominal spin. For the Earth the axis is the CIP, which
+polar motion tilts from the ITRS z axis by a few tenths of an
+arcsecond; taking z instead puts about 1 mm/s into the inertial
+velocity, hundreds of metres along track in a few days (the error of
+releases before the fix, see the CHANGELOG). The `spody convert gps |
+glonass` converters use the same &omega;, so an ECEF state entered here and
+the same state converted give the same ICRF state. For the Moon &omega;
+follows the DE440 libration that defines the PA frame
+(|&omega;| &asymp; 2.66&times;10<sup>-6</sup> rad/s, its axis within a few
+arcminutes of the PA z axis).
 
 `central_body_fixed_rotating` accepts Cartesian input only: Keplerian
 elements describe inertial motion, so their body-fixed reading is

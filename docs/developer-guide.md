@@ -2211,11 +2211,22 @@ Each entry: the rule, and the symptom you'll see if you break it.
   the GUI's BF plots and frame flip share this convention);
   `central_body_fixed_rotating` reads it as relative to the rotating
   body and adds omega x r in `initial_state_to_icrf`. omega comes from
-  `spody_bf_angular_velocity_icrf` (Earth: EARTH_ROT_RATE_RADPS about
-  ITRS z, like the GNSS converters, same `(v + a) - b` association so
-  the two agree bit for bit; other bodies: central difference of the
-  rotation provider over SPODY_BF_OMEGA_FD_STEP_S), twin
-  `spopy.bf_angular_velocity_icrf` used by the form. Never let one
+  `spody_bf_angular_velocity_icrf`, the ONE place an angular velocity
+  is made: for every body, the Earth included, the rotation
+  R(t+h) R(t-h)^T of the body-fixed provider (h =
+  SPODY_BF_OMEGA_FD_STEP_S) read off in axis-angle form. The GNSS
+  converters call it too (same `(v + a) - b` association, so an ECEF
+  input and a converted state agree); twin
+  `spopy.bf_angular_velocity_icrf` used by the form. Do not reintroduce
+  a nominal spin about the body-fixed z axis: the Earth's axis is the
+  CIP, tilted by polar motion, and EARTH_ROT_RATE_RADPS about ITRS z
+  was ~1 mm/s off in every ECEF velocity (LAGEOS-2: 373 m instead of
+  13.5 m at 60 h; fixed in spody-core 5b0a6c0). Do not go back to the
+  difference quotient (R(t+h) - R(t-h))/(2h) R^T either: it returns
+  omega sin(omega h)/(omega h), 6 mm/s short at GNSS radius for the
+  Earth at h = 60 s. EARTH_ROT_RATE_RADPS stays for what prescribes it
+  (the GPS broadcast orbit algorithm) and for the drag's co-rotating
+  atmosphere. Never let one
   frame silently take the other's meaning, and keep Keplerian input
   off the rotating frame. *Symptom of breakage: an ECEF state starts
   on the wrong orbit, off by |omega x r| (1.9 km/s at GPS, 0.5 km/s in
