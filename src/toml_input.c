@@ -2935,6 +2935,77 @@ static int uq_parse_snapshots(toml_table_t *mc, SpodyUqConfig *uq,
     return SPODY_OK;
 }
 
+/* [montecarlo.process_noise]: today one entry, `density`, an inline
+ * table with sigma_ln, tau_s, interval_s and scenario_value_is, all
+ * required (no default noise level is right for every orbit). */
+static int uq_parse_process_noise(toml_table_t *t, SpodyUqConfig *uq,
+                                  SpodyError *err) {
+    static const char *const known[] = { "density", NULL };
+    static const char *const known_d[] = { "sigma_ln", "tau_s", "interval_s",
+                                           "scenario_value_is", NULL };
+    static const char *const keys[3] = { "sigma_ln", "tau_s", "interval_s" };
+    const char *sec = "montecarlo.process_noise";
+    const char *sec_d = "montecarlo.process_noise.density";
+    int rc;
+    if ((rc = uq_reject_unknown(t, sec, known, err))) return rc;
+    if (!toml_key_exists(t, "density")) return SPODY_OK;
+    toml_table_t *d = toml_table_in(t, "density");
+    if (!d) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s must be an inline table, e.g. { sigma_ln = 0.08, tau_s = "
+                "21600.0, interval_s = 1800.0, scenario_value_is = \"median\" }",
+                sec_d);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    if ((rc = uq_reject_unknown(d, sec_d, known_d, err))) return rc;
+    double v[3];
+    for (int k = 0; k < 3; ++k) {
+        int present = 0;
+        if ((rc = uq_opt_number(d, sec_d, keys[k], &v[k], &present, err))) return rc;
+        if (!present) {
+            spody_error_set(err, SPODY_ERR_MISSING_KEY, "%s: missing '%s'",
+                            sec_d, keys[k]);
+            return SPODY_ERR_MISSING_KEY;
+        }
+        if (!(v[k] > 0.0) || !isfinite(v[k])) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s.%s = %g must be finite and > 0", sec_d, keys[k], v[k]);
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
+    if (v[2] > v[1]) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s: interval_s = %g s is longer than tau_s = %g s; the "
+                "linear interpolation between nodes would erase the "
+                "correlation it is meant to carry (use interval_s <= tau_s / 10)",
+                sec_d, v[2], v[1]);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    char vis[16] = "";
+    int has_vis = 0;
+    opt_string(d, "scenario_value_is", vis, sizeof vis, &has_vis);
+    if (!has_vis) {
+        spody_error_set(err, SPODY_ERR_MISSING_KEY,
+                "%s: needs 'scenario_value_is' = \"mean\" or \"median\" (is the "
+                "scenario's density the mean or the median of the noisy one?)",
+                sec_d);
+        return SPODY_ERR_MISSING_KEY;
+    }
+    if (strcmp(vis, "mean") == 0)        uq->pn_density_value_is = SPODY_UQ_VALUE_IS_MEAN;
+    else if (strcmp(vis, "median") == 0) uq->pn_density_value_is = SPODY_UQ_VALUE_IS_MEDIAN;
+    else {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "%s.scenario_value_is = '%s' (accepted: \"mean\", \"median\")",
+                sec_d, vis);
+        return SPODY_ERR_BAD_VALUE;
+    }
+    uq->pn_density            = 1;
+    uq->pn_density_sigma_ln   = v[0];
+    uq->pn_density_tau_s      = v[1];
+    uq->pn_density_interval_s = v[2];
+    return SPODY_OK;
+}
+
 int spody_load_uq_input(const char *path, SpodyUqConfig *uq, SpodyError *err) {
     spody_error_clear(err);
     memset(uq, 0, sizeof *uq);
@@ -2972,7 +3043,7 @@ int spody_load_uq_input(const char *path, SpodyUqConfig *uq, SpodyError *err) {
     static const char *const known_root[] = { "montecarlo", NULL };
     static const char *const known_mc[] = { "name", "scenario", "samples",
         "seed", "output_dir", "thread_number", "snapshots_s",
-        "case_outputs", "initial_state", "parameters", NULL };
+        "case_outputs", "initial_state", "parameters", "process_noise", NULL };
     const char *sec = "montecarlo";
     char rel[SPODY_MAX_PATH] = "";
     toml_table_t *mc = NULL;
@@ -3055,10 +3126,14 @@ int spody_load_uq_input(const char *path, SpodyUqConfig *uq, SpodyError *err) {
             ++uq->n_params;
         }
     }
-    if (!uq->has_initial_state && uq->n_params == 0) {
+    {
+        toml_table_t *pn = toml_table_in(mc, "process_noise");
+        if (pn && (rc = uq_parse_process_noise(pn, uq, err))) goto out;
+    }
+    if (!uq->has_initial_state && uq->n_params == 0 && !uq->pn_density) {
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                "nothing to disperse: give [montecarlo.initial_state] and/or "
-                "[montecarlo.parameters]");
+                "nothing to disperse: give [montecarlo.initial_state], "
+                "[montecarlo.parameters] and/or [montecarlo.process_noise]");
         rc = SPODY_ERR_BAD_VALUE; goto out;
     }
     rc = SPODY_OK;
@@ -3257,6 +3332,12 @@ int spody_validate_uq_input(const SpodyUqConfig *uq,
     }
     int rc;
     if (uq->has_initial_state && (rc = uq_check_covariance(uq, err))) return rc;
+    if (uq->pn_density && !(sc->enable_drag && sc->has_drag_block)) {
+        spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                "[montecarlo.process_noise].density needs force_model.drag "
+                "on in the scenario");
+        return SPODY_ERR_BAD_VALUE;
+    }
     for (int i = 0; i < uq->n_params; ++i) {
         if ((rc = uq_check_target(&uq->params[i], sc, err))) return rc;
         /* Substream 0 is the initial state; no two quantities may share

@@ -29,6 +29,7 @@
 #include "app_io.h"
 #include "sim_run.h"               /* spody_run_simulation */
 #include "sim_setup.h"
+#include "spody_time.h"            /* spody_et_to_mjd_utc */
 #include "toml_input.h"
 
 static const char *const dist_names[2]  = { "normal", "lognormal" };
@@ -39,6 +40,12 @@ static const char *const delta_cols[6]  = {
 
 /* Number of samples named in a domain refusal before "and N more". */
 enum { MAX_LISTED_BAD = 10 };
+
+/* Process-noise substreams, in the SPODY_RANDOM_DOMAIN_PROCESS_NOISE
+ * domain (so they cannot meet the once-per-case draws of domain 0):
+ * 0, 1, 2 reserved for the R, I, C random acceleration, 3 the
+ * density. */
+static const uint64_t pn_substream_density = 3;
 
 /* Everything the draw of one case needs, computed once. */
 typedef struct {
@@ -356,6 +363,20 @@ static void print_summary(const SpodyUqConfig *uq, const InputConfig *sc,
                          value_names[p->scenario_value_is],
                          (unsigned long long)p->substream);
     }
+    if (uq->pn_density) {
+        spody_log_printf("  noise     : density x exp(eta), eta Gauss-Markov sigma_ln = %g, "
+                         "tau = %g s, nodes every %g s, scenario value is the %s  "
+                         "(process-noise substream %llu)\n",
+                         uq->pn_density_sigma_ln, uq->pn_density_tau_s,
+                         uq->pn_density_interval_s,
+                         value_names[uq->pn_density_value_is],
+                         (unsigned long long)pn_substream_density);
+        if (uq->pn_density_interval_s > 0.1 * uq->pn_density_tau_s)
+            spody_log_printf("  noise     : note: interval_s > tau_s / 10; between "
+                             "the nodes the variance drops by up to %.0f %%\n",
+                             100.0 * (1.0 - 0.5 * (1.0 + exp(-uq->pn_density_interval_s
+                                                             / uq->pn_density_tau_s))));
+    }
 }
 
 /* The states one propagation emits (the output grid, plus the trigger
@@ -454,18 +475,97 @@ static void case_config(const Sampler *s, const InputConfig *base, int c,
     spody_apply_batch_case(base, &b, 0, out);
 }
 
+/* Case c's density table under process noise: nodes every interval_s
+ * from the case start, the last one at its end;
+ *
+ *     k_j = k_case(t_j) exp(eta_j) m,
+ *
+ * eta the Gauss-Markov nodes (spody_gauss_markov_nodes) of stream
+ * (seed, c, pn_substream_density) in the process-noise domain, k_case
+ * the case's own calibration (the shared density_scale_file, or its
+ * scalar density_scale), m = 1 when the scenario value is the median
+ * of k exp(eta) and exp(-sigma^2 / 2) when it is the mean (for eta
+ * normal, E[exp(eta)] = exp(sigma^2 / 2), the lognormal mean: Johnson,
+ * Kotz & Balakrishnan, "Continuous Univariate Distributions" vol. 1,
+ * 2nd ed., 1994, ch. 14). The drag force interpolates the table
+ * linearly (spody_interpolate_density_scale): exact at the nodes, a
+ * continuous force between them. On success ds->mjd and ds->k are
+ * heap arrays the caller frees. */
+static int noise_density_table(const SpodyUqConfig *uq, const InputConfig *ci,
+                               const SimulationShared *shared, int c,
+                               MappedDensityScale *ds, SpodyError *err)
+{
+    const double dt = uq->pn_density_interval_s, dur = ci->duration_s;
+    size_t n = (size_t)floor(dur / dt) + 1;
+    if (dur - (double)(n - 1) * dt > 1.0e-9 * dt) ++n;
+    double *t = (double *)malloc(n * sizeof *t);
+    double *x = (double *)malloc(n * sizeof *x);
+    ds->mjd = (double *)malloc(n * sizeof *ds->mjd);
+    ds->k   = (double *)malloc(n * sizeof *ds->k);
+    ds->n   = n;
+    int rc = SPODY_OK;
+    if (!t || !x || !ds->mjd || !ds->k) {
+        spody_error_set(err, SPODY_ERR_INTERNAL, "out of memory for the density noise");
+        rc = SPODY_ERR_INTERNAL;
+        goto out;
+    }
+    for (size_t j = 0; j < n; ++j) t[j] = fmin((double)j * dt, dur);
+    SpodyRandomStream st;
+    spody_random_stream_init_domain(&st, uq->seed, (uint64_t)c, pn_substream_density,
+                                    SPODY_RANDOM_DOMAIN_PROCESS_NOISE);
+    if (spody_gauss_markov_nodes(&st, uq->pn_density_sigma_ln, uq->pn_density_tau_s,
+                                 t, n, x) != 0) {
+        spody_error_set(err, SPODY_ERR_INTERNAL, "density noise: bad node grid");
+        rc = SPODY_ERR_INTERNAL;
+        goto out;
+    }
+    {
+        const double s = uq->pn_density_sigma_ln;
+        const double m = (uq->pn_density_value_is == SPODY_UQ_VALUE_IS_MEAN)
+                       ? exp(-0.5 * s * s) : 1.0;
+        for (size_t j = 0; j < n; ++j) {
+            const double et = ci->et_start_s + t[j];
+            const double k0 = shared->init_ds
+                            ? spody_interpolate_density_scale(&shared->ds_data, et)
+                            : ci->density_scale;
+            ds->mjd[j] = spody_et_to_mjd_utc(et);
+            ds->k[j]   = k0 * exp(x[j]) * m;
+            if (j > 0 && !(ds->mjd[j] > ds->mjd[j - 1])) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "density noise: nodes %g s apart are not increasing in "
+                        "UTC (a leap second?); use a larger interval_s", dt);
+                rc = SPODY_ERR_BAD_VALUE;
+                goto out;
+            }
+        }
+    }
+out:
+    free(t);
+    free(x);
+    if (rc != SPODY_OK) {
+        free(ds->mjd);
+        free(ds->k);
+        ds->mjd = ds->k = NULL;
+        ds->n = 0;
+    }
+    return rc;
+}
+
 /* Propagate one case configuration, writing its SPDYOUT_ trajectory to
  * bin_path when non-empty, its emitted states to *tr and its impacts
- * (plus the two life markers) to the shared events sink. */
+ * (plus the two life markers) to the shared events sink. A non-NULL
+ * `ds` replaces the case's density calibration table (process noise). */
 static int run_case(const InputConfig *c, const SimulationShared *shared,
                     int case_idx, const char *bin_path, Track *tr,
-                    FILE *events_fp, SpodyError *err)
+                    FILE *events_fp, const MappedDensityScale *ds,
+                    SpodyError *err)
 {
     InputConfig ci = *c;
     snprintf(ci.bin_file, sizeof ci.bin_file, "%s", bin_path);
     SimulationWorker w;
     int rc = spody_build_worker(&ci, shared, &w, err);
     if (rc != SPODY_OK) return rc;
+    if (ds) w.ctx.density_scale = ds;
     w.state_sink      = track_sink;
     w.state_sink_user = tr;
     snprintf(w.log_prefix, sizeof w.log_prefix, "[case %d] ", case_idx);
@@ -843,7 +943,7 @@ static int run_montecarlo(const Sampler *s, const InputConfig *sc,
      * deviation refers to it) and written as SPDYOUT_. */
     snprintf(base, sizeof base, "%s_nominal.uq.bin", uq->name);
     spody_io_run_subdir_filepath(run_dir, base, path, sizeof path);
-    if ((rc = run_case(sc, shared, 0, path, &nominal, ev_fp, err)) != SPODY_OK)
+    if ((rc = run_case(sc, shared, 0, path, &nominal, ev_fp, NULL, err)) != SPODY_OK)
         goto out;
     spody_log_printf("  nominal   : %s (%zu records, t = %.6g .. %.6g s)\n",
                      path, nominal.n, nominal.t[0], nominal.t[nominal.n - 1]);
@@ -915,7 +1015,14 @@ static int run_montecarlo(const Sampler *s, const InputConfig *sc,
                 snprintf(cname, sizeof cname, "%s_case%0*d.uq.bin", uq->name, width, c);
                 spody_io_run_subdir_filepath(run_dir, cname, cpath, sizeof cpath);
             }
-            case_rc[i] = run_case(&ci, shared, c, cpath, &tr[i], ev_fp, &e);
+            MappedDensityScale nds = { NULL, NULL, 0 };
+            case_rc[i] = uq->pn_density
+                       ? noise_density_table(uq, &ci, shared, c, &nds, &e) : SPODY_OK;
+            if (case_rc[i] == SPODY_OK)
+                case_rc[i] = run_case(&ci, shared, c, cpath, &tr[i], ev_fp,
+                                      uq->pn_density ? &nds : NULL, &e);
+            free(nds.mjd);
+            free(nds.k);
             if (case_rc[i] != SPODY_OK) {
 #ifdef SPODY_HAVE_OPENMP
                 #pragma omp critical(log)

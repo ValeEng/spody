@@ -481,6 +481,17 @@ typedef struct {
 
     int              n_params;
     SpodyUqParameter params[SPODY_UQ_MAX_PARAMS];
+
+    /* [montecarlo.process_noise].density: the drag density of every
+     * dispersed case is multiplied by exp(eta(t)), eta a first-order
+     * Gauss-Markov process (stationary sigma_ln, correlation time
+     * tau_s) sampled every interval_s and interpolated linearly
+     * between the nodes. pn_density = 0: no density noise. */
+    int            pn_density;
+    double         pn_density_sigma_ln;
+    double         pn_density_tau_s;
+    double         pn_density_interval_s;
+    SpodyUqValueIs pn_density_value_is;   /* MEAN or MEDIAN */
 } SpodyUqConfig;
 
 /* --------------------------------------------------------------------------
