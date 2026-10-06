@@ -2020,7 +2020,11 @@ Each entry: the rule, and the symptom you'll see if you break it.
   `samples.uq.csv`, but its trajectory is bit-identical to the
   nominal.* **Verify** every new batch target with the §5.8 two-case
   CSV: case 2 must be bit-identical to a single run with the value
-  written in the TOML.
+  written in the TOML. The same family: a resource opened only when
+  the scenario needs it (the space weather table, for drag) is
+  missing for a case that switches the feature on, so
+  `spody_check_case` refuses such a case rather than letting the
+  force soft-fail to zero.
 - **Resolve the initial state to ICRF before applying a batch case.**
   `[initial_state]` can be Keplerian or Cartesian in any of three
   frames, but the propagator consumes exactly one thing: a

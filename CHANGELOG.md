@@ -745,6 +745,14 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   case (the Monte Carlo already refused it at load). The bundled
   `examples/iss_montecarlo` disperses `density_scale`: its spread
   grows accordingly.
+- **A batch case can no longer switch drag on over a drag-free
+  scenario.** The space weather table is opened once, from the
+  scenario; a case with `force_model.drag = 1` over a scenario with
+  `drag = false` found no table and ran at zero density, bit-identical
+  to the drag-free case (GRACE-FO, 6 h: 104 m from the true drag run).
+  Such a case is now refused with the fix in the message. Switching
+  drag off in a case, and switching SRP either way, were and remain
+  correct.
 - **Earth angular velocity: the true rotation, polar motion included**
   (spody-core 5b0a6c0). The &omega; of the transport theorem, used by
   `initial_state.frame = "central_body_fixed_rotating"` and by `spody

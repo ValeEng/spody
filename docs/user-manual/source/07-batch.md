@@ -113,7 +113,9 @@ engine accepts for `[batch.columns]`:
   (only in Debris mode)
 - `initial_state.position_km[0]`, `[1]`, `[2]`
 - `initial_state.velocity_kms[0]`, `[1]`, `[2]`
-- `force_model.srp`, `force_model.drag`
+- `force_model.srp`, `force_model.drag` (a case may switch drag off;
+  switching it **on** needs `drag = true` in the scenario, which opens
+  the space weather table, otherwise the case is refused)
 - `force_model.density_scale` (the constant density factor k; not
   with a scenario that uses `density_scale_file`, where such a case
   is refused)
