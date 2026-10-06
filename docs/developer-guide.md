@@ -317,11 +317,29 @@ The flow, in `spody_uncertainty_montecarlo_run` → `run_montecarlo`:
    `1 − 0.05^(1/N)` bound for zero impacts).
 
 Random numbers come from spody-core `spody_random` (Philox4x64-10,
-counter-based): word k of stream `(seed, case, substream)` is a pure
-function of those numbers, so any case can be drawn by any thread in
-any order. Substream 0 is the initial state; a parameter's substream
-is the FNV-1a 64 hash of its target path
-(`spody_random_substream_id`). See §7 for the invariants.
+counter-based): word k of stream `(seed, case, substream, domain)` is
+a pure function of those numbers, so any case can be drawn by any
+thread in any order. The domain is the third counter word:
+`SPODY_RANDOM_DOMAIN_DRAW` (0) for the once-per-case draws, where
+substream 0 is the initial state and a parameter's substream is the
+FNV-1a 64 hash of its target path (`spody_random_substream_id`);
+`SPODY_RANDOM_DOMAIN_PROCESS_NOISE` (1) for the process noise, where
+substreams 0, 1, 2 are reserved for the R, I, C random acceleration
+and 3 is the density (`pn_substream_density` in `uncertainty.c`).
+See §7 for the invariants.
+
+**Process noise (`[montecarlo.process_noise]`).** Today the density:
+`noise_density_table` builds, per dispersed case, a
+`MappedDensityScale` with nodes every `interval_s` (Gauss-Markov
+values from `spody_gauss_markov_nodes`, times the case's own
+calibration), and `run_case` points that worker's
+`ctx.density_scale` at it after `spody_build_worker`. The table is
+owned by the case loop (allocated and freed per case, per thread),
+never by `SimulationShared`. The force interpolates it linearly, so
+no discontinuity stops are needed. Local check:
+`tests/uq_input/check_uq_process_noise.py` (input refusals,
+bit-identity without noise, common random numbers, thread
+invariance, linear theory, node spacing).
 
 **GUI side.** The Uncertainty tab (`uncertainty_panel.py`, §1.3)
 writes the file and launches the run; the Analysis tab reads the two
@@ -2438,6 +2456,12 @@ Each entry: the rule, and the symptom you'll see if you break it.
   target): give it a substream id that cannot equal 0 or any target
   hash (a distinct, documented name hashed by
   `spody_random_substream_id`), and extend the collision check.
+  Process noise lives in its own stream domain
+  (`SPODY_RANDOM_DOMAIN_PROCESS_NOISE`, counter word 2 = 1), so its
+  small fixed substreams (0-2 acceleration, 3 density) cannot meet a
+  domain-0 draw by construction; a new process-noise quantity takes
+  the next free number there and documents it next to
+  `pn_substream_density`.
   *Symptom: two parameters' samples columns move together
   (correlation 1 in the samples CSV).*
 - **Monte Carlo statistics are folded in case order.** Threads only

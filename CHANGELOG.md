@@ -8,6 +8,26 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Added
 
+- **Process noise in the Monte Carlo: Gauss-Markov density per case**
+  (`[montecarlo.process_noise].density = { sigma_ln, tau_s,
+  interval_s, scenario_value_is }`, manual ch. 14). Every dispersed
+  case multiplies the drag density by exp(eta(t)), eta a first-order
+  Gauss-Markov process sampled exactly at nodes every `interval_s`
+  (Gillespie 1996) and interpolated linearly, on top of its own
+  calibration; the nominal stays deterministic. The noise draws from a
+  separate stream domain (spody-core `spody_random_stream_init_domain`,
+  Philox counter word 2 = 1), so the drawn initial states, parameters
+  and nominal are bit-identical with or without it, and a run without
+  the section is bit-identical to before. Checked on a GRACE-FO-like
+  orbit (24 h, 1000 cases, sigma_ln 0.08, tau 6 h): the in-track sigma
+  agrees with the linear theory within 2-4 % at 6, 12 and 24 h (96 m
+  at 24 h); halving `interval_s` moves it by 0.04 %; 1 and 8 threads
+  give identical moments.
+- **spody-core `spody_gauss_markov_nodes`**: exact sampling of a
+  first-order Gauss-Markov process at given times, and stream domains
+  (`spody_random_stream_init_domain`); every existing stream is
+  unchanged.
+
 - **Second adaptive integrator: `integrator.type = "dop853"`**
   (manual ch. 6). Dormand-Prince 8(5,3), order 8 with embedded
   estimators of order 5 and 3 (Hairer, Norsett, Wanner, *Solving ODE

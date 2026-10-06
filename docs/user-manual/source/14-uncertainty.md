@@ -159,6 +159,68 @@ within a factor 1.3") is a median: use `"median"` and give
 linearly with the drag factor, so that 4.4 % becomes an along-track
 bias of the cloud. There is no default on purpose.
 
+### `[montecarlo.process_noise]`: errors that change along the way
+
+The two tables above disperse what is uncertain **at the start**: the
+state, and parameters that keep their drawn value for the whole run.
+Some errors are not like that. The real thermosphere departs from
+NRLMSISE-00 by 5&ndash;15 % over a few hours and drifts again the next
+day; a constant `density_scale`, however wide, cannot follow it, and
+the cloud grows slower than the real error. Process noise lets the
+error **change along the trajectory**, a different history in every
+case.
+
+Today one entry, `density`:
+
+```toml
+[montecarlo.process_noise]
+density = { sigma_ln = 0.08, tau_s = 21600.0, interval_s = 1800.0, scenario_value_is = "median" }
+```
+
+| Key | Meaning |
+|---|---|
+| `sigma_ln` | Standard deviation of ln(&rho;<sub>case</sub>/&rho;<sub>model</sub>) at any instant (0.08 &asymp; 8 %). |
+| `tau_s` | Correlation time [s]: two instants `tau_s` apart are correlated by e<sup>&minus;1</sup> &asymp; 0.37. |
+| `interval_s` | Spacing of the noise nodes [s]; at most `tau_s`, and `tau_s / 10` or less recommended (the log notes a larger one). |
+| `scenario_value_is` | `"median"` or `"mean"`, as for a lognormal parameter: is the scenario's density the median or the mean of the noisy one? Required. |
+
+All four keys are required, and the scenario must have drag on.
+
+**What each case does.** Case c multiplies the density used by the drag
+force by exp(&eta;(t)), with &eta; a first-order Gauss-Markov process
+(Ornstein-Uhlenbeck): stationary standard deviation `sigma_ln`,
+autocorrelation e<sup>&minus;|&Delta;t|/tau_s</sup>. &eta; is computed
+**exactly** at nodes every `interval_s` from the start (Gillespie
+1996) and interpolated linearly between them, so the force stays
+continuous and the integrator needs no extra stops. The factor
+multiplies whatever calibration the case has (`density_scale`,
+dispersed or not, or the `density_scale_file` k(t)). With `"mean"`
+the factor is exp(&eta; &minus; `sigma_ln`&sup2;/2), whose mean is 1.
+
+The nominal (case 0) has no noise. The noise reads its own random
+streams, separate from those of the initial state and the parameters:
+adding it leaves every drawn initial state and parameter, and the
+nominal, exactly as they were, so a run with and one without the
+noise can be compared case by case. The samples file does not list
+the noise.
+
+**Choosing the values.** `sigma_ln` and `tau_s` describe how the real
+density departs from the model, which depends on the orbit, the solar
+activity and the model. Measured on GRACE-FO (about 490 km, January
+2024) from orbit fits on 3-hour arcs: `sigma_ln` &asymp; 0.08, `tau_s`
+&asymp; 6&ndash;9 h. With those values and a 1000-case run, the
+in-track sigma at 24 h is 96 m. A slow drift over days, which a
+process with a correlation time of hours does not describe, comes on
+top.
+
+**Checked against theory.** For the noise alone, the in-track sigma
+of the Monte Carlo agrees with the linear prediction
+&sigma;<sub>I</sub>(t)&sup2; = &sigma;&sup2; &int;&int; g(t&minus;u)
+g(t&minus;v) e<sup>&minus;|u&minus;v|/&tau;</sup> du dv, g the
+measured in-track response to a density step, within 2&ndash;4 % at 6,
+12 and 24 h (sampling error 2.2 %); halving `interval_s` changes the
+24 h sigma by 0.04 %.
+
 ## What a run does
 
 1. **Checks** the uncertainty file and the scenario together (all the
@@ -200,9 +262,10 @@ counter-based generator: number k of case c is a fixed function of
 on one thread or on eight, and adding cases (raising `samples`) keeps
 the first ones unchanged. Each uncertain quantity has its own
 independent stream: the initial state one, each parameter another
-(derived from its target path). Uniform numbers are turned into
-normal ones by the inverse normal CDF (Wichura's AS241, accurate to
-about 1e-16).
+(derived from its target path), the process noise others again, in a
+separate family of streams that can never coincide with the first
+two. Uniform numbers are turned into normal ones by the inverse
+normal CDF (Wichura's AS241, accurate to about 1e-16).
 
 ### The samples file
 
@@ -483,6 +546,11 @@ against about 15 for a Gaussian.
   SC'11 (2011) &mdash; Philox.
 - M. J. Wichura, *Algorithm AS 241: the percentage points of the
   normal distribution*, Applied Statistics 37 (1988) 477&ndash;484.
+- G. E. Uhlenbeck, L. S. Ornstein, *On the theory of the Brownian
+  motion*, Physical Review 36 (1930) 823&ndash;841.
+- D. T. Gillespie, *Exact numerical simulation of the
+  Ornstein-Uhlenbeck process and its integral*, Physical Review E 54
+  (1996) 2084&ndash;2091.
 - B. P. Welford, *Note on a method for calculating corrected sums of
   squares and products*, Technometrics 4 (1962) 419&ndash;420.
 - D. A. Vallado, S. Alfano, *Curvilinear coordinate transformations
