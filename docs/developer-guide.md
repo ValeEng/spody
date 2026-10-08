@@ -351,13 +351,14 @@ and `run_case` points that worker's
 `ctx.density_scale` at it after `spody_build_worker`. The table is
 owned by the case loop (allocated and freed per case, per thread),
 never by `SimulationShared`. The force interpolates it linearly, so
-no discontinuity stops are needed. Local checks:
-`tests/uq_input/check_uq_process_noise.py` (density: input refusals,
-bit-identity without noise, common random numbers, thread
-invariance, linear theory, node spacing) and
-`check_uq_process_noise_accel.py` (acceleration: the same, against
-the Clohessy-Wiltshire covariance); spody-core
-`tvb/tests/test_empirical.c` for the force itself.
+no discontinuity stops are needed. What a change here must keep
+passing: for the density, input refusals, bit-identity without noise,
+common random numbers, thread invariance, the linear theory (with a
+time-varying drag response when `ap_doubling` is on: in a storm a
+single step response underestimates the 24 h sigma by 30 %) and node
+spacing; for the acceleration, the same against the
+Clohessy-Wiltshire covariance; for the force itself, the
+interpolation, the RIC rotation and the 1/rev terms.
 
 **`SpodyEmpiricalAccel` (spody-core).** A generic force, not tied to
 the Monte Carlo: any caller can fill a node table (ET, R/I/C in
