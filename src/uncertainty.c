@@ -374,6 +374,11 @@ static void print_summary(const SpodyUqConfig *uq, const InputConfig *sc,
                          uq->pn_density_interval_s,
                          value_names[uq->pn_density_value_is],
                          (unsigned long long)pn_substream_density);
+        if (uq->pn_density_ap_doubling > 0.0)
+            spody_log_printf("  noise     : density sigma follows the activity: "
+                             "sigma_ln x (1 + Ap(t) / %g), Ap 3-hourly from the "
+                             "space-weather file at each node\n",
+                             uq->pn_density_ap_doubling);
         if (uq->pn_density_interval_s > 0.1 * uq->pn_density_tau_s)
             spody_log_printf("  noise     : note: interval_s > tau_s / 10; between "
                              "the nodes the variance drops by up to %.0f %%\n",
@@ -511,8 +516,16 @@ static void case_config(const Sampler *s, const InputConfig *base, int c,
  * Kotz & Balakrishnan, "Continuous Univariate Distributions" vol. 1,
  * 2nd ed., 1994, ch. 14). The drag force interpolates the table
  * linearly (spody_interpolate_density_scale): exact at the nodes, a
- * continuous force between them. On success ds->mjd and ds->k are
- * heap arrays the caller frees. */
+ * continuous force between them.
+ *
+ * With ap_doubling > 0 the sigma of node j is sigma_ln (1 + Ap_j /
+ * ap_doubling), Ap_j the 3-hourly Ap of the bin holding the node in
+ * the run's space-weather file (observed, or the file's forecast past
+ * its last observed day): the density error variance scaled by the
+ * current geomagnetic activity (Wright, AGI, "Real-time estimation of
+ * local atmospheric density"; spody_gauss_markov_nodes with a scale),
+ * and m becomes the per-node exp(-sigma_j^2 / 2). On success ds->mjd
+ * and ds->k are heap arrays the caller frees. */
 static int noise_density_table(const SpodyUqConfig *uq, const InputConfig *ci,
                                const SimulationShared *shared, int c,
                                MappedDensityScale *ds, SpodyError *err)
@@ -520,50 +533,68 @@ static int noise_density_table(const SpodyUqConfig *uq, const InputConfig *ci,
     const double dt = uq->pn_density_interval_s, dur = ci->duration_s;
     size_t n = (size_t)floor(dur / dt) + 1;
     if (dur - (double)(n - 1) * dt > 1.0e-9 * dt) ++n;
-    double *t = (double *)malloc(n * sizeof *t);
-    double *x = (double *)malloc(n * sizeof *x);
+    const int by_ap = uq->pn_density_ap_doubling > 0.0;
+    double *t  = (double *)malloc(n * sizeof *t);
+    double *x  = (double *)malloc(n * sizeof *x);
+    double *sc = by_ap ? (double *)malloc(n * sizeof *sc) : NULL;
     ds->mjd = (double *)malloc(n * sizeof *ds->mjd);
     ds->k   = (double *)malloc(n * sizeof *ds->k);
     ds->n   = n;
     int rc = SPODY_OK;
-    if (!t || !x || !ds->mjd || !ds->k) {
+    if (!t || !x || (by_ap && !sc) || !ds->mjd || !ds->k) {
         spody_error_set(err, SPODY_ERR_INTERNAL, "out of memory for the density noise");
         rc = SPODY_ERR_INTERNAL;
         goto out;
     }
     for (size_t j = 0; j < n; ++j) t[j] = fmin((double)j * dt, dur);
+    if (by_ap) {
+        MappedSpaceWeather sw;
+        spody_setup_MappedSpaceWeather(&sw, &shared->sw_data);
+        for (size_t j = 0; j < n; ++j) {
+            double ap[7];
+            if (spody_space_weather_msis_inputs(&sw, ci->et_start_s + t[j],
+                                                NULL, NULL, ap) != 0) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "density noise: no 3-hourly Ap at ET %.3f in the "
+                        "space-weather file (ap_doubling needs it at every node)",
+                        ci->et_start_s + t[j]);
+                rc = SPODY_ERR_BAD_VALUE;
+                goto out;
+            }
+            sc[j] = 1.0 + ap[1] / uq->pn_density_ap_doubling;
+        }
+    }
     SpodyRandomStream st;
     spody_random_stream_init_domain(&st, uq->seed, (uint64_t)c, pn_substream_density,
                                     SPODY_RANDOM_DOMAIN_PROCESS_NOISE);
-    if (spody_gauss_markov_nodes(&st, uq->pn_density_sigma_ln, uq->pn_density_tau_s,
+    if (spody_gauss_markov_nodes(&st, uq->pn_density_sigma_ln, sc, uq->pn_density_tau_s,
                                  t, n, x) != 0) {
         spody_error_set(err, SPODY_ERR_INTERNAL, "density noise: bad node grid");
         rc = SPODY_ERR_INTERNAL;
         goto out;
     }
-    {
-        const double s = uq->pn_density_sigma_ln;
-        const double m = (uq->pn_density_value_is == SPODY_UQ_VALUE_IS_MEAN)
-                       ? exp(-0.5 * s * s) : 1.0;
-        for (size_t j = 0; j < n; ++j) {
-            const double et = ci->et_start_s + t[j];
-            const double k0 = shared->init_ds
-                            ? spody_interpolate_density_scale(&shared->ds_data, et)
-                            : ci->density_scale;
-            ds->mjd[j] = spody_et_to_mjd_utc(et);
-            ds->k[j]   = k0 * exp(x[j]) * m;
-            if (j > 0 && !(ds->mjd[j] > ds->mjd[j - 1])) {
-                spody_error_set(err, SPODY_ERR_BAD_VALUE,
-                        "density noise: nodes %g s apart are not increasing in "
-                        "UTC (a leap second?); use a larger interval_s", dt);
-                rc = SPODY_ERR_BAD_VALUE;
-                goto out;
-            }
+    for (size_t j = 0; j < n; ++j) {
+        const double s  = by_ap ? uq->pn_density_sigma_ln * sc[j] : uq->pn_density_sigma_ln;
+        const double m  = (uq->pn_density_value_is == SPODY_UQ_VALUE_IS_MEAN)
+                        ? exp(-0.5 * s * s) : 1.0;
+        const double et = ci->et_start_s + t[j];
+        const double k0 = shared->init_ds
+                        ? spody_interpolate_density_scale(&shared->ds_data, et)
+                        : ci->density_scale;
+        ds->mjd[j] = spody_et_to_mjd_utc(et);
+        ds->k[j]   = k0 * exp(x[j]) * m;
+        if (j > 0 && !(ds->mjd[j] > ds->mjd[j - 1])) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "density noise: nodes %g s apart are not increasing in "
+                    "UTC (a leap second?); use a larger interval_s", dt);
+            rc = SPODY_ERR_BAD_VALUE;
+            goto out;
         }
     }
 out:
     free(t);
     free(x);
+    free(sc);
     if (rc != SPODY_OK) {
         free(ds->mjd);
         free(ds->k);
@@ -622,7 +653,7 @@ static int noise_accel_table(const SpodyUqConfig *uq, const InputConfig *ci, int
             SpodyRandomStream st;
             spody_random_stream_init_domain(&st, uq->seed, (uint64_t)c, sub[k],
                                             SPODY_RANDOM_DOMAIN_PROCESS_NOISE);
-            if (spody_gauss_markov_nodes(&st, sig[k], tau[k], t, n, x) != 0) {
+            if (spody_gauss_markov_nodes(&st, sig[k], NULL, tau[k], t, n, x) != 0) {
                 spody_error_set(err, SPODY_ERR_INTERNAL, "acceleration noise: bad node grid");
                 rc = SPODY_ERR_INTERNAL;
                 goto out;

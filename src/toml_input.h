@@ -486,11 +486,15 @@ typedef struct {
      * dispersed case is multiplied by exp(eta(t)), eta a first-order
      * Gauss-Markov process (stationary sigma_ln, correlation time
      * tau_s) sampled every interval_s and interpolated linearly
-     * between the nodes. pn_density = 0: no density noise. */
+     * between the nodes. pn_density = 0: no density noise.
+     * pn_density_ap_doubling > 0: sigma follows the geomagnetic
+     * activity, sigma_ln (1 + Ap(t) / ap_doubling) with Ap the 3-hourly
+     * index of the space-weather file at each node; 0: constant. */
     int            pn_density;
     double         pn_density_sigma_ln;
     double         pn_density_tau_s;
     double         pn_density_interval_s;
+    double         pn_density_ap_doubling;
     SpodyUqValueIs pn_density_value_is;   /* MEAN or MEDIAN */
 
     /* [montecarlo.process_noise].acceleration: every dispersed case

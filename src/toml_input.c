@@ -3043,7 +3043,7 @@ static int uq_parse_pn_ric(toml_table_t *d, const char *sec, double sig_kms2[3],
 static int uq_parse_pn_density(toml_table_t *d, SpodyUqConfig *uq,
                                SpodyError *err) {
     static const char *const known_d[] = { "sigma_ln", "tau_s", "interval_s",
-                                           "scenario_value_is", NULL };
+                                           "scenario_value_is", "ap_doubling", NULL };
     const char *sec_d = "montecarlo.process_noise.density";
     int rc;
     if ((rc = uq_reject_unknown(d, sec_d, known_d, err))) return rc;
@@ -3062,6 +3062,17 @@ static int uq_parse_pn_density(toml_table_t *d, SpodyUqConfig *uq,
         }
     }
     if ((rc = uq_pn_times(d, sec_d, &v[1], &v[2], err))) return rc;
+    double apd = 0.0;
+    {
+        int present = 0;
+        if ((rc = uq_opt_number(d, sec_d, "ap_doubling", &apd, &present, err))) return rc;
+        if (present && (!(apd > 0.0) || !isfinite(apd))) {
+            spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                    "%s.ap_doubling = %g must be finite and > 0 (the Ap at which "
+                    "sigma doubles; omit it for a constant sigma)", sec_d, apd);
+            return SPODY_ERR_BAD_VALUE;
+        }
+    }
     char vis[16] = "";
     int has_vis = 0;
     opt_string(d, "scenario_value_is", vis, sizeof vis, &has_vis);
@@ -3084,6 +3095,7 @@ static int uq_parse_pn_density(toml_table_t *d, SpodyUqConfig *uq,
     uq->pn_density_sigma_ln   = v[0];
     uq->pn_density_tau_s      = v[1];
     uq->pn_density_interval_s = v[2];
+    uq->pn_density_ap_doubling = apd;
     return SPODY_OK;
 }
 
