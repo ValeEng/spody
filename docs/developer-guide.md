@@ -341,7 +341,13 @@ RIC axes. The density:
 `noise_density_table` builds, per dispersed case, a
 `MappedDensityScale` with nodes every `interval_s` (Gauss-Markov
 values from `spody_gauss_markov_nodes`, times the case's own
-calibration), and `run_case` points that worker's
+calibration; with `ap_doubling` it first builds the per-node scale
+1 + Ap / `ap_doubling` from `spody_space_weather_msis_inputs` (the
+3-hourly Ap of the bin, `ap[1]`) on a local `MappedSpaceWeather`
+bound to `shared->sw_data`, and passes it as the `scale` argument,
+so the noise uses the same space-weather table and UT bins as
+NRLMSISE-00; scale NULL keeps the constant-sigma values bit for bit),
+and `run_case` points that worker's
 `ctx.density_scale` at it after `spody_build_worker`. The table is
 owned by the case loop (allocated and freed per case, per thread),
 never by `SimulationShared`. The force interpolates it linearly, so

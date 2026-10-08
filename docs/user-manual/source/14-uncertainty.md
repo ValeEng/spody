@@ -188,8 +188,9 @@ acceleration_1rev = { sigma_m_s2 = [3.2e-8, 8.0e-9, 2.1e-8], tau_s = 345600.0, i
 | `tau_s` | Correlation time [s]: two instants `tau_s` apart are correlated by e<sup>&minus;1</sup> &asymp; 0.37. |
 | `interval_s` | Spacing of the noise nodes [s]; at most `tau_s`, and `tau_s / 10` or less recommended (the log notes a larger one). |
 | `scenario_value_is` | `"median"` or `"mean"`, as for a lognormal parameter: is the scenario's density the median or the mean of the noisy one? Required. |
+| `ap_doubling` | Optional, &gt; 0. Makes the noise follow the geomagnetic activity: the standard deviation becomes `sigma_ln` &times; (1 + Ap(t) / `ap_doubling`), i.e. `ap_doubling` is the Ap at which it doubles (below). Omitted: constant `sigma_ln`. |
 
-All four keys are required, and the scenario must have drag on.
+The first four keys are required, and the scenario must have drag on.
 
 **What each case does.** Case c multiplies the density used by the drag
 force by exp(&eta;(t)), with &eta; a first-order Gauss-Markov process
@@ -225,6 +226,58 @@ g(t&minus;v) e<sup>&minus;|u&minus;v|/&tau;</sup> du dv, g the
 measured in-track response to a density step, within 2&ndash;4 % at 6,
 12 and 24 h (sampling error 2.2 %); halving `interval_s` changes the
 24 h sigma by 0.04 %.
+
+**Following the geomagnetic activity (`ap_doubling`).** The density
+error of an empirical model is not the same every day: it is small
+when the magnetosphere is quiet and several times larger in a storm.
+With `ap_doubling` the standard deviation of node j becomes
+
+&sigma;<sub>j</sub> = `sigma_ln` &times; (1 + Ap<sub>j</sub> / `ap_doubling`)
+
+with Ap<sub>j</sub> the 3-hourly Ap of the bin holding the node, read
+from the scenario's `space_weather_file`: observed values in the past,
+the file's own forecast rows (CelesTrak `PRD`, about 45 days) in the
+future. `sigma_ln` becomes the value with no activity, and
+`ap_doubling` the Ap at which it doubles. This is the activity-scaled
+density error of Wright (AGI, "Real-time estimation of local
+atmospheric density"). The variance follows a change of activity with
+time constant `tau_s` / 2, not at once. Kp to Ap for orientation:
+
+| Kp | 2 | 3 | 4 | 5 (G1) | 6 (G2) | 7 (G3) | 8 (G4) | 9 (G5) |
+|---|---|---|---|---|---|---|---|---|
+| Ap | 7 | 15 | 27 | 48 | 80 | 140 | 240 | 400 |
+
+Values measured on GRACE-FO C (about 480 km; February&ndash;May 2024,
+storms of 24 March and 10 May) by a maximum-likelihood fit of the
+density-scale history on 3-hour arcs: `sigma_ln` = 0.063,
+`ap_doubling` = 64, `tau_s` &asymp; 15 h (54 600 s), plus a slow
+component of 17 % over about 11 days that belongs in the initial
+uncertainty of `density_scale`, not here. With them &sigma; is 7 % on a
+quiet day (Ap 7), 13 % at Ap 64 and 36 % in a G4 storm (Ap 300).
+Against a constant &sigma; the likelihood of the measured history
+improves strongly (the normalised errors keep variance 1 from quiet
+days to storms instead of 0.7 to 8.9).
+
+What it buys, and what not, measured on October 2024 (not used to
+size it; G4 storm on the 10th; 51 starts, orbit determination of
+catalog quality): beyond 24 h some density noise in the forecast is
+necessary (without it 14&ndash;16 % of the starts fall outside the 95 %
+region at 48&ndash;72 h, against 5 %); with it about 8&ndash;10 %.
+`ap_doubling` and a constant &sigma; chosen from the Ap at the start
+give nearly the same result on that month. The starts whose forecast
+runs into the storm stay partly outside: the storm shifts the density
+systematically, which no zero-mean noise can foresee. Up to 24 h the
+noise matters little: the uncertainty of `density_scale` at the start
+dominates.
+
+**Checked against theory with `ap_doubling`.** In the G5 storm of
+10 May 2024 (Ap 7 to 400 within the day) the in-track sigma of the
+noise-only Monte Carlo agrees with the linear prediction within
+2&ndash;4 % at 6, 12 and 24 h (399 m against 390 m at 24 h). The
+prediction must use the in-track response to a density change *at
+each time*: in a storm the density, and with it the response, grows
+during the day, and a single step response measured at the start
+underestimates the 24 h sigma by 30 %.
 
 #### `acceleration`
 

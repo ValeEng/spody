@@ -23,6 +23,21 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   agrees with the linear theory within 2-4 % at 6, 12 and 24 h (96 m
   at 24 h); halving `interval_s` moves it by 0.04 %; 1 and 8 threads
   give identical moments.
+- **Process noise: density noise that follows the geomagnetic
+  activity** (`[montecarlo.process_noise].density.ap_doubling`,
+  manual ch. 14). The standard deviation of each node becomes
+  `sigma_ln (1 + Ap / ap_doubling)`, Ap the 3-hourly index of the
+  scenario's space-weather file (observed, or its forecast rows);
+  the Gauss-Markov recursion takes the per-node sigma (spody-core
+  `spody_gauss_markov_nodes`, new optional `scale` argument; without
+  it the values are bit-identical). Without the key a run is
+  bit-identical to before. Checked in the G5 storm of 10 May 2024
+  against the linear theory with a time-varying response: within
+  2-4 % at 6, 12 and 24 h (399 m vs 390 m at 24 h). Sized on GRACE-FO
+  (sigma_ln 0.063, ap_doubling 64, tau 15 h) and validated on October
+  2024: at 48-72 h the starts outside the 95 % region drop from
+  14-16 % (no forecast noise) to 8-10 %, about as with a constant
+  sigma chosen from the Ap at the start.
 - **Process noise: Gauss-Markov RIC acceleration per case**
   (`[montecarlo.process_noise].acceleration = { sigma_m_s2 = [R, I,
   C], tau_s, interval_s }`, manual ch. 14), for the forces the model
