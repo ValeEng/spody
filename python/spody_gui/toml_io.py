@@ -388,6 +388,8 @@ _UQ_KEY_ORDER = ("name", "scenario", "samples", "seed", "thread_number",
                  "output_dir", "snapshots_s", "case_outputs")
 _UQ_STATE_ORDER = ("axes", "position_sigma_km", "velocity_sigma_kms",
                    "correlation", "covariance")
+# Entries of [montecarlo.process_noise], each one inline table.
+_UQ_NOISE_ORDER = ("density", "acceleration", "acceleration_1rev")
 
 
 def is_uq_toml(path: Path) -> bool:
@@ -442,7 +444,8 @@ def format_uq_toml(mc: dict[str, Any], header: str = "") -> str:
     "montecarlo") as an uncertainty file: `header` comment block,
     [montecarlo] keys in the documented order, [montecarlo.initial_state]
     with the 6x6 matrix one row per line, [montecarlo.parameters] one
-    inline table per dispersed target."""
+    inline table per dispersed target, [montecarlo.process_noise] one
+    inline table per noise entry."""
     out: list[str] = []
     if header.strip():
         out += [header.rstrip(), ""]
@@ -467,4 +470,10 @@ def format_uq_toml(mc: dict[str, Any], header: str = "") -> str:
         out += ["", "[montecarlo.parameters]"]
         for target, spec in params.items():
             out.append(f"{_format_string(target)} = {_format_value(spec)}")
+    noise = mc.get("process_noise")
+    if noise:
+        out += ["", "[montecarlo.process_noise]"]
+        for k in _UQ_NOISE_ORDER:
+            if k in noise:
+                out.append(f"{k:<17} = {_format_value(noise[k])}")
     return "\n".join(out) + "\n"

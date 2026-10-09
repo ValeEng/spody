@@ -16,8 +16,9 @@
 
 An uncertainty file points at a propagate scenario and says what to
 disperse: the initial state (standard deviations in RIC or ICRF axes,
-with an optional correlation, or a full 6x6 covariance) and physical
-parameters (normal or lognormal). The engine owns every check
+with an optional correlation, or a full 6x6 covariance), physical
+parameters (normal or lognormal) and process noise (Gauss-Markov
+density and RIC accelerations along the run). The engine owns every check
 (`spody_load_uq_input` / `spody_validate_uq_input`); the form only
 refuses what it cannot write as TOML (an unparsable number, a lognormal
 without `scenario_value_is`), so the GUI never drifts from the loader.
@@ -110,7 +111,36 @@ _TIPS = {
     "vis": "Lognormal only, required: is the scenario's value the MEAN of the "
            "distribution (an estimate, e.g. a fitted Cd) or its MEDIAN (a typical "
            "factor, e.g. density_scale = 1)? They differ by e^(sigma_ln^2 / 2).",
+    "pn": "Errors that change along the trajectory, a different history in every "
+          "case (manual ch. 14). Each entry is optional; the nominal has no noise.",
+    "pn_density": "Density multiplied by exp(eta(t)), eta a Gauss-Markov process. "
+                  "Needs force_model.drag on.",
+    "pn_sigma_ln": "Standard deviation of ln(rho_case / rho_model) at any instant "
+                   "(0.08 = about 8 %). With ap_doubling: the value with no activity.",
+    "pn_tau_s": "Correlation time [s]: two instants tau_s apart are correlated by "
+                "e^-1 = 0.37.",
+    "pn_interval_s": "Spacing of the noise nodes [s], at most tau_s (tau_s / 10 or "
+                     "less recommended); linear interpolation in between.",
+    "pn_vis": "Required: is the scenario's density the MEAN or the MEDIAN of the "
+              "noisy one? With mean the factor is exp(eta - sigma_ln^2 / 2).",
+    "pn_ap_doubling": "Optional, > 0: sigma becomes sigma_ln (1 + Ap(t) / ap_doubling), "
+                      "Ap from the scenario's space-weather file. Empty: constant sigma.",
+    "pn_accel": "Acceleration in the case's radial / in-track / cross-track axes, each "
+                "axis its own Gauss-Markov process (forces the model leaves out).",
+    "pn_accel_1rev": "Once-per-revolution part: on each axis A cos u + B sin u, u the "
+                     "argument of latitude, A and B Gauss-Markov with that axis's sigma "
+                     "and tau (thermospheric winds, unmodelled tides).",
+    "pn_sigma_m_s2": "Stationary standard deviation per axis [m/s^2], >= 0; an axis "
+                     "with 0 stays exact, at least one must be > 0.",
+    "pn_tau_ric": "Correlation time [s]: only R filled = one value for the three axes, "
+                  "or one per axis.",
+    "pn_interval_ric": "Spacing of the nodes [s], at most the shortest tau_s of an axis "
+                       "with sigma > 0 (a tenth of it or less recommended).",
 }
+
+# The process-noise entries with RIC axes: TOML key, group title, tooltip.
+_PN_RIC = (("acceleration", "acceleration  (RIC)", "pn_accel"),
+           ("acceleration_1rev", "acceleration_1rev  (once per revolution)", "pn_accel_1rev"))
 
 
 def dispersible_targets(mode: str) -> list[str]:
@@ -271,6 +301,7 @@ class UncertaintyPanel(QWidget):
         body_lay.addWidget(self._build_run_group())
         body_lay.addWidget(self._build_state_group())
         body_lay.addWidget(self._build_params_group())
+        body_lay.addWidget(self._build_noise_group())
         body_lay.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -459,6 +490,66 @@ class UncertaintyPanel(QWidget):
         buttons.addWidget(rem)
         buttons.addStretch(1)
         v.addLayout(buttons)
+        return box
+
+    def _build_noise_group(self) -> QGroupBox:
+        """[montecarlo.process_noise]: three entries, each a checkable
+        box (unchecked = the entry is not written)."""
+        box = QGroupBox("[montecarlo.process_noise]  (optional)")
+        box.setToolTip(_TIPS["pn"])
+        v = QVBoxLayout(box)
+        self._pn: dict[str, dict] = {}
+
+        def edit(tip: str, hint: str = "") -> QLineEdit:
+            e = QLineEdit()
+            e.setToolTip(_TIPS[tip])
+            e.setPlaceholderText(hint)
+            e.textEdited.connect(self._touch)
+            return e
+
+        d = QGroupBox("density  (needs drag on)")
+        d.setToolTip(_TIPS["pn_density"])
+        d.setCheckable(True)
+        d.toggled.connect(self._touch)
+        f = QFormLayout(d)
+        w: dict = {"box": d,
+                   "sigma_ln": edit("pn_sigma_ln", "e.g. 0.063"),
+                   "tau_s": edit("pn_tau_s", "e.g. 54600"),
+                   "interval_s": edit("pn_interval_s", "e.g. 3600"),
+                   "vis": QComboBox(),
+                   "ap_doubling": edit("pn_ap_doubling", "empty: constant sigma_ln (e.g. 64.4)")}
+        w["vis"].addItems(["(choose)", "mean", "median"])
+        w["vis"].setToolTip(_TIPS["pn_vis"])
+        w["vis"].currentIndexChanged.connect(self._touch)
+        for key in ("sigma_ln", "tau_s", "interval_s"):
+            f.addRow(key, w[key])
+        f.addRow("scenario_value_is", w["vis"])
+        f.addRow("ap_doubling", w["ap_doubling"])
+        v.addWidget(d)
+        self._pn["density"] = w
+
+        for key, title, tip in _PN_RIC:
+            b = QGroupBox(title)
+            b.setToolTip(_TIPS[tip])
+            b.setCheckable(True)
+            b.toggled.connect(self._touch)
+            g = QGridLayout(b)
+            for k, name in enumerate(("R", "I", "C")):
+                h = QLabel(name)
+                h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                g.addWidget(h, 0, k + 1)
+            w = {"box": b,
+                 "sigma_m_s2": [edit("pn_sigma_m_s2", "0") for _ in range(3)],
+                 "tau_s": [edit("pn_tau_ric", "e.g. 1800")] + [edit("pn_tau_ric") for _ in range(2)],
+                 "interval_s": edit("pn_interval_ric", "e.g. 60")}
+            for r, row_key in enumerate(("sigma_m_s2", "tau_s")):
+                g.addWidget(QLabel(row_key), r + 1, 0)
+                for k in range(3):
+                    g.addWidget(w[row_key][k], r + 1, k + 1)
+            g.addWidget(QLabel("interval_s"), 3, 0)
+            g.addWidget(w["interval_s"], 3, 1)
+            v.addWidget(b)
+            self._pn[key] = w
         return box
 
     # ------------------------------------------------------------------
@@ -742,6 +833,13 @@ class UncertaintyPanel(QWidget):
         self._cov.set_values(np.zeros((6, 6)))
         self._params.setRowCount(0)
         self._rows.clear()
+        for w in self._pn.values():
+            w["box"].setChecked(False)
+            for e in w.values():
+                for x in (e if isinstance(e, list) else [e]):
+                    if isinstance(x, QLineEdit):
+                        x.setText("")
+        self._pn["density"]["vis"].setCurrentIndex(0)
         self._on_axes_changed()
         self._on_mode_changed(0)
         self._on_corr_toggled(False)
@@ -797,6 +895,29 @@ class UncertaintyPanel(QWidget):
         self._loading = True
         for target, spec in (mc.get("parameters") or {}).items():
             self._add_row(target, spec if isinstance(spec, dict) else {})
+        noise = mc.get("process_noise") or {}
+        dens = noise.get("density")
+        if isinstance(dens, dict):
+            w = self._pn["density"]
+            w["box"].setChecked(True)
+            for key in ("sigma_ln", "tau_s", "interval_s", "ap_doubling"):
+                if key in dens:
+                    w[key].setText(_num(dens[key]))
+            if dens.get("scenario_value_is") in ("mean", "median"):
+                w["vis"].setCurrentText(dens["scenario_value_is"])
+        for key, _title, _tip in _PN_RIC:
+            spec = noise.get(key)
+            if not isinstance(spec, dict):
+                continue
+            w = self._pn[key]
+            w["box"].setChecked(True)
+            for e, x in zip(w["sigma_m_s2"], spec.get("sigma_m_s2", [])):
+                e.setText(_num(x))
+            tau = spec.get("tau_s")
+            for e, x in zip(w["tau_s"], tau if isinstance(tau, list) else ([tau] if tau is not None else [])):
+                e.setText(_num(x))
+            if "interval_s" in spec:
+                w["interval_s"].setText(_num(spec["interval_s"]))
         self._loading = False
         self._modified = False
         self._refresh_file_combo()
@@ -879,8 +1000,35 @@ class UncertaintyPanel(QWidget):
             params[target] = spec
         if params:
             mc["parameters"] = params
-        if "initial_state" not in mc and not params:
-            errors.append("nothing to disperse: turn on the initial state error or add a parameter")
+
+        noise: dict = {}
+        w = self._pn["density"]
+        if w["box"].isChecked():
+            spec = {k: number(w[k].text(), f"density {k}") for k in ("sigma_ln", "tau_s", "interval_s")}
+            vis = w["vis"].currentText()
+            if vis not in ("mean", "median"):
+                errors.append("process noise density: choose scenario_value_is (mean or median)")
+            spec["scenario_value_is"] = vis
+            if w["ap_doubling"].text().strip():
+                spec["ap_doubling"] = number(w["ap_doubling"].text(), "density ap_doubling")
+            noise["density"] = spec
+        for key, _title, _tip in _PN_RIC:
+            w = self._pn[key]
+            if not w["box"].isChecked():
+                continue
+            sig = [number(e.text() or "0", f"{key} sigma_m_s2") for e in w["sigma_m_s2"]]
+            taus = [e.text().strip() for e in w["tau_s"]]
+            if taus[0] and not taus[1] and not taus[2]:
+                tau = number(taus[0], f"{key} tau_s")      # one value for the three axes
+            else:
+                tau = [number(t, f"{key} tau_s") for t in taus]
+            noise[key] = {"sigma_m_s2": sig, "tau_s": tau,
+                          "interval_s": number(w["interval_s"].text(), f"{key} interval_s")}
+        if noise:
+            mc["process_noise"] = noise
+        if "initial_state" not in mc and not params and not noise:
+            errors.append("nothing to disperse: turn on the initial state error, add a parameter "
+                          "or a process noise")
         if errors:
             raise ValueError("\n".join(errors))
         return mc
