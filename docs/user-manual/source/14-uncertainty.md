@@ -584,11 +584,21 @@ labels:
   for a normal, percent or &sigma; of ln for a lognormal);
   *Scenario value is* (mean or median) is enabled only for a
   lognormal and has no default.
+- **`[montecarlo.process_noise]`**: one box per entry, each with its
+  own check box (a box left off is not written). `density` has
+  `sigma_ln`, `tau_s`, `interval_s`, `scenario_value_is` (mean or
+  median, no default) and `ap_doubling` (left empty: constant
+  `sigma_ln`). `acceleration` and `acceleration_1rev` have
+  `sigma_m_s2` per R, I, C axis (an empty axis is 0), `tau_s` (only R
+  filled: one value for the three axes; otherwise one per axis) and
+  `interval_s`. The grey hints in empty fields are example values, not
+  defaults. A file may disperse process noise only, with the other
+  two tables off.
 
 The TOML preview under the form shows what Save writes. While the
-form cannot be written yet (no scenario, a lognormal without *Scenario
-value is*, a number that does not parse) the preview lists the
-reasons and Save refuses with the same list. Everything else is
+form cannot be written yet (no scenario, a lognormal or a density
+noise without *Scenario value is*, a number that does not parse) the
+preview lists the reasons and Save refuses with the same list. Everything else is
 checked by the engine: **Draw samples** runs the same checks as a
 full run in a fraction of a second. Save keeps the comment block at
 the top of a file; comments further down are not kept. A file inside

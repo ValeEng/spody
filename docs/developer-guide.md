@@ -1599,7 +1599,7 @@ The split to respect:
 
 - **`spody_eclipse.c` is pure geometry.** No `ForceModelContext`, no
   ephemeris, no NAIF ids — it takes vectors and radii and returns a
-  number. That is what makes it testable from tvb without DE440.
+  number. That is what makes it testable on its own, without DE440.
 - **Who may cast a shadow is application policy**, decided once in
   `sim_setup.c` before the run: central body ∪ third bodies, minus the
   Sun (`SUN_NAIF`) and minus radius ≤ 0. The core consumes the list and
@@ -1695,11 +1695,10 @@ radius and the four IAU pole elements from `pck00011` (constants in
 `spody_const.h`, recipe 5.1) when the kernel models it as a spheroid;
 leave them 0 for a sphere.
 
-**Verify:** the two local tvb tests are the contract —
-`test_eclipse_multibody` checks the combination against an independent
-polar quadrature over the solar disc (an oracle that knows nothing
-about lenses or three-circle areas), `test_eclipse_legacy_parity`
-sweeps ~2.6M configurations against a frozen copy of the pre-2026-07
+**Verify:** two checks are the contract — the combination against an
+independent polar quadrature over the solar disc (an oracle that knows
+nothing about lenses or three-circle areas), and a sweep of ~2.6M
+configurations against a frozen copy of the pre-2026-07
 implementation demanding *exact* equality. Then §6.1 bit-identity on
 `gps_g11_validation`, and a cislunar arc through a lunar eclipse for
 the multi-occulter path itself. For the shapes: the regression with

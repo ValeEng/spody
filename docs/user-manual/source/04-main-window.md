@@ -125,7 +125,7 @@ Its layout is the Run tab's:
 |-----------------------------------------------|---------------------|
 | path + **Draw samples** / **RUN** / **Stop**  | Terminal view       |
 | **Open results in Analysis** + outcome badge  |                     |
-| Form: `[montecarlo]`, `[montecarlo.initial_state]`, `[montecarlo.parameters]` | |
+| Form: `[montecarlo]`, `[montecarlo.initial_state]`, `[montecarlo.parameters]`, `[montecarlo.process_noise]` | |
 | Live TOML preview below                       |                     |
 
 The combo lists the `*.uq.toml` files under the working dir. The

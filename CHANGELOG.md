@@ -56,6 +56,16 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   6 h, 0.83 m at 24 h). Checked against the linear CW variance within
   1-5 % on R, I, C up to 24 h. `tau_s` of both acceleration entries
   may now be one number or `[R, I, C]`.
+- **GUI: process noise in the Uncertainty tab** (manual ch. 4, 14). A
+  `[montecarlo.process_noise]` group with the three entries, each
+  switched on by its own check box: `density` (with
+  `scenario_value_is` and the optional `ap_doubling`), `acceleration`
+  and `acceleration_1rev` (sigma per R, I, C axis; one `tau_s` for the
+  three axes or one per axis). Before, saving a file from the GUI
+  dropped the section. Checked by loading and re-saving files with
+  each entry: the section comes back key for key and the engine draws
+  byte-identical samples from the re-saved file. A file may now
+  disperse process noise only.
 - **spody-core `SpodyEmpiricalAccel` / `spody_force_empirical`**: an
   empirical acceleration given as a node table in the satellite's RIC
   axes (`ForceModelContext.empirical_accel`), with optional
