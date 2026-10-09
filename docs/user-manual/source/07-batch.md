@@ -116,10 +116,6 @@ engine accepts for `[batch.columns]`:
 - `force_model.density_scale` (the constant density factor k; not
   with a scenario that uses `density_scale_file`, where such a case
   is refused)
-
-The force switches (`force_model.srp`, `force_model.drag`, ...) are
-not targets: which forces act is the scenario's choice. To compare
-configurations, run one batch per scenario.
 - `integrator.rel_tol`, `integrator.h_init_s`,
   `integrator.h_min_s`, `integrator.h_max_s`
 - `output.interval_s`
@@ -127,6 +123,28 @@ configurations, run one batch per scenario.
 Component access into the vector-of-three fields
 (`position_km[0]`) lets you sweep along a single axis without
 disturbing the others.
+
+The force switches (`force_model.srp`, `force_model.drag`, ...) are
+not targets: which forces act is the scenario's choice. To compare
+configurations, run one batch per scenario.
+
+**A column must be able to change the trajectory.** A target that
+belongs to a force the scenario switches off would leave every case
+equal to the nominal while the cases file says otherwise, so the batch
+is refused at load, naming the column and the reason:
+
+| Target | Refused when |
+|---|---|
+| `spacecraft.drag.*`, `debris.am_drag`, `debris.Cd`, `force_model.density_scale` | `force_model.drag` is off |
+| `spacecraft.srp.*`, `debris.am_srp`, `debris.Cr` | neither `force_model.srp` nor `earth_radiation_pressure` is on |
+| `force_model.density_scale` | the scenario uses `density_scale_file` |
+| `spacecraft.mass_kg` | no force depends on the mass (drag, SRP and Earth radiation pressure all off) |
+
+To keep such a column in the CSV for reference, leave it unassigned
+(it is written as `""`, a metadata column). It is the same rule the
+Monte Carlo applies to `[montecarlo.parameters]` (chapter 14). In the
+form, the *Target* of such a row turns orange, with the reason in its
+tooltip, as soon as the force is switched off.
 
 ## Override vs delta
 

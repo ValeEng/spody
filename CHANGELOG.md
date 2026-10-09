@@ -467,6 +467,15 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   resources they need. A `[batch.columns]` entry on either switch is
   refused at load, with a hint to run one batch per configuration.
   No bundled example used them. The Monte Carlo never accepted them.
+- **A batch column on a parameter of a force that is off is refused**
+  (manual ch. 7). Before, a `Cr` column with SRP off, a `Cd` or
+  `density_scale` column with drag off, or a mass column with no force
+  depending on the mass was silently ignored: every case equalled the
+  nominal while the cases file said otherwise. The load now stops with
+  the column, the target and the reason; the same rule as the Monte
+  Carlo (one shared function). The form flags such a row (orange
+  *Target*, reason in the tooltip) as soon as the force is switched
+  off. The four bundled batch examples pass the new check unchanged.
 - **Every run writes its log; `output.log_file` is deprecated.** The
   log used to exist only when the scenario set `output.log_file`; now
   every command that runs a simulation writes one, and does not start

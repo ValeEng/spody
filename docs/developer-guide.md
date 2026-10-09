@@ -1267,8 +1267,13 @@ case config in `spody_build_worker`, never from `SimulationShared`
 **Verify:** 2-case CSV overriding the key; case 2 must be
 bit-identical to a single run with that value written in the TOML
 (differing from case 1 is not enough: a target read from the shared
-data still makes every case equal to the nominal). **Document:** manual
-ch. 7; CHANGELOG.
+data still makes every case equal to the nominal). If the new target
+belongs to a force that can be switched off, add it to
+`inert_target_reason` (`src/toml_input.c`, shared by `[batch.columns]`
+and `[montecarlo.parameters]`) **and** to its GUI mirror of the same
+name in `python/spody_gui/form/visibility.py`, which colours the row in
+the batch table: the two must list the same targets and conditions.
+**Document:** manual ch. 7; CHANGELOG.
 
 ### 5.9 New force model
 
