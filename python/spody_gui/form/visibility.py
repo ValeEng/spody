@@ -93,6 +93,28 @@ def heuristic_target(col_name: str, available: list[str]) -> str | None:
     return None
 
 
+def inert_target_reason(target: str, drag: bool, radiation: bool,
+                        density_file: bool) -> str | None:
+    """Why a batch target has no effect under the scenario's force
+    switches, or None. Mirror of the engine's `inert_target_reason`
+    (src/toml_input.c), which refuses such a column at load; the form
+    only flags it. `radiation` = SRP or Earth radiation pressure on."""
+    is_density = target == "force_model.density_scale"
+    is_drag = (target.startswith("spacecraft.drag.")
+               or target in ("debris.am_drag", "debris.Cd") or is_density)
+    is_srp = (target.startswith("spacecraft.srp.")
+              or target in ("debris.am_srp", "debris.Cr"))
+    if is_drag and not drag:
+        return "force_model.drag is off in the scenario"
+    if is_srp and not radiation:
+        return "neither force_model.srp nor earth_radiation_pressure is on"
+    if is_density and density_file:
+        return "the scenario uses density_scale_file (a constant factor would replace it)"
+    if target == "spacecraft.mass_kg" and not (drag or radiation):
+        return "no force of the scenario depends on the mass"
+    return None
+
+
 class VisibilityMixin:
     """XOR-group toggling + [batch.columns] table plumbing mixed into
     TomlForm."""
@@ -977,6 +999,39 @@ class VisibilityMixin:
             tgt = heuristic_target(col_name, self._available_batch_targets())
             if tgt is not None:
                 target_combo.setCurrentText(tgt)
+
+    def _mark_inert_batch_columns(self) -> None:
+        """Flag the rows whose target has no effect under the current
+        force switches (orange, tooltip with the reason): spody refuses
+        such a batch at load, so the user sees it before running."""
+        table = getattr(self, "_batch_columns_table", None)
+        if table is None:
+            return
+        def on(key: str) -> bool:
+            w = self._widgets.get(key)
+            return isinstance(w, QCheckBox) and w.isChecked()
+        drag = on("force_model.drag")
+        radiation = on("force_model.srp") or on("force_model.earth_radiation_pressure")
+        try:
+            dsf = self._widget_value("force_model.density_scale_file",
+                                     self._widgets.get("force_model.density_scale_file"))
+        except (ValueError, AttributeError):
+            dsf = None
+        for row in range(table.rowCount()):
+            combo = table.cellWidget(row, 1)
+            if combo is None:
+                continue
+            target = combo.currentText()
+            why = (None if target == UNASSIGNED
+                   else inert_target_reason(target, drag, radiation, bool(dsf)))
+            if why:
+                combo.setStyleSheet("QComboBox { background-color: #ffd8a8; }")
+                combo.setToolTip(f"No effect with this scenario: {why}.\n"
+                                 "spody refuses the batch: remove the column, leave it "
+                                 "(unassigned), or switch the force on.")
+            else:
+                combo.setStyleSheet("")
+                combo.setToolTip("")
 
     def _snapshot_batch_columns(self) -> dict[str, tuple[str, str]]:
         """Capture the current (target, mode) per column. Used so a

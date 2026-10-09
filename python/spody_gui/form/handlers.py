@@ -129,6 +129,9 @@ class HandlersMixin:
         the next valid edit."""
         if not hasattr(self, "_preview"):
             return   # called during __init__ before the preview exists
+        # Every form change passes here: the inert batch columns follow
+        # the force switches and the target combos.
+        self._mark_inert_batch_columns()
         try:
             from ..toml_io import format_toml
             text = format_toml(self.to_dict())

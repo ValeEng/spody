@@ -2032,6 +2032,32 @@ void spody_input_warn_deprecated(const InputConfig *cfg) {
     }
 }
 
+/* Why a per-case target can have no effect on the trajectory under this
+ * scenario, or NULL when it can. Shared by [batch.columns] and
+ * [montecarlo.parameters]: the force switches are scenario choices, so
+ * a parameter of a force that is off would leave every case equal to
+ * the nominal while its config claims otherwise. */
+static const char *inert_target_reason(const char *t, const InputConfig *sc) {
+    int is_density = strcmp(t, "force_model.density_scale") == 0;
+    int is_drag = strncmp(t, "spacecraft.drag.", 16) == 0
+               || strcmp(t, "debris.am_drag") == 0
+               || strcmp(t, "debris.Cd") == 0 || is_density;
+    int is_srp  = strncmp(t, "spacecraft.srp.", 15) == 0
+               || strcmp(t, "debris.am_srp") == 0
+               || strcmp(t, "debris.Cr") == 0;
+    int radiation = sc->enable_srp || sc->enable_earth_radiation_pressure;
+    if (is_drag && !(sc->enable_drag && sc->has_drag_block))
+        return "force_model.drag is off in the scenario";
+    if (is_srp && !(radiation && sc->has_srp_block))
+        return "neither force_model.srp nor earth_radiation_pressure is on";
+    if (is_density && sc->density_scale_file[0])
+        return "the scenario uses density_scale_file (a constant factor "
+               "would replace it)";
+    if (strcmp(t, "spacecraft.mass_kg") == 0 && !(sc->enable_drag || radiation))
+        return "no force of the scenario depends on the mass";
+    return NULL;
+}
+
 int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
     spody_error_clear(err);
 
@@ -2625,6 +2651,18 @@ int spody_validate_input(const InputConfig *cfg, SpodyError *err) {
      * run-time setup catches the rare misconfigurations. */
     if (cfg->batch) {
         const BatchConfig *b = cfg->batch;
+        for (int j = 0; j < b->n_columns; ++j) {
+            const SpodyFieldDesc *fd = b->column_targets[j];
+            const char *why = fd ? inert_target_reason(fd->path, cfg) : NULL;
+            if (why) {
+                spody_error_set(err, SPODY_ERR_BAD_VALUE,
+                        "[batch.columns].%s targets '%s', which has no effect "
+                        "here: %s. Remove the column (or map it to \"\" to keep "
+                        "it as metadata), or switch the force on in the scenario",
+                        b->column_names[j], fd->path, why);
+                return SPODY_ERR_BAD_VALUE;
+            }
+        }
         for (int i = 0; i < b->n_cases; ++i) {
             for (int j = 0; j < b->n_columns; ++j) {
                 const SpodyFieldDesc *fd = b->column_targets[j];
@@ -3315,22 +3353,7 @@ static int uq_check_target(const SpodyUqParameter *p, const InputConfig *sc,
                 t, debris ? "[debris]" : "[spacecraft]");
         return SPODY_ERR_BAD_VALUE;
     }
-    int is_density = strcmp(t, "force_model.density_scale") == 0;
-    int is_drag = uq_starts(t, "spacecraft.drag.") || strcmp(t, "debris.am_drag") == 0
-               || strcmp(t, "debris.Cd") == 0 || is_density;
-    int is_srp  = uq_starts(t, "spacecraft.srp.") || strcmp(t, "debris.am_srp") == 0
-               || strcmp(t, "debris.Cr") == 0;
-    int radiation = sc->enable_srp || sc->enable_earth_radiation_pressure;
-    const char *why = NULL;
-    if (is_drag && !(sc->enable_drag && sc->has_drag_block))
-        why = "force_model.drag is off in the scenario";
-    else if (is_srp && !(radiation && sc->has_srp_block))
-        why = "neither force_model.srp nor earth_radiation_pressure is on";
-    else if (is_density && sc->density_scale_file[0])
-        why = "the scenario uses density_scale_file (a constant factor would "
-              "replace it)";
-    else if (strcmp(t, "spacecraft.mass_kg") == 0 && !(sc->enable_drag || radiation))
-        why = "no force of the scenario depends on the mass";
+    const char *why = inert_target_reason(t, sc);
     if (why) {
         spody_error_set(err, SPODY_ERR_BAD_VALUE,
                 "[montecarlo.parameters]: '%s' cannot be dispersed: %s", t, why);
