@@ -35,7 +35,7 @@ URL into the card.
 ### "Conversion failed (exit 1)"
 
 The automatic conversion runs `spody.exe convert ephemeris` under
-the hood. The two common failures:
+the hood. The common failures:
 
 - **Missing files**: at least one ASCII chunk was not actually
   downloaded successfully. Hit **Refresh** at the bottom of the
@@ -232,17 +232,21 @@ diagnostic before exit. Common cases:
   `warning: write failed on the log file` only means the saved log
   is incomplete; the results are fine.
 - **`error: integrator step h dropped below h_min_s`** &mdash;
-  the adaptive controller could not maintain `rel_tol` and gave
-  up. Try a smaller `rel_tol` (so the controller is happier with
-  larger steps) or a smaller `h_min_s`.
+  the adaptive controller could not maintain `rel_tol` with a step
+  of at least `h_min_s` and gave up. Lower `h_min_s`, or loosen
+  `rel_tol` (a larger value, e.g. 1e-9 instead of 1e-11), which lets
+  the controller take larger steps. It typically happens in the last
+  minutes of a reentry or in a very close approach.
 
 ### Run is much slower than expected
 
 Two common amplifiers:
 
-- A **harmonics degree** above 200 in a long propagation;
-  cost scales as O(N&sup2;), so going from N=80 to N=200 makes
-  the engine 6&times; slower without proportional accuracy gain.
+- A **harmonics degree** higher than the orbit needs; the cost of
+  one evaluation grows as (N+1)&sup2;, so N = 200 costs about six
+  times N = 80. Measure the degree the orbit needs (chapter 6,
+  *Choosing a harmonics degree*) and consider `harmonics_adaptive`
+  on eccentric orbits.
 - A **tight `rel_tol`** (smaller than 1e-13) below the engine's
   resolution; the controller spends all its time rejecting steps.
 
@@ -262,15 +266,19 @@ quiet. Worry only if the elapsed-time counter freezes too.
 
 ### File tree shows no files in the working directory
 
-The recursive `.bin` scan goes three folders deep. A binary buried
-deeper does not appear; either move the file up or use the
-**+ Add external file&hellip;** button to register it explicitly.
+The `.bin` scan walks every folder under the working directory, but
+skips build, version-control and environment folders (`__pycache__`,
+`.git`, `.venv`, `venv`, `build`, `dist`, `node_modules`), so a
+binary inside one of those does not appear. Check that the working
+directory in the top bar is the folder you think it is, press
+**⟳ Refresh** after copying files in by hand, or use
+**+ Add external file&hellip;** to register a file explicitly.
 
 ### "Unknown file" on a `.bin` you know is good
 
 The kind detection reads the first 8 bytes of the file and
-matches them against the four supported magics (`SPDYOUT_`,
-`SPDYACC_`, `SPDYEVT_`, `SPDYEVTB`). A `.bin` produced by an
+matches them against the six supported magics (`SPDYOUT_`,
+`SPDYACC_`, `SPDYEVT_`, `SPDYEVTB`, `SPDYUQM_`, `SPDYUQC_`). A `.bin` produced by an
 external tool that does not write a SpOdy magic will be flagged;
 convert the file into one of the supported formats first.
 
@@ -281,17 +289,18 @@ it; the dispatch is on the click itself.
 
 ### Sun-arrow row is missing
 
-The Sun-arrow row appears only when the **active plot is 3D**.
-The currently-selected leaf in the plot tree is 2D (which covers
-every plot except `3D orbit + Moon` and `Impact 3D on Moon`);
-pick a 3D plot and the row reappears.
+The Sun-arrow row appears only when the **active plot is 3D**
+(`3D orbit + central body`, `Impact 3D on central body`); every 2D
+plot hides it, and *Cloud 3D* replaces it with its own options bar
+(chapter 8).
 
 ### Impact-view says "No input.toml found" / "Could not locate ephemeris"
 
 The four impact lat/lon views (equirect, Mollweide, density
-heatmap, 3D) read the run-folder `input.toml` snapshot for
-`et_start_s` and `[ephemeris].file` &mdash; both are required to
-project ICRF impacts onto the Moon's body-fixed PA frame. The
+heatmap, 3D) read the run-folder snapshot (`<ts>_input.toml`) for
+`et_start_s` and `[ephemeris].file` (and, for the Earth, the
+Earth-orientation tables) &mdash; they are required to project ICRF
+impacts onto the central body's body-fixed frame. The
 snapshot is normally written by the engine at every invocation
 (chapter 7). It can be missing when:
 
@@ -300,18 +309,19 @@ snapshot is normally written by the engine at every invocation
 - the events file was hand-copied out of its original run folder
   to another location.
 
-In both cases, copy the matching `input.toml` next to the
-`<batch>_events.bin` and reload the file. The ephemeris path
+In both cases, copy the matching snapshot next to the events file,
+named `<ts>_input.toml` with the run folder's timestamp (or plain
+`input.toml`), and reload the file. The ephemeris path
 inside that TOML must still resolve from somewhere reachable; the
 resolver tries the snapshot directory, then two ancestor levels
 up (where the original TOML usually lived), then the current
 working directory.
 
-### Moon texture not showing in the impact map / 3D scene
+### Texture not showing in the impact map / 3D scene
 
-The Moon texture is an **optional** wizard asset and is not
-downloaded by default (chapter 3). Open the Setup wizard and
-press **Download** on the *Moon texture* card. The impact map
+The Moon and Earth textures are **optional** wizard assets and are
+not downloaded by default (chapter 3). Open the Setup wizard and
+press **Download** on the texture's card. The impact map
 falls back to a plain background and the 3D scene to a flat-grey
 sphere when the texture is absent; no error is raised.
 

@@ -27,7 +27,7 @@ runs are:
   distribution.
 
 The engine threads cases across CPU cores when the OpenMP-enabled
-build is used and `batch.thread_number > 1` (see section 7.5),
+build is used and `batch.thread_number > 1` (see section 7.8),
 giving near-linear speed-up for the typical case sizes.
 
 ## The CSV file
@@ -95,10 +95,12 @@ with a heuristic when the column name matches the last segment of
 a known target (`mass_kg` &rArr; `spacecraft.mass_kg`,
 `am_srp` &rArr; `debris.am_srp`). The **Mode** dropdown picks
 between the two override semantics described in section 7.4 below.
-A column you leave on `(unassigned)` is silently dropped at
-**Generate** time &mdash; the engine validates that the table
-covers every non-`id` column at run time, so unassigned columns
-trigger a clean error.
+A column you leave on `(unassigned)` is written as a metadata column
+(`target = ""`, section *Metadata columns* below): its values are
+checked but applied to nothing. The engine requires every non-`id`
+column of the CSV to appear in `[batch.columns]`, so a column missing
+from the table (a typo in the header, for instance) is a clean error
+at load.
 
 ### Available targets
 
@@ -193,12 +195,11 @@ to rotate them by hand. Two rotating frames are accepted today
   forward of the orbit normal), `z = h_hat` (cross-track). Pairs
   naturally with sensor-frame snapshots from a chaser tracking a
   target.
-- **LVLH** &mdash; the NASA / Goddard convention used by, e.g.,
-  the NASA breakup model: `z = -r_hat` (nadir), `y = -h_hat`
-  (anti orbit normal), `x = y x z` (horizontal, &asymp; `+v` for
-  a circular orbit). Picking this is the right move when your
-  source CSV is the binary dump from a debris-evolution tool
-  using the LVLH convention.
+- **LVLH** &mdash; the local-vertical / local-horizontal axes of
+  rendezvous and attitude work (Fehse 2003): `z = -r_hat` (nadir),
+  `y = -h_hat` (anti orbit normal), `x = y x z` (horizontal,
+  &asymp; `+v` for a circular orbit). Pick it when your source CSV
+  is written in these axes.
 
 The form has a single cases-CSV path field (always showing the
 user-picked source) plus a `cases_frame` combo
@@ -218,7 +219,7 @@ The contract between the three keys is:
   byte. The picked CSV goes straight to `spody.exe`. A TOML written
   by an older SpOdy that says `"icrf"` on a CR3BP run still loads:
   both spellings mean "use the components as they are".
-- **`cases_frame = "ric"` or `"lvlh"`**: at **Generate-TOML** the
+- **`cases_frame = "ric"` or `"lvlh"`**: at every **Save** the
   GUI
   1. reads the column-mapping table to find which CSV columns
      target `initial_state.position_km[i]` /
@@ -242,7 +243,7 @@ The contract between the three keys is:
      re-picking the source.
 
 The rotated copy is a **derived artifact**: it is rebuilt at every
-Generate *and* again before every Run, so editing the source CSV
+Save *and* again before every Run, so editing the source CSV
 outside SpOdy and pressing Run cannot launch against the previous
 rotation. If the source has gone missing the launch is refused rather
 than run with stale rows. The only time the rebuild is skipped is when
@@ -502,21 +503,24 @@ A few additional points:
 
 When the batch runs, the engine creates a per-run subfolder named
 after the UTC instant the run started (ISO 8601 compact, e.g.
-`2026-06-05T195819Z`) inside `batch.output_dir`, snapshots the
-source TOML inside as `input.toml`, and writes one set of files
-per case alongside it:
+`2026-06-05T195819Z`, written `<ts>` below) inside
+`batch.output_dir`, snapshots the source TOML inside, and writes one
+set of files per case alongside it, every name prefixed by `<ts>_`:
 
 ```
-<batch.output_dir>/<UTC-ISO8601>/
-  input.toml                                       (snapshot of the source)
-  <name>_<case_id>_state_icrf.csv                  (if csv_file is set)
-  <name>_<case_id>_state_icrf.bin                  (if bin_file is set)
-  <name>_<case_id>_acc_icrf.bin                    (if accelerations_file is set)
-  <name>_events.bin                                (if events_log is set; aggregated)
+<batch.output_dir>/<ts>/
+  <ts>_input.toml                                  (snapshot of the source)
+  <ts>_<name>.log                                  (the batch log)
+  <ts>_<name>_<case_id>_state_icrf.csv             (if csv_file is set)
+  <ts>_<name>_<case_id>_state_icrf.bin             (if bin_file is set)
+  <ts>_<name>_<case_id>_acc_icrf.bin               (if accelerations_file is set)
+  <ts>_<name>_events.bin                           (if events_log is set; aggregated)
 ```
 
 The `<name>` part comes from `batch.name`; the `<case_id>` part is
-the value of the `id` column or the auto-generated row number. Each invocation goes in its own timestamp folder, so the
+the value of the `id` column or the auto-generated row number. The
+`<stream>` part of each name (`state_icrf`, `acc_icrf`) is the one the
+scenario's `[output]` file names carry. Each invocation goes in its own timestamp folder, so the
 results of any prior run are never overwritten silently &mdash; the
 listing under `<batch.output_dir>/` is the chronological history
 of every batch run executed from that scenario.
@@ -545,7 +549,7 @@ in the Run tab to see the form populated:
 
 The CSV at `examples/batch_demo/cases.csv` lists three cases
 (`A`, `B`, `C`) varying mass and reflectivity, exactly as in
-section 7.1. Press **RUN** to dispatch all three; the Run tab's
+section 7.2. Press **RUN** to dispatch all three; the Run tab's
 terminal pane streams the case-by-case progress, and the resulting
 files land in `examples/batch_demo/output/<UTC-ISO8601>/`. Switch
 to the Analysis tab afterwards: the working directory has auto-

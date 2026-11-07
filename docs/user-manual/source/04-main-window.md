@@ -2,7 +2,7 @@
 
 Once the wizard has done its job you can take stock of the
 application proper. This chapter is a tour of the main window: the
-top-level modes (**Run**, **Uncertainty**, **Analysis**), the menus, the
+top-level modes (**Run**, **Uncertainty**, **Analysis**, **Re-run**), the menus, the
 status bar, and how the pieces work together over the course of a
 typical session. Detailed coverage of the form, the schema, the
 plot catalogue, and the diff workflow waits for the chapters that
@@ -24,7 +24,7 @@ The window divides into five regions:
    completely different layouts depending on which tab is active;
    the menus and the top bar stay shared.
 4. The **active workspace**, which fills the bulk of the window
-   and changes shape with the mode (see sections 4.2 and 4.3).
+   and changes shape with the mode (sections 4.2 to 4.5).
 5. The **status bar** along the bottom, with the path of the
    TOML of the tab being shown on the left and the run state
    (`idle`, `running 12.3s`, `OK (47.1s)`, `exit 1 (3.2s)`) on the
@@ -179,18 +179,58 @@ manually when you drop new bins in by hand.
 Click a single file in the file tree to load it. The application
 detects its type from the 8-byte magic in the header
 (`SPDYOUT_` trajectory, `SPDYACC_` accelerations, `SPDYEVT_` /
-`SPDYEVTB` events) and rebuilds the plot tree with the catalogue
-applicable to that type. Click a leaf in the plot tree to render
-it immediately into the canvas. Re-click the same leaf to re-plot.
+`SPDYEVTB` events, `SPDYUQM_` / `SPDYUQC_` Monte Carlo moments and
+clouds) and rebuilds the plot tree with the catalogue applicable to
+that type. Click a leaf in the plot tree to render it immediately
+into the canvas. Re-click the same leaf to re-plot.
 
 Detailed coverage of the analysis layout, including overlay and
 diff workflows, appears in chapters 8 through 11.
 
+## The Re-run tab
+
+The Re-run tab launches a batch again on **a subset of its cases**,
+chosen from what happened to them: for example only the fragments
+that impacted, to re-propagate them with a tighter tolerance, or only
+the survivors, to extend their run.
+
+1. **Pick run folder&hellip;** selects the per-run folder of a
+   finished batch (`<output_dir>/<UTC-ISO8601>/`). The folder must
+   hold the batch's snapshot (`<ts>_input.toml`, or `input.toml` for
+   runs of older releases) with a `[batch]` table, and its aggregated
+   events file (`<ts>_<batch.name>_events.bin`, `SPDYEVTB`): the
+   source batch must have run with `[output].events_log` on. The
+   cases file named by the snapshot is looked for in the run folder
+   and in its two parent folders. A grey line summarises what was
+   found.
+2. The table lists one row per case: `case_id`, **last event** (the
+   kind of the case's latest event; an IMPACT wins over another
+   event at the same time; `(survived)` when the case wrote none),
+   **last t [s]**, **n events** (how many events the case wrote),
+   then every column of the cases file. The life markers
+   (`INITIAL_STATE` / `FINAL_STATE`, chapter 6) are written for every
+   case whatever happened to it, so they say nothing about the case
+   and are not counted here.
+3. Tick the cases to re-run, one by one or with the preset buttons:
+   **All**, **None**, **Survivors** (every case whose last event is
+   not an IMPACT), **Crashed (IMPACT)**, **Any event** (every case
+   with at least one event other than the life markers). **Filter id** hides the rows whose id
+   does not contain the text typed; the presets act on hidden rows
+   too. The counter shows how many cases are ticked.
+4. **Re-run selected** creates a sibling folder
+   `<run folder>_rerun_<UTC-ISO8601>/` holding a `cases.csv` with only
+   the ticked rows (same columns, same ids) and an `input.toml` copied
+   from the snapshot, with: the ephemeris, harmonics, EOP, IAU 2006,
+   space-weather, density-scale and output paths made absolute, `batch.cases_file` pointing at the new CSV,
+   `batch.name` suffixed with `_rerun_<UTC-ISO8601>`, both output
+   folders set to the sibling folder's `output/`, and a provenance line
+   appended to its notes. The source folder is never modified. The new
+   TOML is then loaded into the Run tab and `spody batch` starts.
+
 ## The menus
 
-The menu bar is identical in both modes. Entries that do not apply
-to the current mode are still listed but are no-ops until you
-switch.
+The menu bar is the same in every tab. Entries that do not apply to
+the tab being shown are still listed but do nothing there.
 
 ### File
 
@@ -282,5 +322,5 @@ this.
    it; use **Ctrl/Shift-click** for multi-selection if you want
    to overlay or tile several plots.
 
-That is the loop. Everything else &mdash; batches, diffs,
-3D scenes, frame conventions &mdash; is variations on it.
+That is the loop. Everything else &mdash; batches, Monte Carlo runs,
+diffs, 3D scenes, frame conventions &mdash; is variations on it.

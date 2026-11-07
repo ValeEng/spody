@@ -54,23 +54,25 @@ The assets fall into three categories:
 **Raw required assets** are files SpOdy fetches verbatim from public
 servers and absolutely needs to run a propagation:
 
-- the JPL `DE440` planetary ephemeris (header + one or more ASCII
-  chunks); the wizard offers two coverage profiles, see section
-  3.2;
-- the GRGM1200B lunar harmonic-gravity coefficients (the `.tab`
-  file with the spherical-harmonic coefficients and a small `.lbl`
-  metadata sidecar from the PDS Geosciences Node);
-- the EIGEN-6C4 Earth gravity-model `.gfc` file (ICGEM format,
-  ~178 MB) used when `central_body = "Earth"`;
+- the JPL `DE440` planetary ephemeris (Park et al. 2021; header +
+  one or more ASCII chunks); the wizard offers two coverage
+  profiles, see section 3.3;
+- the GRGM1200B lunar harmonic-gravity coefficients (Goossens et al.
+  2020; the `.tab` file with the spherical-harmonic coefficients and
+  a small `.lbl` metadata sidecar from the PDS Geosciences Node);
+- the EIGEN-6C4 Earth gravity-model `.gfc` file (Förste et al. 2014;
+  ICGEM format, ~178 MB) used when `central_body = "Earth"`;
 - the IERS Earth-orientation files (`finals2000A.all` from the IERS
   Rapid Service plus the three IAU 2006 X/Y/s+XY/2 series tables
-  `tab5.2{a,b,d}.txt`) needed by the engine's `R_ICRF↔ITRS`
-  rotation;
+  `tab5.2{a,b,d}.txt` of the IERS Conventions, Petit & Luzum 2010)
+  needed by the engine's `R_ICRF↔ITRS` rotation;
 - the CelesTrak combined space-weather table (`SW-All.csv`, daily
-  F10.7 + 3-hour Ap) feeding the NRLMSISE-00 drag density model,
-  needed only for runs with `force_model.drag = true`. Its card
-  shows the date of the last *observed* row after download. All of
-  these are Earth-specific.
+  F10.7 + 3-hour Ap; Vallado & Kelso 2005) feeding the NRLMSISE-00
+  drag density model (Picone et al. 2002), needed only for runs with
+  `force_model.drag = true`. Its card shows the date of the last
+  *observed* row after download.
+
+The last three are Earth-specific.
 
 **Derived assets** are files SpOdy produces from raw ones on your
 machine:
@@ -190,10 +192,13 @@ verified work at the time of the release:
   GRGM1200B `.tab` and `.lbl` files;
 - GFZ Potsdam's ICGEM service for the EIGEN-6C4 `.gfc` Earth
   gravity coefficients;
-- the IERS Rapid Service / Prediction Centre for `finals2000A.all`
-  and the IAU 2006 X/Y/s+XY/2 conventions tables.
+- the IERS data centre for `finals2000A.all` and the IERS
+  Conventions Centre for the IAU 2006 X/Y/s+XY/2 tables;
+- CelesTrak for `SW-All.csv`;
+- NASA SVS, NASA Visible Earth and Solar System Scope for the optional
+  textures.
 
-Both servers are stable, public, and well-maintained, but URLs do
+These servers are stable, public, and well-maintained, but URLs do
 move over time. The **editable URL field** on each card lets you
 paste a different location if a download fails &mdash; for instance,
 if NASA mirrors the file under a different path after a server

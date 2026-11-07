@@ -1,11 +1,13 @@
 # Introduction
 
 SpOdy is a desktop application for propagating spacecraft and debris
-orbits around the Moon or Earth. You give it a mission scenario
+orbits around the Moon or the Earth, and in the Earth&ndash;Moon
+circular restricted three-body problem. You give it a mission scenario
 described in a plain-text file &mdash; central body, initial state,
 force model, integrator settings &mdash; and it produces a trajectory
-you can plot, compare against a reference, or sweep across thousands
-of variant cases in a batch run.
+you can plot, compare against a reference, sweep across thousands of
+variant cases in a batch run, or disperse statistically in a Monte
+Carlo run.
 
 The application is shipped as a single self-contained folder. There is
 **no installer**, **no Python environment to configure**, and **no
@@ -36,21 +38,35 @@ tool, and the graphical interface (`spody-gui.exe`) is a thin
 PySide6 application that orchestrates the inputs, dispatches the
 runs, and visualises the outputs. The two halves talk only through
 files &mdash; **the GUI never links C code directly**, which makes
-the same C engine usable from scripts, notebooks, or the upcoming
-batch automation features without any GUI surface area.
+the same C engine usable from scripts, notebooks or a CI pipeline
+without any GUI surface area.
+
+The engine integrates the orbit numerically (adaptive Dormand&ndash;Prince
+integrators of order 5 and 8) under a force model you assemble: the
+central body's spherical-harmonic gravity field, the point-mass
+attraction of the Sun, Moon and planets from the JPL DE440 ephemeris,
+solar radiation pressure with the shadow of every body you model,
+atmospheric drag (NRLMSISE-00), Earth albedo and infrared, solid-body
+tides and the relativistic correction. It detects impacts, eclipses
+and altitude crossings, converts public orbit products (SP3, RINEX
+broadcast, CCSDS OEM, TLE/OMM elements) into reference trajectories,
+fits the atmospheric density to a reference orbit, and propagates the
+uncertainty of a scenario by Monte Carlo.
 
 In one window you can:
 
 - **Build** the simulation input through a structured form with live
   TOML preview, per-field range checks, and inline validation against
   the C parser, eliminating the need to remember any TOML syntax.
-- **Run** a single propagation or a parameter sweep across thousands
-  of cases, streaming the engine's terminal output into an embedded
-  pane.
+- **Run** a single propagation, a parameter sweep across thousands
+  of cases, or a Monte Carlo, streaming the engine's terminal output
+  into an embedded pane; re-run any subset of the cases of an earlier
+  batch.
 - **Analyse** the binary outputs through a catalogue of plots
   (state vectors, orbit shape, classical orbital elements,
   per-force acceleration breakdown, eclipse fractions, event
-  timelines) in both 2D matplotlib and embedded 3D VTK canvases.
+  timelines, impact maps, altitude bands, Monte Carlo spread and
+  clouds) in both 2D matplotlib and embedded 3D VTK canvases.
 - **Compare** two runs side-by-side through dedicated difference
   plots, with automatic cubic-Hermite interpolation when the two
   output grids do not align sample-by-sample.
@@ -77,12 +93,27 @@ wizard-populated `data/` folder.
 
 ## How to read this manual
 
-The first three chapters are sequential: chapter 2 walks you through
-the first launch and the setup wizard, chapter 3 introduces the main
-window and the run-time workflow. From chapter 4 onward the
-organisation switches to reference-style: schema details for every
-TOML field, a catalogue of every plot, frame conventions, and CLI
-flags for the `spody.exe` engine.
+The first four chapters are sequential: chapter 2 covers installation
+and the first launch, chapter 3 the setup wizard that downloads the
+data, chapter 4 the main window and the run-time workflow. From
+chapter 5 onward the organisation switches to reference-style:
+
+| Chapter | Subject |
+|---|---|
+| 5, 6 | the input form and the schema of every TOML key, with the physics of each force model |
+| 7 | batch runs |
+| 8, 9 | the Analysis tab and the catalogue of every plot |
+| 10 | reference frames and orbital elements |
+| 11 | comparing two trajectories, and calibrating drag against a reference |
+| 12 | the `spody.exe` command line and the binary file formats |
+| 13 | troubleshooting |
+| 14 | uncertainty propagation by Monte Carlo |
+| 15 | validation and benchmarks of the whole software |
+| 16, 17 | glossary and references |
+
+Checks of a single feature are given next to the feature; benchmarks
+of the whole software against measured orbits are collected in
+chapter 15. Works cited as *(Author year)* are listed in chapter 17.
 
 A consistent set of typographical conventions runs through the
 chapters:

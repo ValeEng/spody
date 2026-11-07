@@ -809,6 +809,42 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
 
 ### Fixed
 
+- **`spody convert gp` prints `frame = "central_inertial"`.** It
+  printed `frame = "icrf"`, a value the scenario parser refuses, so the
+  pasted block failed at Validate. The state itself is unchanged.
+- **A TOML file starting with a UTF-8 byte-order mark is read.** The
+  scenario and `.uq.toml` loaders refused it with `line 1: missing =`;
+  PowerShell 5.1 writes such files. The mark is now skipped; a file
+  without it reads exactly as before.
+- **Re-run tab: the life markers no longer count as events.** Every
+  case writes `INITIAL_STATE` / `FINAL_STATE`, so on a log carrying
+  them **Any event** ticked every case and a survivor showed
+  `kind=4` as its last event. They are now skipped: on
+  `examples/debris_impact_demo` (10 cases, 6 impacts) **Any event**
+  ticks 6 cases instead of 10 and the 4 survivors read `(survived)`.
+  The rerun TOML also makes `eop_file`, `iau2006_dir`,
+  `space_weather_file` and `density_scale_file` absolute, which were
+  left relative to the source folder and broke the rerun of an Earth
+  batch.
+- **Diff plots against an SP3 reference.** A reference with no
+  velocities (`spody convert sp3` writes zeros) was interpolated with
+  the cubic Hermite using v = 0 as the slope, and its velocity diff was
+  A's velocity itself. It is now read with a 10-node Lagrange polynomial
+  on positions, its derivative as velocity, on matching grids too (new
+  `spopy.interp_lagrange`, bit-identical to spody-core
+  `spody_interp_lagrange` on 144 000 values). GPS G11 against the IGS
+  final orbit: 1164.0 m RMS over 7 days, the same as an independent
+  absolute-time comparison; a circular orbit sampled every 5 min with a
+  repeated midnight epoch is recovered every 60 s to 1.1e-7 m and
+  3.9e-9 m/s.
+- **GNSS examples carry the converter's current initial states.**
+  `examples/gps_g11_validation` and `glonass_r03_validation` held the
+  June-2026 states, from before the Earth angular-velocity fix: off by
+  11.8 m / 2.8 mm/s (GPS) and 24 m / 4 mm/s (GLONASS, whose
+  `et_start_s` was also 0.48 ms early). With the regenerated states the
+  7-day RMS against the precise orbits is 1164 m for G11 (was 581 m)
+  and 804 m for R03 (was 1425 m): a few mm/s of broadcast velocity
+  decide this benchmark (manual ch. 15).
 - **`force_model.density_scale` as a batch column or Monte Carlo
   parameter now changes the drag force.** The constant density factor
   was turned into its one-node k(t) table once, from the scenario, and

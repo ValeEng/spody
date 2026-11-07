@@ -84,7 +84,7 @@ useful when you produce files outside of SpOdy.
 
 ## The file tree
 
-The file tree has three top-level sections:
+The file tree has two top-level sections:
 
 1. **In folder (`<working_dir>`)** &mdash; everything the scan
    found, grouped by **per-run folder**. The engine creates one
@@ -124,7 +124,12 @@ The file tree supports two interaction modes:
       back to a CSV case). Sourced from `cmd_batch`'s
       `events_log` stream. The plot catalogue under this kind has
       a richer set of views (impact lat/lon map, density heatmap,
-      3D impact view, &hellip; see chapter 9).
+      3D impact view, &hellip; see chapter 9). A Monte Carlo writes
+      its impacts in the same format.
+    - `SPDYUQM_` &mdash; Monte Carlo moments (bias and covariance at
+      every epoch, chapter 14)
+    - `SPDYUQC_` &mdash; Monte Carlo clouds (every case at the
+      snapshots)
 - **Ctrl-click / Shift-click** &mdash; extends the selection (Qt's
   *ExtendedSelection* mode). The currently-loaded file (the one
   whose data feeds the active plot) does not change. Multi-
@@ -171,7 +176,7 @@ accelerations breakdown) is not overlay-safe; selecting it and
 pressing **Overlay** triggers an explanation dialog instead of an
 illegible 3N-line plot.
 
-The button works for the **3D orbit + Moon** plot too. In that
+The button works for the **3D orbit + central body** plot too. In that
 case the overlay paints each trajectory as its own polyline in
 the same VTK scene, with a viewport legend and **Ctrl+click
 picking** enabled on every polyline (more on picking in chapter
@@ -421,7 +426,7 @@ When a 3D plot is active, **Ctrl+left-click** on any rendered
 trajectory polyline picks it: the line is highlighted, the matching
 file is selected (highlighted) in the file tree on the left, and
 the info label below the canvas reports the picked file's path.
-Pointing at the central body (the Moon sphere) does nothing. This
+Pointing at the central body's sphere does nothing. This
 is mostly useful in overlay scenes, where ten lines may cross each
 other and you want to know which file produced which.
 
@@ -447,8 +452,9 @@ Column layout follows the file's dtype:
 - A handful of fields get **friendlier display names** where the
   on-disk name is misleading: the events files store the
   trigger metric in a `distance_km` slot, but the slot is a
-  *jolly* (impact distance for IMPACT, eclipse fraction for
-  ECLIPSE, satellite-to-body distance for ALT_CROSSING &mdash;
+  multi-purpose slot (impact distance for IMPACT, eclipse fraction for
+  ECLIPSE, satellite-to-body distance for ALT_CROSSING and the life
+  markers &mdash;
   subtract `radius_km` for the attained altitude; with
   `body_shape = "ellipsoid"` the slot holds `radius_km` plus the
   geodetic altitude, so the subtraction still gives the altitude), so the table
@@ -460,7 +466,8 @@ Floating-point cells are formatted with **12 significant digits**,
 enough to round-trip a typical km-scale state vector through the
 clipboard without surprise. Integer cells stay raw. The events
 `kind` column gets the symbolic label (`IMPACT`, `ECLIPSE`,
-`ALT_CROSSING`) instead of the enum integer.
+`ALT_CROSSING`, `INITIAL_STATE`, `FINAL_STATE`) instead of the enum
+integer.
 
 ### Spreadsheet-style selection
 
@@ -564,7 +571,9 @@ options dialog's primary selector for a per-primary breakdown).
 - *Accelerations* &mdash; t range, span, &Delta;t stats, plus
   |a_total| min/max/mean/RMS [km/s&sup2;];
 - *Per-force RMS [km/s&sup2;]* &mdash; one row each for the
-  2-body, harmonics, 3rd-body, SRP, and drag components;
+  2-body, harmonics, solid tide, relativity, 3rd-body (all third
+  bodies together), SRP, Earth radiation and drag components (a force
+  that is off shows 0);
 - *Eclipse* &mdash; the minimum `eclipse_fraction` reached over
   the run plus the **time in shadow** integrated trapezoidally
   over the (1 &minus; fraction) signal.

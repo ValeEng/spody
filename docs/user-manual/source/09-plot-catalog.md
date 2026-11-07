@@ -138,8 +138,10 @@ turbo colours plus a legend).
 
 ### Orbital elements
 
-The six entries in this folder are the classical Keplerian
-elements computed from the state vectors at every sample. The
+The first six entries in this folder are the classical Keplerian
+elements computed from the state vectors at every sample (the
+formulas are those of Vallado 2013, ch. 2); the seventh is a phase
+diagram of two of them. The
 shared implementation handles the two degenerate cases
 gracefully: in a circular orbit (`e ≈ 0`) the argument of
 periapsis and the true anomaly are set to 0; in an equatorial
@@ -210,6 +212,40 @@ the mean anomaly externally.
 
 **Overlay-safe.** Yes.
 
+#### Eccentricity vs argument of periapsis
+
+`e` (vertical axis) against `ω` [deg] (horizontal axis), one point per
+sample joined by a thin line: the orbit's path in the (e, ω) plane.
+A frozen orbit stays at one point (both e and ω constant on average);
+an eccentric orbit whose periapsis drifts under the field's zonal
+terms or a third body draws an arc; a near-circular orbit draws a
+horizontal stripe at low `e`, where ω is ill-defined.
+
+**When to use.** Frozen-orbit design and checking (chapter 6,
+`orbit_plane`), and spotting the slow e&ndash;ω coupling that ends a
+lunar orbit in an impact.
+
+**Overlay-safe.** Yes.
+
+### CR3BP
+
+#### Jacobi constant C
+
+Shown for `dynamics_model = "cr3bp"` runs only. The Jacobi integral
+of the circular restricted problem (Szebehely 1967), in the synodic
+frame and in dimensional units,
+
+`C = 2 Ω − |v|²,  Ω = ½ ω² (x² + y²) + μ₁/r₁ + μ₂/r₂`
+
+with `r₁`, `r₂` the distances from the two primaries. It is a
+constant of the motion of the CR3BP, so the plot draws `C(t) − C(0)`
+[km²/s²] and gives `C(0)` in the title: the curve should stay flat at
+the level of the integrator's error. A steady drift means the
+integration is not conserving it (a tolerance too loose, or a close
+approach to a primary).
+
+**Overlay-safe.** No.
+
 ### Diff (pick 2 files)
 
 These plots subtract one trajectory from another. Selecting one
@@ -221,7 +257,10 @@ If the two files share the same time grid sample-by-sample, the
 subtraction is direct. If they do not, B is automatically
 interpolated onto A's time grid restricted to the overlap window:
 position uses cubic Hermite interpolation with B's `v` as the
-analytical derivative, velocity uses linear per-component. The
+analytical derivative, velocity uses linear per-component; a B with
+no velocities (an SP3 reference) is read with a 10-node Lagrange
+polynomial instead, its derivative giving the velocity (chapter 11).
+The
 plot title gets a `(B interpolated)` suffix and the info label
 states the interpolation parameters so you know the diff is not
 direct.
@@ -249,10 +288,12 @@ scale flattens out.
 
 **Formula.** `|v_A(t) - v_B(t)|`.
 
-The velocity error sits typically two to three orders of magnitude
-below the position error for well-tuned propagators (the velocity
-field is smoother than the position field, and integrator errors
-accumulate quadratically in position vs linearly in velocity).
+On a near-circular orbit the two are tied by the orbit itself: an
+in-track offset `Δs` turns the velocity by the angle the satellite
+covers in `Δs / v` seconds, so `|Δv| ≈ n |Δr|` with `n` the mean
+motion (on LRO, n &asymp; 9.3e-4 rad/s: 1.1 km gives about 1 m/s,
+chapter 15). A velocity error much larger than `n |Δr|` points at the
+velocity column of one of the files rather than at the dynamics.
 
 #### |Δv| (linear y)
 
@@ -301,7 +342,8 @@ in-track component is the largest by an order of magnitude or
 more.
 
 > The "in-track" axis here is the standard RIC convention
-> (Vallado's "S" axis, also called the Hill frame). It is **not**
+> (the "S" axis of Vallado's RSW frame, Vallado 2013; the frame of
+> the Clohessy-Wiltshire equations). It is **not**
 > exactly the LVLH velocity axis, although for circular orbits the
 > two coincide. See chapter 10, section 10.4 for the explicit
 > relation.
@@ -404,7 +446,9 @@ force's time-averaged share, which ranks them without reading the
 axis.
 
 **Formula.** `share_k(t) = 100 * |a_k(t)| / Σ_j |a_j(t)|`, where
-*j* runs over harmonics, each third body, SRP and drag.
+*j* runs over every perturbation that is not zero for the whole run:
+harmonics, solid tide, relativity, each third body, SRP, Earth
+radiation and drag.
 
 **When to use.** Attribution &mdash; *which* perturbation owns a
 drift, and whether that changes during the run. Because the shares
@@ -433,10 +477,14 @@ the logarithmic axis being honest about it.
 
 #### Eclipse fraction
 
-If `[events]` was enabled and the engine recorded the eclipse
-sunlight fraction at every step, this plot displays it on a
-linear y axis in `[0, 1]`. `1.0` = full sunlight, `0.0` = total
-umbra, intermediate values = penumbra.
+The `eclipse_fraction` column of the accelerations file: the lit
+fraction of the solar disc used by the SRP force at every record, on
+a linear y axis in `[0, 1]`. `1.0` = full sunlight, `0.0` = total
+umbra, intermediate values = penumbra; with several occulters it is
+the union of their shadows (chapter 6, *Which bodies cast a shadow*).
+It is computed only when `force_model.srp = true`; with SRP off the
+column is 1 throughout. It does not depend on `[events]`, whose
+eclipse events are a separate mechanism.
 
 **Overlay-safe.** Yes.
 
@@ -501,34 +549,34 @@ When a batch run with `events_log` enabled finishes, the engine
 writes a **single aggregated events file** (`SPDYEVTB` magic,
 chapter 7) covering every trigger across every case. Each row
 carries an extra `case_idx` (int32) so each event can be joined
-back to a row of the cases CSV. The Analysis tab exposes five
+back to a row of the cases CSV. The Analysis tab exposes six
 views over that file in addition to the generic *Events
 timeline* (which still works because it only consumes `t` and
-`kind`):
+`kind`) and the altitude-band views below:
 
 - Time-to-impact histogram
 - Survival timeline per case
 - Impact lat/lon (equirect)
 - Impact lat/lon (Mollweide)
 - Impact density heatmap
-- Impact 3D on Moon
+- Impact 3D on central body
 
 The four "Impact &hellip;" views project IMPACT rows onto the
-lunar surface in the **Moon Principal Axes (PA)** body-fixed
-frame (chapter 10): for each event the dispatcher reads
-`et = simulation.et_start_s + row.t`, queries the DE440
-ephemeris for the lunar libration angles via the bundled
-`spopy` package, builds the ICRF&rarr;PA rotation matrix, and
-applies it to the `y[0:3]` ICRF state. The Moon's central body
-is required (today `spopy`'s libration model is lunar-only;
-running with a different `central_body` makes these views show
-a friendly "not applicable" message rather than crash).
+surface of the central body in its body-fixed frame (chapter 10):
+Moon Principal Axes for the Moon, ITRS for the Earth. For each event
+the view takes `et = simulation.et_start_s + row.t` and rotates the
+`y[0:3]` ICRF state into the body-fixed frame with the bundled
+`spopy` package: for the Moon from the DE440 libration angles, for
+the Earth from the IAU 2006 + EOP chain of chapter 10. A central body
+without a body-fixed orientation makes these views show a "not
+applicable" message rather than crash.
 
-The four impact views all rely on three pieces of context the
-binary itself does not carry: `simulation.et_start_s` (sim time
-to ET), `[ephemeris].file` (to query libration), and
+The four impact views all rely on context the binary itself does
+not carry: `simulation.et_start_s` (sim time to ET),
+`[ephemeris].file` (for the libration angles and the 3D scene),
+the Earth-orientation tables for an Earth run, and
 `simulation.duration_s` (for survivor counts). They read these
-from the **`input.toml` snapshot** the engine drops into the
+from the **`<ts>_input.toml` snapshot** the engine drops into the
 run folder at every invocation. Opening an events file from
 outside any run folder triggers a "snapshot not found" message
 in place of the plot.
@@ -560,12 +608,12 @@ flags it.
 
 #### Impact lat/lon (equirect)
 
-Scatter plot of impact positions on the lunar Principal Axes
+Scatter plot of impact positions in the central body's body-fixed
 frame in an equirectangular projection (extent
 `[-180, 180]` &times; `[-90, 90]` degrees). Background is the
-Moon texture when present (NASA SVS LROC color, chapter 3);
-points fall back to a flat-grey background when the texture
-is missing.
+body's texture when present (NASA SVS LROC colour for the Moon, Blue
+Marble for the Earth, chapter 3); points fall back to a flat-grey
+background when the texture is missing.
 
 **Latitude.** On a body that is a spheroid (the Earth) and a run with
 `force_model.body_shape = "ellipsoid"`, the latitude is **geodetic**,
@@ -587,7 +635,7 @@ recognised across views.
 Same data as the equirect view but on matplotlib's `mollweide`
 (equal-area) projection &mdash; the elliptic map that does not
 exaggerate the polar areas. Backgrounded by a downsampled
-(720 &times; 360) **grayscale** copy of the Moon texture; the
+(720 &times; 360) **grayscale** copy of the body's texture; the
 colour scatter on top reads cleanly against the muted
 background.
 
@@ -602,7 +650,7 @@ area.
 
 A 2D histogram of impact (lat, lon) in 2.5&deg; cells (144
 &times; 72 bins), rendered as a `pcolormesh` on the Mollweide
-projection over the same grayscale Moon background. Empty cells
+projection over the same grayscale background. Empty cells
 are transparent (mask) so the surface texture stays visible
 where no impacts happened.
 
@@ -619,23 +667,26 @@ degrades gracefully.
 
 **Overlay-safe.** No.
 
-#### Impact 3D on Moon
+#### Impact 3D on central body
 
-3D scene with the textured Moon at the origin and one **30 km
-solid sphere per impact** placed in PA coordinates. Marker
+3D scene with the textured central body at the origin and one
+**solid sphere per impact** placed in its body-fixed coordinates
+(30 km across on the Moon, scaled with the body's radius on any
+other body). Marker
 colours follow the same `turbo`-on-time-of-flight encoding as
 the 2D maps; no in-scene colorbar (VTK does not offer a
 comfortable equivalent), so the 2D views are the colour
 legend.
 
 Two **reference-frame triads** are drawn from the centre of
-the Moon:
+the body (described here for the Moon; the Earth's are labelled
+`X_itrf` &hellip;):
 
 - **PA triad** (bright RGB, ~2.1 Moon radii long) with
   billboard labels `X_pa`, `Y_pa`, `Z_pa`. Since the scene IS
   the body-fixed PA frame, these axes are identity in scene
-  coordinates: `X_pa` exits the prime meridian (sub-Earth
-  point), `Z_pa` exits the north pole.
+  coordinates: `X_pa` points close to the mean sub-Earth point
+  (the PA prime meridian), `Z_pa` exits the north pole.
 - **ICRF triad** (muted RGB, ~1.8 Moon radii long) with labels
   `X_icrf`, `Y_icrf`, `Z_icrf`. These point where the ICRF
   basis vectors land in the scene at `et_start_s`, computed by
@@ -644,7 +695,7 @@ the Moon:
   `X_pa` points at the camera and you have the same view as
   the equirect map centred on the prime meridian.
 
-**Interactions** are the same as **3D orbit + Moon**: left-
+**Interactions** are the same as **3D orbit + central body**: left-
 drag rotates, scroll zooms, middle-drag pans, <kbd>r</kbd>
 resets the camera.
 

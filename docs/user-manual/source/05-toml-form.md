@@ -25,6 +25,10 @@ TOML section. From top to bottom in the order spody expects them:
 8. `[events]` *(optional, enabled by checkbox)*
 9. `[batch]` *(optional, enabled by checkbox)*
 
+Under `dynamics_model = "cr3bp"` the **Object**, `[force_model]` and
+`[ephemeris]` groups are replaced by a `[cr3bp]` group (section
+*Switching the dynamics model* below).
+
 Each section header is the literal TOML name, so the mapping
 between the form and the file you produce is one to one. The form
 never invents fields and never silently drops fields it does not
@@ -39,7 +43,10 @@ widget on the right.
 
 - **Strings** (`name`, `frame`, `central_body`, &hellip;): a plain
   line edit, except for known enumerated values that use a combo
-  box (e.g. `frame` accepts only `central_inertial` today).
+  box (e.g. `frame`, `central_body`, `body_shape`, `solid_tides`,
+  `integrator.type`, `time_scale`), which offers the values the
+  engine knows (the `frame` combo also filters them by model and
+  body, see below).
 - **Floats** (`mass_kg`, `et_start_s`, `rel_tol`, &hellip;): a line
   edit, no validator attached (so the text you type stays verbatim
   &mdash; no surprise normalisation of `1.0e-5` into `1e-05`).
@@ -47,7 +54,9 @@ widget on the right.
   registered validator (see section 5.3).
 - **Integers** (`harmonics_degree`, `thread_number`): a line edit
   with a `QIntValidator` enforcing the min/max range as you type.
-- **Booleans** (`srp`): a checkbox.
+- **Booleans** (`srp`, `drag`, `general_relativity`,
+  `earth_radiation_pressure`, `harmonics_adaptive`,
+  `discontinuity_stops`): a checkbox.
 - **Vector-of-three** (`position_km`, `velocity_kms`): three line
   edits side by side.
 - **Lists of strings** (`third_bodies`): one checkbox per known
@@ -94,7 +103,7 @@ widget on the right.
   ET value on the left, a UTC ISO 8601 cell on the right, two
   arrow buttons between them. **&rarr;** converts ET to UTC,
   **&larr;** converts UTC to ET. Conversion is bit-identical to
-  SPICE `str2et` / `et2utc` (see chapter 15 for the underlying
+  SPICE `str2et` / `et2utc` (chapter 6, `[simulation]`, describes the
   algorithm). Only `et_start_s` is written to the TOML; the UTC
   cell is purely a typing aid.
 - **Duration (`simulation.duration_s`)** &mdash; a line edit plus a
@@ -110,6 +119,17 @@ widget on the right.
   sampling interval (`output.interval_s`, shown only when
   `output.mode = "fixed"`) carries the identical combo, so a daily
   or weekly grid cadence can be typed in days rather than seconds.
+
+Some rows appear only where they apply, matching the engine's rules
+(chapter 6): `time_scale` and `earth_radiation_pressure` only for the
+Earth; `drag`, the density-calibration rows, `eop_file`,
+`iau2006_dir` and `space_weather_file` only for a body with those
+data (the Earth). The `solid_tides` combo always offers `off`,
+`tide_free` and `zero_tide`; `off` writes no key, and `zero_tide` on
+the Moon is refused by **Validate**, not by the form. The
+`discontinuity_stops` checkbox follows the integrator: it
+switches on when `dop853` is picked in `type` and off for `rkdp45`,
+and can then be changed.
 
 Hovering the cursor over a label or its widget shows a **tooltip**
 with the field's one-line description; range-validated fields also
@@ -148,7 +168,7 @@ radio buttons at the top of the **Object** group:
 
 Switching the radio shows the matching widgets and hides the
 others. The form never emits both sections; whichever radio is up
-at **Generate** time is the one that ends up in the file.
+when the file is saved is the one that ends up in it.
 
 The choice also affects which override targets are available in
 the `[batch.columns]` mapping table (chapter 7). For instance,
@@ -267,7 +287,7 @@ Failed runs leave the WIP alone so you can fix and retry.
 
 Below the form (the lower half of the splitter visible in the Run
 tab's left pane) lives a read-only TOML preview. It mirrors what
-**Generate** would write to disk, refreshed on every keystroke.
+**Save** would write to disk, refreshed on every keystroke.
 
 Practically, it gives you three things:
 
@@ -304,7 +324,9 @@ Restricted 3-Body Problem). Switching the combo reflows the form:
   entry) are greyed out with a tooltip explaining why.
 
 The frame combo in `[initial_state]` also filters per model:
-`central_inertial` for HF, `synodic_rotating` for CR3BP. The
+`central_inertial`, `central_body_fixed`,
+`central_body_fixed_rotating` (Cartesian input only) and
+`orbit_plane` (Moon only) for HF, `synodic_rotating` for CR3BP. The
 underlying CR3BP schema details &mdash; barycenter offsets,
 omega derivation, impact-event auto-wiring &mdash; live in
 chapter 6.
@@ -406,7 +428,9 @@ with `central_inertial`, `central_body_fixed` and `orbit_plane`
 &mdash; are kept in a per-form cache that snapshots each finalised
 edit. (`orbit_plane` is offered only when the central body is the
 Moon, mirroring the engine validator; see chapter 6 for what the
-frame is.) Whenever you leave a cart / kep field (focus loss or
+frame is.) `central_body_fixed_rotating` takes Cartesian input only
+and is not part of the cache: flipping the frame to or from it
+converts through the inertial state. Whenever you leave a cart / kep field (focus loss or
 Enter), the form treats the visible block as the ground truth and
 derives the other representations from it via spopy. Subsequent toggles of the
 `kind` or `frame` combos then write the cached values verbatim

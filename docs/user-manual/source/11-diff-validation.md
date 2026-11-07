@@ -9,7 +9,7 @@ how to read the resulting numbers.
 
 ## Two scenarios, same dispatcher
 
-The same six diff plots apply to two distinct workflows:
+The same eight diff plots apply to two distinct workflows:
 
 1. **SpOdy vs SpOdy regression.** You ran a scenario twice with
    slightly different settings (different harmonics degree, with
@@ -79,13 +79,49 @@ When the two time windows have no overlap at all (one run started
 after the other ended), the dispatcher reports `no overlap` cleanly
 and refuses to render anything.
 
+### Position-only references (SP3)
+
+`spody convert sp3` writes zero velocities, because an SP3 file
+carries positions only. A B file whose velocity columns are all
+exactly zero takes neither path above: Hermite would use v = 0 as the
+slope, and the velocity diff would be A's velocity itself. Instead,
+on every A epoch inside B's span, the dispatcher fits a Lagrange
+polynomial through the 10 B positions centred on that epoch (the
+standard way to read a precise orbit, reviewed by Schenewerk 2003;
+the same polynomial as spody-core's `spody_interp_lagrange`,
+mirrored bit for bit by `spopy.interp_lagrange`) and takes its
+derivative as B's velocity. On B's own epochs the position is the B
+sample itself. An epoch that two consecutive SP3 day files both carry
+(the midnight between them) is used once. This path is taken on
+matching grids too, so that the velocity diff is meaningful; the info
+label reads `B has positions only: 10-node Lagrange onto A's grid
+(… -> … samples, v = derivative)`.
+
+### Both files must share `t = 0`
+
+The diff matches the two files on their time column `t`, the seconds
+since each file's own start: the trajectory binaries carry no
+absolute epoch. A propagation starts at its `et_start_s`; a converted
+reference starts at the time anchor its conversion log prints
+(chapter 12, *Conversion log*). The two must be the same instant, or
+every sample is compared with the reference at the wrong time. The
+bundled GPS example starts at the anchor of its broadcast and SP3
+references (both 2024-01-21 00:00 GPS time), so either reference
+diffs directly. The GLONASS example starts at the first broadcast
+epoch, 00:15 UTC, while its CODE SP3 reference starts at 00:00 GPS
+time, 918 s earlier: in the Analysis tab, diff it against the
+broadcast reference. Chapter 15 compares it with the SP3 in absolute
+time, outside the GUI.
+
 ### Why cubic Hermite
 
 For trajectory data sampled at coarse intervals relative to the
-orbital period, linear interpolation introduces a curvature error
-of order `(v &Delta;t)^2 / R`. For LRO at 11 s sampling that is
-about 170 m of interpolation error per sample &mdash; much bigger
-than the m-level diff signal we want to measure.
+orbital period, linear interpolation cuts the chord of the orbit:
+in the middle of an interval the error is the sagitta
+`(v &Delta;t)^2 / (8 R)`. For LRO sampled every 11 s (v &asymp;
+1.65 km/s, R &asymp; 1790 km) that is about 23 m, and 1.9 km for the
+same orbit sampled every 100 s &mdash; far above the metre-level
+signal a diff is meant to measure.
 
 Cubic Hermite interpolation with `v` as the analytical derivative
 catches the position curvature exactly to cubic order, reducing
@@ -97,143 +133,46 @@ of v is adequate at the precision the diff plot needs.
 
 ## Reading the magnitudes
 
-Concrete numbers for two of the validation scenarios shipped with
-SpOdy: a Moon-centred Apollo-era propagation and an Earth-centred
-GNSS broadcast comparison.
+The numbers the bundled validation scenarios give (LRO against
+SPICE, GPS G11 against IGS final orbits, GLONASS R03 against CODE
+precise orbits, the ISS and Swarm drag calibrations) are benchmarks
+of the whole software and are collected, with the method used to
+compute them, in chapter 15. What follows is how to read any diff.
 
-### LRO 6-day, N=80 harmonics, vs SPICE LRO reference
+- **Look at RIC first.** An error that grows linearly **in-track**
+  while radial and cross-track stay bounded is a mean-motion error:
+  the two orbits have slightly different periods, because of a
+  semi-major-axis difference in the initial state or a force acting
+  along the orbit (drag, radiation pressure, a truncated field). A
+  growing **cross-track** error points at the orbit plane (a missing
+  force normal to it, a frame error); a **radial** error that grows
+  on average means the two orbits sit at different heights.
+- **Look at the whole arc, not the last point.** An error can grow,
+  peak and come back: on the LRO example at degree 80 the error is
+  1.1 km on day 2 and 0.19 km at the end (chapter 15). The maximum
+  and the RMS over the arc are the honest summaries; the final value
+  alone can be a cancellation.
+- **Know the floor of the reference.** A reference is only as good
+  as its own reconstruction: a GNSS broadcast ephemeris is good to a
+  few metres, an IGS precise orbit to centimetres. Differences below
+  the floor carry no information.
 
-| Quantity        | Value        |
-|-----------------|--------------|
-| Duration        | 6 days       |
-| Sample count    | ~8000 (spody) vs ~46000 (SPICE) |
-| `|Δr|` at t=0   | 0 m exact (shared IC) |
-| `|Δr|` at t=6d  | ~110 m       |
-| `|Δr|` max      | ~1.2 km at mid-window |
-| `|Δr|` mean     | ~250 m       |
-| `|Δv|` max      | ~0.8 mm/s    |
+### Two references for one propagation
 
-The growth pattern of `|Δr|` is **not monotone**: it accumulates,
-peaks somewhere in the middle of the propagation, and recovers
-toward the end. This is characteristic of the gravity-harmonics
-mismatch between SpOdy's degree-80 expansion and SPICE's
-reconstructed ephemeris, which uses the full GRGM1200B set.
+A GNSS propagation can be compared with two references at once:
+the broadcast ephemeris (`spody convert gps` / `glonass`), easy to
+obtain but good only to a few metres, and a precise orbit (`spody
+convert sp3`), good to centimetres. Comparing the two references
+with each other gives the floor of the broadcast for free. On the
+bundled examples of 2024-01-21 the broadcast agrees with the precise
+orbit to 2.1 m RMS for GPS G11 and 2.5 m RMS for GLONASS R03, so
+for both the propagation error, hundreds of metres after a day, is
+read equally well against either reference (chapter 15).
 
-### RIC interpretation for the same diff
-
-On the same example, the RIC decomposition shows the in-track
-component growing roughly linearly to ~1 km mid-window, while the
-radial and cross-track components stay below 200 m. This is the
-canonical signature of a small **mean-motion drift** induced by
-truncating the harmonics expansion at degree 80 &mdash; the two
-propagations have slightly different effective orbital period
-because they capture slightly different fractions of the
-non-spherical potential.
-
-Raising `harmonics_degree` to 150 reduces the in-track drift
-proportionally; raising it beyond 200 yields diminishing returns
-because the GRGM1200B coefficients become weakly observed at high
-degrees and adding terms can slightly increase the residual.
-
-### GLONASS R03 7-day, N=70 harmonics, vs IGS broadcast
-
-The Earth-centred counterpart is the GLONASS slot 03 broadcast-
-nav comparison shipped in `examples/glonass_r03_validation/`. SpOdy
-propagates from the first 2024-01-21 broadcast TOC for 167.5 hours
-and is diffed against a reference binary built from 7 consecutive
-daily RINEX-NAV files (`spody convert glonass <day1.rnx> &hellip;
-<day7.rnx> &hellip;`; chapter 12). With `srp = false`,
-`harmonics_degree = 70`, and the Moon + Sun as third bodies:
-
-| Day | `|Δr|` RMS | `|Δr|` max |
-|-----|------------|------------|
-| 1   | 176 m      | 385 m      |
-| 2   | 367 m      | 869 m      |
-| 3   | 577 m      | 1.4 km     |
-| 4   | 803 m      | 2.1 km     |
-| 5   | 1026 m     | 2.7 km     |
-| 6   | 1232 m     | 3.2 km     |
-| 7   | 1425 m     | 3.7 km     |
-
-The RMS grows roughly linearly at ~200 m / day. The signature is
-a near-secular in-track residual, the canonical fingerprint of
-the un-modelled in-track perturbation forces at GNSS altitude
-(box-wing SRP, antenna thrust, empirical ECOM-style
-accelerations). Adding a cannonball SRP with guessed Cr / area
-makes things worse on this particular spacecraft because the
-in-track sign happens to coincide with the residual; closing the
-budget to sub-km over a week needs either the proper IGS BOX-WING
-SRP model (Rodriguez-Solano 2014) or empirical ECOM5
-accelerations, both of which sit outside SpOdy's current
-force-model menu.
-
-Independent of the SRP question, the example is the canonical
-sanity check that the Earth-orientation pipeline (IAU 2006 +
-IERS EOP) is wired correctly: day-1 RMS regresses against the
-broadcast at the 177 m level set by the broadcast nav's own OD
-precision, which is the floor reachable with a pure force-model
-propagation (no per-arc empirical fits).
-
-### GPS PRN 11 7-day, N=70 harmonics, vs IGS Final SP3
-
-The GPS counterpart in `examples/gps_g11_validation/` is built on a
-**cleaner two-format reference scheme** &mdash; broadcast nav for the
-initial state, IGS Final SP3 for the per-sample truth. The
-broadcast bootstrap gives `(r, v)` at broadcast-OD precision
-(`~few m / few cm/s`) via the new `spody convert gps` Kepler-with-
-corrections propagator (IS-GPS-200 + Remondi 2004; chapter 12),
-replacing the previous 5-point Lagrange forward derivative on SP3
-positions that gave the SP3 secant rather than the true Keplerian
-tangent (`|v0| ~3.57 km/s` vs the correct `~3.87 km/s`, a 7-8%
-artefact that swamped the residual at `t = 0`).
-
-With `srp = false`, `harmonics_degree = 70`, Moon + Sun third
-bodies, and the cm-precision IGS Final SP3 as ground truth:
-
-| Day | `|Δr|` RMS | `|Δr|` max |
-|-----|------------|------------|
-| 1   | 46 m       | 91 m       |
-| 2   | 128 m      | 316 m      |
-| 3   | 212 m      | 552 m      |
-| 4   | 300 m      | 800 m      |
-| 5   | 390 m      | 1.1 km     |
-| 6   | 484 m      | 1.3 km     |
-| 7   | 581 m      | 1.6 km     |
-
-`|Δr|` at `t = 0` is **2.3 m** &mdash; the broadcast-vs-SP3-OD
-floor, NOT a force-model error. The linear &sim;80 m / day growth
-is the same in-track signature as GLONASS, but with a 3-4&times;
-smaller day-1 baseline because both endpoints of the diff
-(the IC and the truth) are clean.
-
-### Multi-reference comparison: GPS vs GLONASS broadcast OD
-
-The two GNSS examples allow a useful cross-check: diff the same
-propagation against **both** the broadcast nav reference AND a
-multi-GNSS SP3 reference (e.g. the CODE MGEX `COD0MGXFIN_*.SP3`
-files, which include G + R + E + C). Three numbers fall out:
-
-* `prop vs broadcast` &mdash; the legacy reference, easy to build
-  but only ~few m of truth precision;
-* `prop vs SP3` &mdash; the cm-level truth, but introduces a
-  multi-format alignment chore (see *Time-grid alignment* above);
-* `broadcast vs SP3` &mdash; the truth-floor of the broadcast
-  itself, exposed for free as a side effect of the comparison.
-
-For 2024-01-21:
-
-| Constellation | prop vs brdc (d1) | prop vs SP3 (d1) | broadcast-OD floor |
-|---------------|-------------------|------------------|--------------------|
-| GPS G11       | 47 m              | 46 m             | ~2 m               |
-| GLONASS R03   | 176 m             | 317 m            | ~258 m             |
-
-GPS broadcast is &sim;100&times; tighter than GLONASS broadcast,
-which is why a GPS example built on a broadcast-only reference
-already measures the propagator's force-model error cleanly.
-For GLONASS the SP3 reference is needed to push past the 258 m
-broadcast-OD floor &mdash; or the force-model residual must be
-recovered indirectly by composing `prop_vs_brdc &approx;
-sqrt(prop_vs_SP3^2 - brdc_vs_SP3^2)`.
+SP3 files carry positions only; the diff plots read them with a
+Lagrange polynomial (*Position-only references* above). Up to release
+0.4.1 they used the cubic Hermite on them too, with the zero
+velocities as slopes, which is wrong whenever the two grids differ.
 
 ## Drag validation and ballistic calibration
 
@@ -259,12 +198,13 @@ ballistic coefficient is indistinguishable &mdash; at the
 trajectory level &mdash; from a correct density with a +30%
 ballistic error. Both factors are genuinely uncertain:
 
-* **The density model.** NRLMSISE-00 is an empirical climatology
-  fitted to pre-2000 data. Against modern orbit-derived density
-  references it runs **20&ndash;40% hot at 400&ndash;500 km
-  around solar maximum** (the thermosphere has cooled since the
-  model's fit epoch). This is a property of the model, not an
-  implementation defect.
+* **The density model.** NRLMSISE-00 (Picone et al. 2002) is an
+  empirical climatology fitted to data collected before 2000.
+  Empirical models of this kind carry density errors of tens of per
+  cent that change with solar and geomagnetic activity (Emmert 2015);
+  against the Swarm densities of 2024 it was measured **+28 to +51 %
+  at 470&ndash;500 km** (chapter 15). This is a property of the
+  model, not an implementation defect.
 * **The ballistic coefficient of record.** Free-molecular `Cd`
   is not a plate constant: it depends on attitude, surface
   temperature and gas composition. Operational centres re-estimate
@@ -292,7 +232,7 @@ Two public data families make clean drag benchmarks:
 2. **ESA Swarm Level-2 precise orbits** (`SP3ACOM` reduced-dynamic
    POD: SP3 format, ITRF, GPS time, cm-level truth), with the
    companion `DNSAPOD` product giving the POD-derived thermospheric
-   density along the same orbit. The density product enables a
+   density along the same orbit (van den IJssel et al. 2020). The density product enables a
    **density-space comparison that needs no mass or area at all**.
 
 In both cases prefer a geomagnetically quiet window (daily Ap
@@ -333,50 +273,15 @@ ballistic uncertainty, absorbed by `k*`) and a *time-varying* part
 (day-to-day thermospheric variability the climatology cannot
 capture, visible in the hold-out drift).
 
-### Results (July 2024 window, Ap 2&ndash;10, F10.7a ≈ 205)
+### Results
 
-ISS, 5-day gap between the 2024-07-03 and 2024-07-09 JSC
-ephemerides, truth = first (pre-creation) day of the newer file:
-
-| Run                              | In-track @ 5 d      |
-|----------------------------------|---------------------|
-| Drag off                         | −146 km             |
-| Drag on, BC of record (k = 1)    | +53 km              |
-| Drag on, fitted k* = 0.725       | 973 m RMS, 1.8 km max |
-| JSC's own 5-day forecast (yardstick) | 1.3 km RMS, 2.1 km max |
-
-The fitted run lands in the same class as the publisher's own
-forecast &mdash; which is produced with internal tracking and
-attitude timelines. Radial and cross-track stay at tens of metres
-throughout.
-
-Swarm-A, 5.5 days against the cm-level `SP3ACOM` POD, `k*` fitted
-on the first two days only (Cd 2.6 → 3.29 at the nominal
-area/mass), per-day in-track RMS:
-
-| Day | In-track RMS | Arc         |
-|-----|--------------|-------------|
-| 0   | 51 m         | calibration |
-| 1   | 37 m         | calibration |
-| 2   | 120 m        | hold-out    |
-| 3   | 81 m         | hold-out    |
-| 4   | 453 m        | hold-out    |
-| 5   | 997 m        | hold-out    |
-
-The scale factor is **stable to 0.6%** between the 2-day
-calibration fit and a full-window fit, and the drag-off drift is
-−108 km over the same window: with one calibrated number the chain
-holds roughly **200 m/day in-track** against a −20 km/day
-signal. Radial ≤ 25 m and cross-track ≤ 17 m RMS everywhere.
-
-The independent density-space comparison (NRLMSISE-00 evaluated
-along the Swarm orbit at the `DNSAPOD` epochs, same space-weather
-inputs the engine uses) gives the model bias directly: **median
-+38%** at 470&ndash;500 km over the window &mdash; and rising from
-+28% to +51% day by day, which is exactly the time-varying part
-that surfaces as the hold-out drift above. The three numbers close
-on each other: `k* × BC_nominal × 1.38` reproduces the physical
-`Cd·A` expected for the spacecraft geometry.
+The results of this method on the ISS (NASA/JSC ephemerides) and on
+Swarm-A (ESA precise orbit and densities), and of `spody calibrate`
+on the bundled ISS example, are in chapter 15 (*ISS with drag* and
+*Drag: earlier measurements*). In short: one fitted factor brings a
+5-day ISS prediction to the class of the operator's own forecast,
+and a factor fitted on two days holds Swarm-A to about 200 m/day
+in-track afterwards.
 
 ### Problems and solutions
 
@@ -407,8 +312,10 @@ on each other: `k* × BC_nominal × 1.38` reproduces the physical
   `spody calibrate` subcommand (chapter 12), which emits the node
   file directly. The remaining ceiling &mdash;
   sub-daily density structure no multiplicative correction can
-  capture &mdash; would need storm-time indices (JB2008-class
-  models) or assimilative corrections.*
+  capture &mdash; would need models driven by newer solar and
+  geomagnetic indices (JB2008, Bowman et al. 2008) or assimilative
+  corrections; in a Monte Carlo it is represented by the density
+  process noise of chapter 14.*
 * **Manoeuvres poison the arc silently.** A reboost inside the
   gap turns the whole comparison into noise. *Solution: read the
   event summary in the OEM comments before choosing the pair; for

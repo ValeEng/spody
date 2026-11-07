@@ -13,13 +13,18 @@ application:
 - **Windows 10 (64-bit) or Windows 11**. The bundle is built for
   `x86_64`; ARM-based devices are not supported in this release.
 - About **600 MB of free disk space** for the application itself,
-  plus **roughly 30 MB to 350 MB** for the external data files the
-  setup wizard downloads (the exact figure depends on which
-  ephemeris coverage profile you choose &mdash; see chapter 3).
+  plus **about 0.6 GB** for the external data files the setup wizard
+  downloads and converts (about 1 GB with the *Full pack* ephemeris
+  profile, chapter 3). Most of it is the Earth gravity model:
+  EIGEN-6C4 takes 178 MB as downloaded and 252 MB once converted; the
+  lunar model GRGM1200B takes 88 MB.
 - A working **internet connection** the first time you run the
-  application, so the setup wizard can fetch the planetary
-  ephemeris and lunar gravity-model data from NASA's public
-  servers. After the first run, SpOdy works fully offline.
+  application, so the setup wizard can fetch the ephemeris, gravity,
+  Earth-orientation and space-weather data from their public servers
+  (JPL, the PDS Geosciences Node, GFZ Potsdam, the IERS, CelesTrak).
+  After that, SpOdy works offline; the Earth-orientation and
+  space-weather tables age, and the wizard offers to refresh them
+  when a newer copy exists (chapter 3).
 - A graphics adapter that supports **OpenGL 3.2 or higher**. Any
   Windows-supported integrated GPU from the last decade is fine;
   the VTK-based 3D viewer falls back to software rendering when no
@@ -78,8 +83,8 @@ tampered with &mdash; redownload from the original source.
 ## First launch
 
 Double-click `spody-gui.exe`. After a brief warm-up the main window
-appears, with two tabs at the top (**Run** and **Analysis**) and an
-empty menu bar.
+appears, with four tabs at the top (**Run**, **Uncertainty**,
+**Analysis**, **Re-run**; chapter 4).
 
 Because no data files are present yet, you will immediately see two
 modal pop-ups:

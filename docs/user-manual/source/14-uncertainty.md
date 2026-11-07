@@ -239,9 +239,10 @@ from the scenario's `space_weather_file`: observed values in the past,
 the file's own forecast rows (CelesTrak `PRD`, about 45 days) in the
 future. `sigma_ln` becomes the value with no activity, and
 `ap_doubling` the Ap at which it doubles. This is the activity-scaled
-density error of Wright (AGI, "Real-time estimation of local
-atmospheric density"). The variance follows a change of activity with
-time constant `tau_s` / 2, not at once. Kp to Ap for orientation:
+density error of Wright (2003). The variance follows a change of
+activity with time constant `tau_s` / 2, not at once. Kp to Ap for
+orientation (the standard equivalent amplitudes, Matzka et al. 2021;
+G1&ndash;G5 are the NOAA storm levels):
 
 | Kp | 2 | 3 | 4 | 5 (G1) | 6 (G2) | 7 (G3) | 8 (G4) | 9 (G5) |
 |---|---|---|---|---|---|---|---|---|
@@ -684,36 +685,11 @@ against about 15 for a Gaussian.
 
 ## References
 
-- J. K. Salmon et al., *Parallel random numbers: as easy as 1, 2, 3*,
-  SC'11 (2011) &mdash; Philox.
-- M. J. Wichura, *Algorithm AS 241: the percentage points of the
-  normal distribution*, Applied Statistics 37 (1988) 477&ndash;484.
-- G. E. Uhlenbeck, L. S. Ornstein, *On the theory of the Brownian
-  motion*, Physical Review 36 (1930) 823&ndash;841.
-- D. T. Gillespie, *Exact numerical simulation of the
-  Ornstein-Uhlenbeck process and its integral*, Physical Review E 54
-  (1996) 2084&ndash;2091.
-- G. Beutler, E. Brockmann, W. Gurtner, U. Hugentobler, L. Mervart,
-  M. Rothacher, A. Verdun, *Extended orbit modeling techniques at the
-  CODE processing center of the International GPS Service for
-  Geodynamics (IGS)*, Manuscripta Geodaetica 19 (1994) 367&ndash;386.
-- A. J&auml;ggi, U. Hugentobler, G. Beutler, *Pseudo-stochastic orbit
-  modeling techniques for low-Earth orbiters*, Journal of Geodesy 80
-  (2006) 47&ndash;60.
-- W. H. Clohessy, R. S. Wiltshire, *Terminal guidance system for
-  satellite rendezvous*, Journal of the Aerospace Sciences 27 (1960)
-  653&ndash;658.
-- C. F. Van Loan, *Computing integrals involving the matrix
-  exponential*, IEEE Transactions on Automatic Control 23 (1978)
-  395&ndash;404.
-- B. P. Welford, *Note on a method for calculating corrected sums of
-  squares and products*, Technometrics 4 (1962) 419&ndash;420.
-- D. A. Vallado, S. Alfano, *Curvilinear coordinate transformations
-  for relative motion*, Celestial Mechanics and Dynamical Astronomy
-  118 (2014) 253&ndash;271.
-- E. B. Wilson, *Probable inference, the law of succession, and
-  statistical inference*, JASA 22 (1927) 209&ndash;212.
-- L. D. Brown, T. T. Cai, A. DasGupta, *Interval estimation for a
-  binomial proportion*, Statistical Science 16 (2001) 101&ndash;133.
-- J. A. Hanley, A. Lippman-Hand, *If nothing goes wrong, is
-  everything all right?*, JAMA 249 (1983) 1743&ndash;1745.
+The works cited in this chapter are listed in full in chapter 17:
+Salmon et al. 2011 (Philox), Wichura 1988 (AS241), Welford 1962,
+Uhlenbeck & Ornstein 1930 and Gillespie 1996 (Gauss-Markov process),
+Van Loan 1978, Clohessy & Wiltshire 1960, Beutler et al. 1994 and
+Jäggi et al. 2006 (once-per-revolution terms), Wright 2003 and Matzka
+et al. 2021 (activity-scaled density noise, Kp and Ap), Vallado &
+Alfano 2014 (curvilinear coordinates), Wilson 1927, Brown, Cai &
+DasGupta 2001 and Hanley & Lippman-Hand 1983 (impact probability).

@@ -12,37 +12,44 @@ central bodies (Moon and Earth):
 
 - **Origin** at the centre of the central body.
 - **Axes** aligned with the ICRF (International Celestial
-  Reference Frame), which is the modern realisation of the J2000
-  inertial axes. In practice the X axis points toward the dynamical
-  equinox of J2000, the Z axis aligns with the J2000 mean rotation
-  pole of Earth, and Y completes the right-handed triad.
+  Reference Frame), realised by the positions of extragalactic
+  radio sources (Kaplan 2005 summarises the IAU resolutions that
+  define it). Its axes agree with the mean equator
+  and dynamical equinox of J2000 to within about 0.02 arcseconds
+  (the *frame bias*), so for most purposes X points toward the
+  J2000 equinox, Z toward the J2000 mean pole of the Earth, and Y
+  completes the right-handed triad. SPICE's `J2000` frame and the
+  CCSDS `EME2000` are the same axes to that level.
 - **Right-handed.**
 - **No rotation** with respect to the distant background of
   galaxies; the central body orbits, librates / rotates *inside*
   this frame.
 
-All TOML inputs (`initial_state.position_km`, `velocity_kms`) and
-all binary outputs are in this frame. The engine does not perform
-any frame conversions internally beyond the conversions needed to
-evaluate body-fixed gravity harmonics at each step.
+Every binary output is in this frame, and every initial state ends up
+in it: a `[initial_state]` written in another frame
+(`central_body_fixed`, `central_body_fixed_rotating`, `orbit_plane`,
+or as Keplerian elements, chapter 6) is converted once, before the
+first step. During the run the engine also rotates into the body-fixed
+frame wherever a force needs it (the gravity field, the atmosphere,
+the tide-raising bodies).
 
-> If you have a state vector in a different frame (Earth-centred
-> J2000, Moon's body-fixed frame, an ecliptic frame), convert it
-> to the lunar-centred ICRF before pasting it into the TOML. The
+> If you have a state vector in a frame SpOdy does not accept (an
+> ecliptic frame, the frame of another body), convert it to the
+> central-body-centred ICRF before pasting it into the TOML. The
 > SPICE toolkit's `spkez` plus `pxform` calls are the canonical
 > way to do this; the SpOdy bundle does not include a SPICE
-> wrapper.
+> wrapper. TLE or OMM elements go through `spody convert gp`
+> (chapter 12).
 >
 > One exception is **batch input in a rotating frame**: if your
 > cases CSV is a snapshot of a debris cloud (or any collection of
 > objects whose deltas are measured against a reference
 > satellite's local axes), the GUI rotates the state columns to
-> ICRF automatically at Generate-TOML and emits `cases_file`
+> ICRF automatically when the TOML is saved and emits `cases_file`
 > pointing at the rotated copy. Two rotating frames are supported
 > via the `cases_frame` combo: **RIC** (radial / in-track /
-> cross-track, the typical chaser sensor frame) and **LVLH**
-> (NASA / Goddard nadir-pointing convention, common in breakup
-> models). The TOML carries `cases_frame` and `cases_source_file`
+> cross-track) and **LVLH** (local vertical / local horizontal,
+> nadir-pointing). The TOML carries `cases_frame` and `cases_source_file`
 > as GUI-only round-trip metadata; `spody.exe` ignores them. See
 > chapter 7 ("Rotating-frame batch input (RIC / LVLH)") for the
 > workflow.
@@ -60,12 +67,21 @@ source for the active central body.
 For Moon-centred runs the body-fixed frame is the **lunar
 Principal Axes (PA)** frame, which is the frame the GRGM1200B
 coefficient set is expressed in. The rotation is built from the
-lunar libration angles that DE440 carries in its slot 12:
+lunar libration angles that DE440 carries among its Chebyshev series
+(Park et al. 2021):
 
     C_ICRF→PA = Rz(psi) · Rx(theta) · Rz(phi)
 
 with `(phi, theta, psi)` the 3-1-3 Euler angles of the lunar
-mantle at the requested ET. The convention is `r_PA = C · r_ICRF`.
+mantle at the requested ET and `Rx`, `Rz` the frame (passive)
+rotations about the x and z axes. The convention is
+`r_PA = C · r_ICRF`.
+
+GRGM1200B was estimated in the PA frame of DE430, the ephemeris of its
+time; SpOdy rotates it with the PA frame of DE440. The two frames
+differ by 0.14&Prime; (0.16&Prime; at most), 1.4 m on the lunar
+surface; on the LRO benchmark (chapter 15) the choice changes the
+6-day trajectory by 0.36 m.
 
 The PA frame **does become visible** in the Analysis tab's
 *impact* views (chapter 9): the impact lat/lon map (both
@@ -86,7 +102,9 @@ For Earth-centred runs the body-fixed frame is the
 co-rotating Earth-fixed frame realised by the ITRF datums (for
 practical purposes, ITRF2014 / 2020). The rotation from inertial
 to body-fixed follows the **IAU 2006/2000A_R06** Earth-orientation
-conventions plus the IERS Earth-Orientation Parameters (EOP):
+conventions in their CIO-based form (Capitaine & Wallace 2006; IERS
+Conventions 2010, Petit & Luzum 2010, ch. 5) plus the IERS
+Earth-Orientation Parameters (EOP):
 
     R_GCRS→ITRS = W(t) · R3(+ERA(t)) · Q(t)
 
@@ -103,7 +121,10 @@ The daily EOP rows are interpolated linearly. On a leap-second day,
 itself is continuous, so SpOdy interpolates `UT1 - TAI` (the IERS
 convention) and the jump happens at 23:59:60 UTC, where it belongs,
 instead of being spread over the whole day.
-The chain is exact at the SOFA / ERFA precision floor (sub-mas).
+The chain follows the IERS / SOFA procedure step for step; the
+hourly interpolation of X, Y, s and the series read from the IERS
+tables keep it within about 0.02 mas of SOFA's own evaluation (the
+`spopy` comparison below).
 
 The wizard manages the two raw data sets (`finals2000A.all` plus
 the IAU 2006 series tables); chapter 3 covers the
@@ -148,9 +169,11 @@ the fly at every sample** from the state vector of trajectory A:
 
 The frame is right-handed; the axes are mutually orthogonal at
 every sample, but their inertial orientation rotates with the
-orbit. The frame is also called the **RSW frame** (Vallado's
-nomenclature) or the **Hill frame** (in the context of the
-Clohessy-Wiltshire linearised equations).
+orbit. The frame is also called the **RSW frame** (Vallado 2013),
+**RTN** (radial / transverse / normal, the name used by the CCSDS
+orbit and conjunction messages, CCSDS 502.0-B-3) or the **Hill
+frame** (in the context of the Clohessy-Wiltshire linearised
+equations, Clohessy & Wiltshire 1960).
 
 ### What goes where
 
@@ -179,25 +202,25 @@ the RIC frame. The signs differ:
 | Y / C | `+h_hat` (orbit normal) | `-h_hat` |
 
 If you need an LVLH decomposition of a **diff plot** you can
-compute it from the SpOdy diff RIC output by flipping the radial
-and cross-track signs. SpOdy does not provide an LVLH plot
-directly because RIC is the conventional choice in conjunction-
-assessment and orbit-regression work, and a sign-flipped duplicate
-plot would be just visual noise.
+compute it from the SpOdy diff RIC output: LVLH x is the in-track
+component, LVLH y minus the cross-track one, LVLH z minus the radial
+one. SpOdy does not provide an LVLH plot directly because RIC (RTN)
+is the conventional choice in conjunction-assessment and
+orbit-regression work, and a reordered, sign-flipped duplicate would
+be just visual noise.
 
-LVLH is **fully supported on the batch-input side**, however: the
-GUI's `cases_frame` combo accepts `lvlh` and applies the same
-rotate-to-ICRF-at-Generate pipeline as `ric`, with the
-NASA / Goddard sign convention (`z = -r_hat`, `y = -h_hat`,
-`x = y x z`). This is the convention used by the NASA breakup
-model, by CCSDS conjunction messages, and by the rest of the
-debris-evolution-tool ecosystem &mdash; so a binary export from
-those tools can be fed into SpOdy without a manual sign flip.
+LVLH is **supported on the batch-input side**, however: the GUI's
+`cases_frame` combo accepts `lvlh` and applies the same
+rotate-to-ICRF-at-save pipeline as `ric`, with the axes of
+rendezvous and attitude work (`z = -r_hat`, `y = -h_hat`,
+`x = y x z`; Fehse 2003). A cases file whose offsets are written in
+those axes can be fed into SpOdy without a manual rotation; one
+written in RTN axes (a CCSDS message, for instance) goes in as `ric`.
 
 ## The synodic rotating frame (CR3BP)
 
 Under `dynamics_model = "cr3bp"` the state lives in the classic
-**synodic rotating frame**: origin at the barycenter, x-axis along
+**synodic rotating frame** of the restricted problem (Szebehely 1967): origin at the barycenter, x-axis along
 primary&nbsp;1 &rarr; primary&nbsp;2, z along the orbital angular
 momentum, rotating at the constant
 &omega; = &radic;((&mu;&#8321;+&mu;&#8322;)/L&sup3;). The primaries
@@ -239,8 +262,8 @@ gravitational parameter `mu` baked in:
 
 | Central body | `mu` (km&sup3;/s&sup2;)        | Source     |
 |--------------|---------------------------------|------------|
-| Moon         | 4902.8001184575496              | DE440      |
-| Earth        | 398600.4415                     | EIGEN-6C4  |
+| Moon         | 4902.8001184575496              | DE440 (Park et al. 2021) |
+| Earth        | 398600.4415                     | EIGEN-6C4 (Förste et al. 2014); the TT-compatible value of the IERS Conventions 2010 |
 
 Both constants live alongside the central-body radii in
 `spody_const.h` (single source of truth, shared between the C
@@ -266,20 +289,21 @@ relative to the **inertial XY plane** (the ICRF XY plane,
 projected at the central body's centre). This is the ICRF
 equator, *not* the central body's equator.
 
-- For **Moon-centred** runs the lunar pole is tilted ~5.1&deg;
-  from the ecliptic normal, so the lunar equator is tilted
-  ~24&deg; from the ICRF XY plane. A near-polar lunar orbit
-  (which is "polar" with respect to the Moon's body-fixed pole)
-  appears at `i ≈ 85–115°` in SpOdy's elements, not at exactly
-  90°, because the reference plane is the ICRF and not the
-  lunar equator.
-- For **Earth-centred** runs the difference is much smaller:
-  the J2000 mean equatorial plane *is* (by definition) the
-  ICRF XY plane up to the &sim;arcsec-level precession /
-  nutation that the rotation pipeline handles separately. A
-  near-polar Earth orbit sits very close to `i = 90°` in
-  SpOdy's elements, drifting only by tens of milliarcseconds
-  per year from precession.
+- For **Moon-centred** runs the lunar spin axis is tilted about
+  1.5&deg; from the ecliptic pole (Cassini's laws), and the ecliptic
+  is tilted 23.4&deg; from the ICRF XY plane, so the lunar equator is
+  tilted between about 22&deg; and 25&deg; from the ICRF XY plane over
+  the 18.6-year cycle of the lunar node. An orbit that is polar with
+  respect to the Moon's own pole has its normal in the lunar equator
+  and therefore shows an ICRF inclination anywhere between about
+  65&deg; and 115&deg;, depending on where its node lies.
+- For **Earth-centred** runs the difference is much smaller: the
+  ICRF XY plane is the mean equator of J2000 (to the 0.02&Prime;
+  frame bias), and the true equator of date moves away from it by
+  precession, about 20&Prime; per year in the direction of the pole
+  (0.14&deg; by 2026), plus nutation of up to about 9&Prime;. A polar
+  Earth orbit therefore shows an inclination within a few tenths of
+  a degree of 90&deg;.
 
 This is the conventional choice and matches the SPICE convention
 when querying the LRO or GLONASS ephemerides in J2000. If you
@@ -302,16 +326,21 @@ The right quadrants are picked from the standard sign tests:
 ## Sun direction (3D viewer)
 
 The `+ Sun arrow` button in the 3D viewer computes the direction
-to the Sun **from the central body's centre** at the typed epoch,
-using a **low-precision analytic model** (Meeus-style series for
-the solar ecliptic longitude and the obliquity of the ecliptic,
-sufficient for visualisation accuracy of arc-minute level).
+to the Sun at the typed epoch with a **low-precision analytic
+model**: the Sun's mean longitude and mean anomaly, the equation of
+the centre to two terms and the mean obliquity, as in the
+low-accuracy solar position of Meeus (1998, ch. 25). The direction
+is the geocentric one (from a Moon-centred scene the parallax is
+under 0.2&deg;), and the longitudes are referred to the equinox of
+date, so the arrow is off the ICRF direction by the precession since
+J2000 (about 0.37&deg; in 2026) plus about 0.01&deg; of the series:
+enough for a visual arrow, not for any computation.
 
 The arrow direction is rendered in the same `central_inertial`
-frame as the rest of the scene, so it lines up correctly with the
-orbit polylines. The arrow length is purely visual (scaled to the
-Moon sphere's radius); it does *not* represent astronomical
-distance.
+frame as the rest of the scene, so it lines up with the orbit
+polylines to the accuracy above. The arrow length is purely visual
+(scaled to the central body's radius); it does *not* represent
+astronomical distance.
 
 For propagation purposes the engine uses the full-precision DE440
 ephemeris &mdash; the analytic Sun direction is used only for the

@@ -18,6 +18,11 @@ The conventions used in the tables below:
 - **Range** documents the allowed values; an unbounded numeric
   field is shown as `> 0` or similar.
 
+Both files are UTF-8 text (TOML 1.0). A UTF-8 byte-order mark at the
+start of the file, which some Windows tools write (PowerShell 5.1's
+`Out-File` and `Set-Content -Encoding utf8`, for one), is skipped;
+releases up to 0.4.1 refused such a file with `line 1: missing =`.
+
 ## `[simulation]`
 
 Scenario name and time window. Required.
@@ -26,7 +31,7 @@ Scenario name and time window. Required.
 |------------------|---------|------------------|--------|-------------|
 | `name`           | string  | &mdash;          | &ndash; | Human-readable scenario name. Used as the prefix for batch case output names. |
 | `dynamics_model` | string  | `"high_fidelity"`| `"high_fidelity"`, `"cr3bp"` | Selects the propagator. `high_fidelity` (default) drives the full force-model integrator the bulk of this manual describes; `cr3bp` switches to the Circular Restricted 3-Body Problem in the synodic rotating frame (see *The `[cr3bp]` section* below). |
-| `et_start_s`     | float   | &mdash; (HF only)| &ndash; | Start epoch as TDB seconds past the J2000 epoch (2000-01-01 12:00:00 TT). Negative values are valid for pre-J2000 epochs. Required in `high_fidelity` mode; ignored (and rejected if present) in `cr3bp` mode &mdash; the synodic frame is time-invariant. |
+| `et_start_s`     | float   | &mdash; (HF only)| &ndash; | Start epoch as ET, the SPICE ephemeris time: TDB seconds past 2000-01-01 12:00:00 TDB. Negative values are valid for pre-J2000 epochs. Required in `high_fidelity` mode; ignored (and rejected if present) in `cr3bp` mode &mdash; the synodic frame is time-invariant. |
 | `duration_s`     | float   | &mdash;          | `> 0`  | Propagation duration in seconds. Positive only (forward-time propagation). |
 
 The `et_start_s` value is the same scale the planetary ephemeris
@@ -34,9 +39,12 @@ uses internally. The form provides a UTC&nbsp;&hArr;&nbsp;ET
 converter (an ISO 8601 UTC field next to `et_start_s` with two
 arrow buttons between them): typing a UTC instant and clicking
 **&larr;** fills the ET cell; clicking **&rarr;** does the inverse.
-The conversion is bit-identical to SPICE `str2et` &mdash; same
-`deltet` algorithm (`K`, `EB`, `M0`, `M1` from the NAIF LSK
-kernel) plus the hard-coded IERS Bulletin C leap-seconds table.
+The conversion is bit-identical to SPICE `str2et` (Acton 1996)
+&mdash; UTC to TAI with the leap seconds of IERS Bulletin C (a table
+built into SpOdy), TAI + 32.184 s = TT, then TDB &minus; TT from the
+same `deltet` formula as SPICE, a periodic term of amplitude 1.657 ms
+with the constants `K`, `EB`, `M0`, `M1` of the NAIF leap-seconds
+kernel (the time scales are defined in Kaplan 2005).
 The UTC cell itself is never written to the TOML; only `et_start_s`
 is serialised, so the engine still sees a single canonical
 number. The DE440 wizard data covers 1950 &ndash; 2050 by default;
@@ -173,8 +181,9 @@ allowed; setting both is a validation error.
 | `am_drag` | float | &mdash; | `> 0` | Drag area-to-mass ratio in m&sup2;/kg, specified directly. |
 | `Cd`      | float | &mdash; | `> 0` | Drag coefficient. `~2.2` is the classic value for compact satellites in free-molecular flow; flat/panelled bodies run higher (the ISS ballistic value published by NASA/JSC is `2.40`). |
 
-The density model is NRLMSISE-00 (the engine's own validated port),
-evaluated at the geodetic (WGS-84) sub-satellite point with the
+The density model is NRLMSISE-00 (Picone et al. 2002; the engine's
+own port, which matches an independent `pymsis` evaluation to 1e-5
+along a test arc), evaluated at the geodetic (WGS-84) sub-satellite point with the
 observed daily F10.7 of the previous day, the 81-day centered
 average, and the 7-element 3-hour Ap history (storm-time mode) from
 `space_weather_file`. Air co-rotation with the Earth is included in
@@ -279,7 +288,7 @@ it applied (`initial frame : ...`).
 
 Available under `high_fidelity` with `central_body = "Moon"`, for
 both `kind` values. It is the frame the lunar frozen-orbit
-literature states its elements in, and getting it wrong is the
+literature states its elements in (Ely 2005), and getting it wrong is the
 single most common way to "reproduce" a published frozen orbit and
 watch it impact instead.
 
@@ -335,8 +344,26 @@ Forces the propagator integrates against. Required.
 | `drag`               | bool            | `false` | &ndash; | Enable atmospheric drag (cannonball, NRLMSISE-00 density in the storm-time 3-hour-Ap mode). Requires a central body with a registered atmosphere model (`Earth` in this release), a `[spacecraft.drag]` block (or the `am_drag`/`Cd` pair in `[debris]`) and `space_weather_file`. The form shows this row only when the central body has an atmosphere. |
 | `earth_radiation_pressure` | bool | `false` | &ndash; | Earth albedo + infrared on the spacecraft (Knocke et al. 1988). Earth only; uses the `[spacecraft.srp]` area and `Cr`. The form shows this row only for the Earth. See *Earth radiation pressure* below. |
 | `space_weather_file` | string (path)   | &mdash; (drag only) | &ndash; | Path to the CelesTrak combined space-weather CSV (`SW-All.csv`: daily F10.7 + 3-hour Ap, 1957 to a ~45-day prediction tail plus monthly long-range rows). Required when `drag = true`. The run window must start at least 3 days after the table's first row (the Ap history looks back 57 h) and end by the end of the last **daily** row &mdash; about 45 days after the file was downloaded. The monthly long-range rows after it carry no 3-hour Ap and cannot drive NRLMSISE-00. The engine refuses the run otherwise (in a batch, per case) and points at the update URL, `https://celestrak.org/SpaceData/SW-All.csv`. Wizard-managed (*Space weather* card) with the same daily startup freshness probe as `eop_file`. |
-| `density_scale`      | float           | `1.0` (drag only) | `> 0` | Constant density calibration factor: the drag force uses `k × rho(NRLMSISE-00)`. Empirical thermosphere models carry a bias of 20&ndash;40% at 400&ndash;500 km around solar maximum (chapter 11, *Drag validation and ballistic calibration*); this key applies the calibrated correction without misdeclaring the physical `Cd`. Mutually exclusive with `density_scale_file`; requires `drag = true`. Batch-targetable as `force_model.density_scale`. |
+| `density_scale`      | float           | `1.0` (drag only) | `> 0` | Constant density calibration factor: the drag force uses `k × rho(NRLMSISE-00)`. Empirical thermosphere models carry biases of tens of per cent that change with solar activity (Emmert 2015; +28 to +51 % measured at 470&ndash;500 km in 2024, chapter 15); this key applies the calibrated correction without misdeclaring the physical `Cd`. Mutually exclusive with `density_scale_file`; requires `drag = true`. Batch-targetable as `force_model.density_scale`. |
 | `density_scale_file` | string (path)   | &mdash; (drag only) | &ndash; | Path to a time-varying calibration table: plain text, one `mjd,k` pair per line (UTC MJD, strictly ascending; `k > 0`; `#` starts a comment). The factor is linearly interpolated between nodes and **held at the end values outside the node span** (the engine prints a warning when the run window extends past the nodes). A single-node file is equivalent to the constant key. Mutually exclusive with `density_scale`; requires `drag = true`. `spody calibrate` (chapter 12) fits and writes this file automatically from a reference trajectory. |
+
+### How the forces are computed
+
+The equation of motion is integrated in the central body's inertial
+frame (chapter 10) in Cowell form: the acceleration is the sum of the
+terms below, each switched on by its key. `r` is the satellite's
+position relative to the central body, `GM` the central body's
+gravitational parameter (the gravity file's when there is one,
+chapter 10).
+
+| term | formula and source | key |
+|---|---|---|
+| central body, point mass | `a = -GM r / |r|^3` | always |
+| central body, field | gradient of the spherical-harmonic potential in the body-fixed frame, fully normalized coefficients, evaluated with the V/W recursion of Montenbruck & Gill (2000, sects. 3.2.4&ndash;3.2.5), rotated to the inertial frame | `harmonics_degree` |
+| third bodies | point masses from DE440, in the form that subtracts the body's attraction on the central body: `a = -GM_k [ (r - r_k)/|r - r_k|^3 + r_k/|r_k|^3 ]` (Battin 1999) | `third_bodies` |
+| solar radiation pressure | cannonball: `a = -ν Cr (A/m) P(d) û`, with `û` the unit vector from the satellite to the Sun, `P(d) = L☉ / (4π c d²)` the radiation pressure at the satellite's distance `d` from the Sun and `ν` the lit fraction of the solar disc (Montenbruck & Gill 2000, sect. 3.4) | `srp` |
+| drag | `a = -½ ρ (Cd A/m) |v_rel| v_rel`, `v_rel` the velocity relative to the co-rotating atmosphere, `ρ` from NRLMSISE-00 times the calibration factor (Montenbruck & Gill 2000, sect. 3.5) | `drag` |
+| Earth albedo and infrared, solid tides, relativity | the sections below | their keys |
 
 ### Which bodies cast a shadow
 
@@ -381,8 +408,9 @@ The key is required (the form starts new scenarios on the ellipsoid,
 and loads a TOML without it as `"equatorial_sphere"`, what it ran):
 
 - `"ellipsoid"`: the oblate spheroid of the NAIF kernel
-  `pck00011`, equatorial x polar radius, about the body's spin axis
-  (IAU pole, taken at mid-run). Earth 6378.1366 x 6356.7519 km, Mars
+  `pck00011` (the IAU values of Archinal et al. 2018), equatorial x
+  polar radius, about the body's spin axis (IAU pole, taken at
+  mid-run). Earth 6378.1366 x 6356.7519 km, Mars
   3396.19 x 3376.20 km; Mercury and the giant planets too. The Moon,
   Venus and the Sun are spheres in the kernel and stay spheres.
   Altitudes are **geodetic**: the height above the spheroid along its
@@ -408,17 +436,20 @@ orbit and a few centimetres on GPS and GEO. Over the poles an IMPACT or
 an altitude crossing moves by up to 21 km of height: with the sphere,
 an object passing 6 km above the North Pole was declared impacted.
 Laser-station photometry of Envisat entering and leaving the shadow
-(Adhya, Sibthorpe, Ziebart & Cross, J. Spacecraft Rockets 41(1),
-2004) fits an ellipsoidal Earth to 2.6 s rms against 6.4 s for the
-equatorial sphere.
+(Adhya et al. 2004) fits an ellipsoidal Earth to 2.6 s rms against
+6.4 s for the equatorial sphere.
 
-**How it is computed.** The spheroid enters the shadow model with the
-angular radius of its edge, seen from the satellite, in the plane that
-contains the satellite, the body centre and the Sun; stretching the
-polar axis by R_eq / R_pol turns the spheroid into a sphere and keeps
-tangency, so that edge comes in closed form. Geodetic altitude uses
-Bowring's method, the one that already gives the atmosphere model its
-altitude. Both are evaluated only where the two spheres (polar and
+**How it is computed.** The shadow model is the conical one of
+Montenbruck & Gill (2000, sect. 3.4), applied to every occulter, with
+the lit fraction of the solar disc computed from the overlap of the
+two apparent discs. The spheroid enters it with the angular radius of
+its edge, seen from the satellite, in the plane that contains the
+satellite, the body centre and the Sun; stretching the polar axis by
+R_eq / R_pol turns the spheroid into a sphere and keeps tangency, so
+that edge comes in closed form (the construction of Adhya et al.
+2004, extended from the eclipse state to the lit fraction). Geodetic
+altitude uses Bowring's method (Bowring 1976), the one that already
+gives the atmosphere model its altitude. Both are evaluated only where the two spheres (polar and
 equatorial) disagree about the answer, so the cost is within the
 run-to-run noise (0 to 3 %).
 
@@ -431,43 +462,42 @@ nutation). With `"equatorial_sphere"` every event and trajectory file
 is identical to the previous release.
 
 The atmosphere, which bends and dims the grazing sunlight, makes the
-real shadow longer; it is not modelled (Vokrouhlick&yacute;, Farinella
-& Mignard 1993 give the full theory), and the Sun is taken at its
-geometric position.
+real shadow longer; it is not modelled (Vokrouhlick&yacute; et al.
+1993 give the full theory), and the Sun is taken at its geometric
+position.
 
 ### Choosing a harmonics degree
 
 The right degree depends on the central body, the altitude, and the
-duration you want to integrate. Two starter tables follow, both
-based on empirical scaling against external references; the cost
-of the harmonic evaluation itself scales as O(N&sup2;).
+duration you want to integrate. The degree-*n* terms of the field
+weaken with distance as `(R_ref / r)^n`, so a low orbit needs a high
+degree and a high orbit a low one; the cost of one evaluation grows
+as `(N+1)²`. The way to choose is to measure: run the scenario at the
+degree you have in mind and at a higher one, and keep the lower
+degree if the two trajectories differ by less than the accuracy you
+need. `spody maxhgdegree` (chapter 12) gives the degree beyond which
+the terms fall below double precision at a given position, an upper
+bound.
 
-**Moon (GRGM1200B):**
+**Moon (GRGM1200B), measured on LRO at about 50 km** (6 days,
+chapter 15):
 
-| N    | Use case                                                        |
-|------|-----------------------------------------------------------------|
-| 30 &ndash; 50 | quick sanity propagation, low-fidelity orbit averaging |
-| 80   | reasonable default for LRO-class missions; sub-km vs SPICE LRO POD over 6 days |
-| 150  | sweet spot for low-lunar orbits; recovers ~95% of N=200's residual reduction at half the cost |
-| 200  | high-fidelity floor; beyond ~200 the GRGM1200B coefficients become weakly observed and adding terms can slightly *increase* mean drift |
+| change of degree | largest change of the trajectory in 6 days | cost |
+|---|---|---|
+| 80 &rarr; 150 | 1.39 km | 3.1 s &rarr; 11.8 s |
+| 150 &rarr; 300 | 60 m | 11.8 s &rarr; 52.0 s |
 
-Higher N values are accepted (up to the model's nominal 1200) but
-do not visibly improve accuracy for the example scenarios shipped
-with SpOdy.
+At this altitude the field has converged, for a 6-day arc, at about
+degree 150; degree 80 leaves errors above a kilometre. Higher orbits
+need less (the factor `(R_ref / r)^n` falls faster), lower ones more.
 
-**Earth (EIGEN-6C4):**
-
-| N    | Use case                                                        |
-|------|-----------------------------------------------------------------|
-| 30 &ndash; 50 | quick sanity propagation, sub-percent of N=70 cost |
-| 70   | standard for GNSS-altitude propagation (GLONASS, GPS at &sim;20-25,000 km); matches IGS reprocessing conventions |
-| 120 &ndash; 200 | LEO-altitude work; the EIGEN-6C4 high-degree terms become observable below &sim;1000 km |
-| 2190 | full EIGEN-6C4 expansion; only relevant for surface gravity or very-low-LEO long-arc work |
-
-At GNSS altitudes the harmonics contribution is already tiny
-compared to the central two-body term, so degree 70 is comfortably
-above the noise floor of the rest of the force model (luni-solar
-third-body gravity, SRP) for most use cases.
+**Earth (EIGEN-6C4).** At GNSS altitude (20 000&ndash;26 000 km,
+`r / R_ref` &asymp; 4) the factor `(R_ref / r)^n` is 1e-12 by degree
+20, so the bundled GNSS examples use degree 70 with a wide margin:
+their error is dominated by the missing radiation pressure, not by
+the field (chapter 15). In low orbit the useful degree is in the low
+hundreds and is worth measuring as above; the full degree 2190 only
+matters near the surface.
 
 ### Letting the degree follow the orbit
 
@@ -541,7 +571,7 @@ no algebra, no separate acceleration breakdown.
 point-mass perturbers pulled from DE440. That is the classical
 restricted problem, except the perturbers move on their true
 ephemeris rather than the idealised circular orbits assumed by
-`dynamics_model = "cr3bp"` (chapter 6, `[simulation]`). It is the
+`dynamics_model = "cr3bp"` (section `[simulation]` above). It is the
 natural bridge between the two dynamics models: same restricted
 setup, real geometry.
 
@@ -550,9 +580,10 @@ is a fast way to check that an epoch, an initial state and a duration
 are sane before paying for a high-degree run.
 
 On the bundled GPS G11 example (7 days, IGS precise orbits as
-reference), degree 0 leaves a 115 km residual against a 581 m one at
-degree 70 with third bodies &mdash; which is simply the size of the
-Earth's oblateness effect over a week at that altitude.
+reference, Moon and Sun on), degree 0 ends 227 km away from the
+satellite (125 km RMS over the week), while at degree 70 the error
+never exceeds 1.6 km (chapter 15): the difference is the Earth's oblateness, mostly its
+J2 term, over a week at that altitude.
 
 Degree `1` is rejected rather than accepted-and-ignored: it would
 only shift the origin to the centre of mass, which the central-body
@@ -591,8 +622,8 @@ tide-free (the full tide cuts the cross-track residual in 9 arcs out
 of 10), so use `"tide_free"` with it. `"zero_tide"` is refused for
 the Moon: there is no permanent-tide convention for it.
 
-**The model** (IERS Conventions 2010, sec. 6.2.1, frequency-independent
-step). At every evaluation the positions of the tide-raising bodies,
+**The model** (IERS Conventions 2010, Petit & Luzum 2010, sec. 6.2.1,
+frequency-independent step, eq. 6.6 and 6.7). At every evaluation the positions of the tide-raising bodies,
 in the body-fixed frame, give corrections to the normalized
 coefficients
 
@@ -606,7 +637,7 @@ numbers depend on the central body and come with it:
 | | Earth | Moon |
 |---|---|---|
 | degrees | 2, 3, and 4 through the `k(+)` coupling of a flattened, rotating body | 2 |
-| Love numbers | IERS 2010 Table 6.3 (`k20 = 0.30190`, `k21`, `k22` with their anelastic parts, `k3m = 0.093..0.094`) | `k2 = 0.024116` (GRAIL, GRGM1200B label) |
+| Love numbers | IERS 2010 Table 6.3 (`k20 = 0.30190`, `k21`, `k22` with their anelastic parts, `k3m = 0.093..0.094`) | `k2 = 0.024116` (estimated with the GRAIL field, Goossens et al. 2020; GRGM1200B label) |
 | tide-raising bodies | Moon, Sun | Earth, Sun |
 
 The planets are left out on purpose: Venus at its closest raises
@@ -639,8 +670,8 @@ Earth rows. The cost is 2&ndash;4 % of run time.
 
 Newton's gravity is the first approximation of general relativity.
 `general_relativity = true` adds the leading correction for the
-central body, its Schwarzschild field (IERS Conventions 2010,
-sec. 10.3, eq. 10.12, first line):
+central body, its Schwarzschild field (IERS Conventions 2010, Petit &
+Luzum 2010, sec. 10.3, eq. 10.12, first line):
 
 ```
 a = GM/(c^2 r^3) * [ (2(beta+gamma) GM/r - gamma v.v) r + 2(1+gamma) (r.v) v ]
@@ -688,8 +719,8 @@ uses) and `zeta_sun` the Sun's angle from the local vertical. An
 element of area `dA` at distance `d` gives the satellite an
 irradiance `(M/pi) cos(theta) dA / d^2`, where `theta` is the angle
 between the element's normal and the direction to the satellite
-(NASA TM 104596). Albedo `a` and emissivity `e` follow the latitude
-and the season as in Knocke, Ries & Tapley (1988):
+(Flatley & Moore 1994). Albedo `a` and emissivity `e` follow the
+latitude and the season as in Knocke, Ries & Tapley (1988):
 
 ```
 a = 0.34 + 0.10 cos(w t) P1(sin phi) + 0.29 P2(sin phi)
@@ -768,8 +799,9 @@ controller picks smaller steps where the dynamics need them.
 
 ### Choosing the integrator
 
-`rkdp45` (Dormand-Prince 5(4)) is the reference: every validation in
-this manual was made with it. `dop853` (Dormand-Prince 8(5,3), order 8; Hairer, N&oslash;rsett,
+`rkdp45` (Dormand-Prince 5(4), Dormand & Prince 1980: a fifth-order
+solution with an embedded fourth-order error estimate) is the
+reference: every benchmark of chapter 15 was made with it. `dop853` (Dormand-Prince 8(5,3), order 8; Hairer, N&oslash;rsett,
 Wanner, *Solving Ordinary Differential Equations I*, 2nd ed., 1993,
 sect. II.10) takes much longer steps for the same accuracy: measured at
 equal error, 2.5&times; fewer force evaluations on a GPS orbit, 4.5 to
@@ -865,13 +897,13 @@ cadence. Required.
 
 | Key                    | Type          | Default | Range   | Description |
 |------------------------|---------------|---------|---------|-------------|
-| `mode`                 | string        | &mdash; | `fixed` or `step` | Output cadence. `fixed` writes records on a uniform grid: record *k* is at *k* &times; `interval_s`, computed as that product rather than by repeated addition, so the epochs stay on their nominal values for any interval; the state there is interpolated between the two integrator steps around it with a quintic Hermite on position, velocity and acceleration, so it carries the integrator's own accuracy; when `duration_s` is not a whole multiple of the interval the final state follows as one more record. `step` writes one record per accepted RKDP step. In both modes a run that ends on an impact (or a stop-class altitude crossing) closes on the trigger state at its own time, off the grid, and writes nothing later than it: time is strictly increasing in every file. |
+| `mode`                 | string        | &mdash; | `fixed` or `step` | Output cadence. `fixed` writes records on a uniform grid: record *k* is at *k* &times; `interval_s`, computed as that product rather than by repeated addition, so the epochs stay on their nominal values for any interval; the state there is interpolated between the two integrator steps around it with a quintic Hermite on position, velocity and acceleration, so it carries the integrator's own accuracy; when `duration_s` is not a whole multiple of the interval the final state follows as one more record. `step` writes one record per accepted integrator step. In both modes a run that ends on an impact (or a stop-class altitude crossing) closes on the trigger state at its own time, off the grid, and writes nothing later than it: time is strictly increasing in every file. |
 | `interval_s`           | float         | &mdash; | `> 0`   | Sampling interval in seconds when `mode = "fixed"`. Ignored otherwise. |
 | `csv_file`             | string (path) | none    | &ndash; | CSV trajectory output. Empty/absent = no CSV produced. |
 | `bin_file`             | string (path) | none    | &ndash; | Binary (`SPDYOUT_`) trajectory output. Recommended for analysis: the GUI's reader path uses this format. |
 | `log_file`             | string (path) | none    | &ndash; | **Deprecated and ignored.** Every run now writes its log, the copy of everything printed on the terminal (the app's own lines and every diagnosis of the engine library: a damaged ephemeris, a malformed harmonics row, a missing data file), as `<ts>_<simulation.name>.log` in the run folder; with `--out`, or without `output_dir`, as `<simulation.name>_<ts>.log` there or beside the TOML. A scenario that sets the key runs normally and prints a `spody: warning:` line; remove the key. The form no longer writes it. |
 | `accelerations_file`   | string (path) | none    | &ndash; | Per-force acceleration breakdown (`SPDYACC_` format). Empty = no breakdown produced. |
-| `events_log`           | string (path) | none    | &ndash; | Event records (`SPDYEVT_` format) for impacts and (if `[events]` is enabled) eclipses. |
+| `events_log`           | string (path) | none    | &ndash; | Event records (`SPDYEVT_` format, `SPDYEVTB` in a batch): impacts, the life markers of every object, and the eclipses and altitude crossings requested in `[events]`. |
 
 A file name that is a Windows device &mdash; `CON`, `PRN`, `AUX`,
 `NUL`, `CONIN$`, `CONOUT$`, `COM0`&ndash;`COM9`, `LPT0`&ndash;`LPT9`,
@@ -882,8 +914,9 @@ nothing. Names that only start like one (`console.bin`, `com10.bin`)
 are ordinary files. The names the form derives never collide.
 
 Output paths in the form are not edited directly; the
-`[output]` block exposes five **on/off checkboxes** (csv, bin,
-accelerations, events, log) plus a single `output_dir` picker.
+`[output]` block exposes four **on/off checkboxes** (csv, bin,
+accelerations, events) plus a single `output_dir` picker; the log is
+always written.
 spody auto-derives every enabled stream's filename as
 `<output_dir>/<sim_name>_<subject>_<frame>.<ext>` (e.g. the
 state-vector binary is `<sim_name>_state_icrf.bin`, the
@@ -896,11 +929,11 @@ On every invocation the engine creates a **per-run folder** named
 `2026-06-09T120000Z`; a run started in the same second as another
 one in the same `output_dir` gets `2026-06-09T120000Z-1`, then `-2`,
 ..., so it never writes into the other run's folder) and rewrites
-every enabled output path so it
-lives inside that folder. The TOML used to start the run is also
-copied into the run folder as `input.toml`, so a run is fully
-self-contained: zip the folder and you have the inputs + outputs
-together. The Analysis tab (chapter 8) groups files by these
+every enabled output path so it lives inside that folder, with the
+folder's timestamp as prefix (`<ts>_<sim_name>_state_icrf.bin`). The
+TOML used to start the run is also copied into the run folder as
+`<ts>_input.toml`, so a run is fully self-contained: zip the folder
+and you have the inputs + outputs together. The Analysis tab (chapter 8) groups files by these
 folders.
 
 ## `[events]` (optional)
@@ -919,9 +952,11 @@ between the Sun and the occulting body, as seen from the satellite,
 rather than on the fraction, which is flat on one side of them; any
 other value is located on the fraction inside the penumbra. On the
 same trajectories the times agree with Orekit (to a microsecond), GMAT
-and Tudat (to the millisecond those checks resolve). The Earth is a sphere of its equatorial radius, with no
-atmosphere: a real shadow on a low orbit starts and ends up to about
-18 s off these times (see *Which bodies cast a shadow*).
+and Tudat (to the millisecond those checks resolve). The occulting
+body has the shape set by `force_model.body_shape` (see *Body
+shapes*: with `"equatorial_sphere"` the contacts on a low orbit move
+by up to 18 s from the ellipsoid's) and no atmosphere, so a real
+shadow is slightly longer than the computed one.
 
 Rejected under `dynamics_model = "cr3bp"` (no Sun in the model).
 
@@ -961,8 +996,9 @@ action      = "log_and_stop"
 ### Always-on IMPACT detection
 
 Any trajectory that crosses a central-body or third-body surface
-(mean radius) produces an IMPACT record regardless of the `[events]`
-section. The section only controls the opt-in eclipse and altitude
+(the spheroid or the equatorial sphere, as `force_model.body_shape`
+says; the two primaries' spheres in CR3BP) produces an IMPACT record
+and ends the run, regardless of the `[events]` section. The section only controls the opt-in eclipse and altitude
 detection above.
 
 ### Life markers (`INITIAL_STATE` / `FINAL_STATE`)

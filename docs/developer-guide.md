@@ -26,7 +26,7 @@ commits).
 | Avoid the classic traps | §7 (invariants) + §8 (tooling pitfalls) |
 
 Domain shorthand used everywhere in the code and in this guide
-(full definitions in user-manual ch. 15, the glossary):
+(full definitions in user-manual ch. 16, the glossary):
 
 - **ET** — ephemeris time: TDB seconds past J2000. The one canonical
   time scale inside the engine, the TOML (`et_start_s`) and every
@@ -242,7 +242,13 @@ yet: they arrive with the GUI's Uncertainty tab.)
   `cr3bp.py`, `time.py` (the zero-ULP twin of `spody_time.c`).
   `rotations.py` also holds `ric_to_icrf` / `icrf_to_ric`, the
   zero-ULP twins of `spody_getrotmatrix_ric2icrf` / `_icrf2ric`
-  (`spody_math.c`).
+  (`spody_math.c`). `interp.py` holds `interp_lagrange`, the zero-ULP
+  twin of `spody_interp_lagrange` (`spody_interp.c`), vectorised over
+  queries with one node window per query; the diff dispatcher
+  (`analysis/plots_diff.py::align_or_interp`) reads position-only
+  references (SP3, zero velocities) with it. Checked 2026-11-08 against
+  the C function compiled in a harness: 144 000 values, n = 1..12 nodes,
+  on-node and extrapolated abscissae, 0 bit differences.
   **When you change a core function, check for a spopy sibling and
   keep it in lockstep** — several are verified bit-identical against
   the C side.
@@ -535,8 +541,11 @@ reader of any one document is never lied to:
 3. **User manual** (`docs/user-manual/source/`) — the chapter(s)
    covering the touched surface: ch. 5 form / ch. 6 TOML schema /
    ch. 7 batch / ch. 8 analysis tab / ch. 9 plot catalog / ch. 12
-   CLI / ch. 14 uncertainty (Monte Carlo), plus ch. 15 glossary for
-   new terms. The HTML/PDF are build
+   CLI / ch. 14 uncertainty (Monte Carlo) / ch. 15 validation and
+   benchmarks (whole-software benchmarks; a check of one feature
+   stays in that feature's chapter and gets a row in the ch. 15
+   index), plus ch. 16 glossary for new terms and ch. 17 references
+   for every work cited (*Author year* in the text). The HTML/PDF are build
    artifacts — only the `source/*.md` files are versioned.
 4. **This guide** — if you added an extension point, changed a
    convention, moved a module, changed the build, or discovered a

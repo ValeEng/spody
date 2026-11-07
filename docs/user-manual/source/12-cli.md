@@ -21,16 +21,17 @@ The conventions throughout the chapter:
 spody.exe <command> [arguments]
 ```
 
-The seven commands are:
+The eight commands are:
 
 | Command           | Purpose                                      |
 |-------------------|----------------------------------------------|
 | `validate`        | parse + sanity-check an input TOML, no run   |
 | `propagate`       | run a single-case simulation                 |
 | `batch`           | run a multi-case sweep                       |
-| `convert`         | data-file conversions (ephemeris, harmonics, SP3, GLONASS, GPS, OEM) |
+| `convert`         | data-file conversions (ephemeris, harmonics, SP3, GLONASS, GPS, OEM) and GP elements to a state |
 | `calibrate`       | fit the drag density-scale `k(t)` nodes against a reference |
 | `uncertainty montecarlo` | propagate the uncertainty of a scenario by Monte Carlo (chapter 14) |
+| `maxhgdegree`     | the highest useful harmonics degree at a position |
 | `info`            | print version + build info                   |
 
 Pass `--help` or no command to print a short usage summary.
@@ -144,11 +145,18 @@ The three counters measure the work rather than the machine, which is
 what makes them comparable between runs on different hardware, and
 between a build with and without optimisations. `RHS evaluations`
 counts every evaluation of the dynamics, including those spent on
-trial steps that were later rejected: that work was really done. The
-count is six per attempted step plus one, not seven: the last stage
-of the Dormand&ndash;Prince pair sits exactly where the next step
-starts, so the integrator carries it over instead of computing it
-again.
+trial steps that were later rejected: that work was really done.
+Both integrators reuse the derivative at the end of an accepted step
+as the first stage of the next one (*first same as last*), so the
+first stage costs nothing after the start:
+
+| `type` | evaluations |
+|---|---|
+| `rkdp45` | 6 per attempted step, plus 1 at the start (the 7th stage of the pair is the next step's first) |
+| `dop853` | 11 per attempted step, plus 1 per accepted step (the derivative at its end), plus 1 at the start |
+
+Discontinuity stops and redone steps (chapter 6) are attempts like
+any other and are counted.
 `rejected` climbing into the same order of magnitude as `accepted` is
 the signature of a step-size controller fighting the problem &mdash;
 usually too tight a `rel_tol`, an `h_max_s` that lets the step grow
@@ -189,8 +197,12 @@ CPU count.
 **Exit codes.**
 
 - `0` &mdash; every case completed successfully.
-- `1` &mdash; one or more cases failed; the engine prints a
-  summary line `batch stopped at case N/M after T s` and exits.
+- `1` &mdash; one or more cases were skipped by the pre-check or
+  failed; the other cases still run, and the engine closes with the
+  summary `batch finished: K/M OK, F failed ...` followed by the list
+  of failed cases (chapter 7, *Checks before the batch runs*). A
+  base TOML that cannot be loaded at all also exits with 1, before
+  any case.
 
 ## `spody convert`
 
@@ -324,7 +336,8 @@ spody.exe convert sp3 <input.sp3> [input.sp3 ...] <output.bin> <sat_id> --eop <f
 ```
 
 Converts one satellite's track from one or more IGS SP3 precise-
-orbit files into a SpOdy `SPDYOUT_` reference binary in the
+orbit files (format SP3-a to SP3-d, Hilla 2010) into a SpOdy
+`SPDYOUT_` reference binary in the
 central-body inertial frame. SP3 records carry ITRS position only
 (no velocity); the converter applies `R_ITRS→ICRF(t)` per record
 using the EOP + IAU 2006 tables, writes position with zero
@@ -452,7 +465,7 @@ Earth-centred ICRF frame. Unlike GLONASS broadcast (which carries
 Omega0, omega, M0` + `Delta_n, OmegaDot, iDot` + harmonic
 corrections `Cuc/Cus/Crc/Crs/Cic/Cis`). The converter propagates
 each record to its own TOC per IS-GPS-200 sect. 20.3.3.4.3
-(positions) + Remondi 2004 (analytic velocity derivatives), giving
+(positions) + Remondi (2004) (analytic velocity derivatives), giving
 `(r, v)` at broadcast-OD precision (`~few m / few cm/s`).
 
 This is the recommended **initial-state bootstrap** for any
@@ -534,7 +547,8 @@ dropped (**first file wins**) and counted in the summary line. To
 calibrate against the freshest prediction of each day, convert the
 files one at a time instead.
 
-**Example.** The ISS reference used in chapter 11's bench:
+**Example.** The ISS reference of the bundled calibration example
+(chapter 15):
 
 ```powershell
 spody.exe convert oem .\ISS_OEM_2024-07-03.txt .\iss_ref.bin
@@ -605,13 +619,24 @@ spody.exe convert gp --epoch-mjd 53841.745032470 --n 15.72125391 `
 # fit is worth -- kilometres -- and not what the digits
 # suggest. They are here so the value survives being
 # pasted, which is a different thing from being accurate.
-et_start_s   = 198482035.99104285
+et_start_s   = 198482035.99102461
 
 [initial_state]
-frame        = "icrf"
-position_km  = [4085.6826275667108, -999.13905635608523, 5241.1698975079889]
-velocity_kms = [2.5226906524348545, 7.2563208512806634, -0.58563608337435047]
+frame        = "central_inertial"
+position_km  = [4085.6826275667104, -999.13905635608489, 5241.1698975079889]
+velocity_kms = [2.5226906524348545, 7.2563208512806634, -0.58563608337435069]
 ```
+
+The block pastes into a scenario whose `force_model.central_body` is
+`"Earth"`: `central_inertial` is the ICRF axes at the Earth's centre
+(chapter 10). Releases up to 0.4.1 printed `frame = "icrf"`, a value
+the scenario parser refuses; change it by hand in blocks saved from
+those releases.
+
+**Sources.** SGP4 as in Spacetrack Report No. 3 (Hoots & Roehrich
+1980) with the corrections collected by Vallado et al. (2006), checked
+against their published reference vectors; TEME to ICRF through the
+same IAU 2006 + EOP chain as the other converters (chapter 10).
 
 **Exit codes.**
 
@@ -691,7 +716,7 @@ Analysis tab can open), and `<ts>_k_nodes.csv`. The report goes to
 stdout, one line per window:
 
 ```
-  [ 1/ 3] t=    0.00..   24.00 h  n=  360  k=0.7931 +/- 0.0006  in-track rms 2685.1 -> 36.7 m
+  [ 1/15] t=    0.00..   24.00 h  n=  360  k=0.7932 +/- 0.0006  in-track rms 2685.4 -> 37.1 m
 ```
 
 `n` is the number of fitted reference samples, `+/-` the 1-sigma
@@ -715,8 +740,9 @@ past the first/last node on each side &mdash; the engine holds the
 end values there and prints the chapter-6 clamp warning. That is
 by design and harmless.
 
-**Cost.** Two short propagations per window &mdash; a 3-day ISS
-reference with 24 h windows (6 day-arcs) fits in ~35 s.
+**Cost.** Two short propagations per window &mdash; the bundled
+15-day ISS reference with 24 h windows (15 windows, 30 one-day
+propagations) fits in about 13 s on a desktop computer (chapter 15).
 
 **Exit codes.**
 
@@ -764,6 +790,48 @@ Exit codes:
 - `1` &mdash; the uncertainty file or the scenario is refused, a drawn
   sample is outside its parameter's physical domain, a case fails
   the pre-check or fails numerically, or an output cannot be written.
+
+## `spody maxhgdegree`
+
+```
+spody.exe maxhgdegree <harmonics_file> <x_km> <y_km> <z_km>
+```
+
+Gives the degree beyond which raising `harmonics_degree` cannot
+change the gravity acceleration at one position. The command loads
+the whole gravity file, evaluates the field's acceleration at the
+position truncated at every degree from 2 to the file's own maximum,
+and reports the smallest degree `n` at which the magnitude of the
+acceleration agrees with the full-file value to double precision
+(relative difference below 2.2e-16).
+
+Arguments:
+
+- `<harmonics_file>` &mdash; a `.tab` gravity file (GRGM1200B, the
+  converted EIGEN-6C4, ...).
+- `<x_km> <y_km> <z_km>` &mdash; the position, read as **body-fixed**
+  coordinates of the central body. The answer depends mostly on the
+  distance `|r|`; the direction moves it by a degree or two.
+
+Output, one `key: value` per line on stdout:
+
+```
+numerical_max: <n>
+model_max:     <degree of the file>
+r_km:          <|r| of the position>
+R_body_km:     <reference radius of the file>
+```
+
+`numerical_max` is the degree found, `model_max` the file's own
+degree. It is an **upper bound** on the useful degree: the terms
+above it are below rounding, but terms well below it can already be
+too small to matter for a given arc. Chapter 6, *Choosing a harmonics
+degree*, shows how to measure what an orbit really needs; the
+adaptive degree (`harmonics_adaptive`) applies the same idea step by
+step. Loading a degree-1200 file takes one or two seconds.
+
+**Exit codes.** `0` on success; `1` when the file cannot be read or
+its header gives no degree, or the position is zero.
 
 ## `spody info`
 
@@ -832,22 +900,49 @@ format:
 
 ### `SPDYACC_` &mdash; per-force accelerations
 
-- Payload: record size in bytes (varies with the number of active
-  forces).
-- Record: a header double `t`, followed by per-force triples
-  `ax, ay, az` for each active force in the order documented in
-  the engine's source. The total `a_total` triple and the
-  `eclipse_fraction` scalar are included.
+- Version: 4 (files of versions 1&ndash;3, written before the solid
+  tide, relativity and Earth radiation existed, are shorter and still
+  read, with those columns at zero).
+- Payload: record size in bytes (432 for version 4).
+- Record (little-endian, every force always present, zero when off;
+  vectors are ICRF, km/s&sup2;):
+
+| Field | Type | Content |
+|---|---|---|
+| `t` | double | time [s], same label as the trajectory |
+| `acc_total` | 3 doubles | sum of all forces |
+| `acc_2body` | 3 doubles | central body, point mass |
+| `acc_sphericalharmonics` | 3 doubles | central body, field |
+| `acc_thirdbody_total` | 3 doubles | sum of the third bodies |
+| `n_third` | int32 + 4 bytes padding | number of third bodies |
+| `acc_thirdbody` | 8 &times; 3 doubles | one per third body, in the order of `force_model.third_bodies`; unused slots zero |
+| `acc_srp` | 3 doubles | solar radiation pressure |
+| `acc_drag` | 3 doubles | drag |
+| `eclipse_fraction` | double | lit fraction of the Sun used by SRP (1 when SRP is off) |
+| `acc_solidtides` | 3 doubles | solid tide (version 2 on) |
+| `acc_relativity` | 3 doubles | general relativity (version 3 on) |
+| `acc_earthradiation` | 3 doubles | Earth albedo + infrared (version 4) |
 
 ### `SPDYEVT_` &mdash; events
 
 - Payload: record size in bytes (80).
-- Record: an `EVENT_KIND` uint32, a flags uint32, the event time
-  as a double, and a 64-byte body whose layout depends on the
-  kind (IMPACT, ECLIPSE_ENTER, ECLIPSE_EXIT).
+- Record (little-endian):
+
+| Field | Type | Content |
+|---|---|---|
+| `t` | double | time of the event [s] |
+| `kind` | int32 | 0 IMPACT, 1 ECLIPSE, 2 ALT_CROSSING, 3 INITIAL_STATE, 4 FINAL_STATE |
+| `naif_id` | int32 | the body involved (the occulter for an eclipse) |
+| `radius_km` | double | the body's (equatorial) radius used by the event; for ECLIPSE, the occulter's |
+| `distance_km` | double | IMPACT / ALT_CROSSING / markers: distance from the body measured against its shape, so `distance_km - radius_km` is the altitude; ECLIPSE: the lit fraction |
+| `y` | 6 doubles | state at the event, ICRF, km and km/s |
+
+`SPDYEVTB` records are the same 80 bytes preceded by an int32
+`case_idx` and 4 bytes of padding (88 bytes).
 
 A NumPy-based Python reader for these formats is the standard
 companion to the GUI and lives in the `spody_io` package
 distributed alongside the GUI bundle. Importing it from a script
-gives you `read_trajectory`, `read_accelerations`, and
-`read_events` functions that return structured `ndarray`s.
+gives you `read_trajectory`, `read_accelerations`, `read_events`,
+`read_uq_moments` and `read_uq_clouds`, which return structured
+`ndarray`s (`read_header` reads the 24-byte header alone).
