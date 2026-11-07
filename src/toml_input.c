@@ -90,6 +90,20 @@ static int file_exists(const char *path) {
     return 0;
 }
 
+/* Step past a UTF-8 byte-order mark (EF BB BF) at the start of `fp`,
+ * or leave the stream at offset 0 when there is none. tomlc99 rejects
+ * a BOM as a stray character, but Windows tools write one (PowerShell
+ * 5.1's Out-File and Set-Content -Encoding utf8, Notepad before
+ * Windows 10 1903). The Unicode Standard, sect. 2.6 "Encoding Schemes",
+ * says a BOM is neither required nor recommended for UTF-8 but may be
+ * met, and then only marks the encoding. */
+static void skip_utf8_bom(FILE *fp) {
+    unsigned char b[3];
+    if (fread(b, 1, 3, fp) == 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF)
+        return;
+    rewind(fp);
+}
+
 /* --------------------------------------------------------------------------
  * Body-name lookup
  * -------------------------------------------------------------------------- */
@@ -1897,6 +1911,7 @@ int spody_load_input(const char *toml_path, InputConfig *cfg, SpodyError *err) {
                 "cannot open TOML file '%s'", toml_path);
         return SPODY_ERR_IO;
     }
+    skip_utf8_bom(fp);
     char tomlerr[256] = {0};
     toml_table_t *root = toml_parse_file(fp, tomlerr, sizeof tomlerr);
     fclose(fp);
@@ -3201,6 +3216,7 @@ int spody_load_uq_input(const char *path, SpodyUqConfig *uq, SpodyError *err) {
         spody_error_set(err, SPODY_ERR_IO, "cannot open '%s'", path);
         return SPODY_ERR_IO;
     }
+    skip_utf8_bom(fp);
     char tomlerr[256] = {0};
     toml_table_t *root = toml_parse_file(fp, tomlerr, sizeof tomlerr);
     fclose(fp);

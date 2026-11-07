@@ -1563,7 +1563,10 @@ static int cmd_convert(int argc, char **argv) {
         printf("# pasted, which is a different thing from being accurate.\n");
         printf("et_start_s   = %.17g\n\n", et);
         printf("[initial_state]\n");
-        printf("frame        = \"icrf\"\n");
+        /* central_inertial = ICRF axes at the central body, which must
+         * be Earth for an SGP4 state; "icrf" is not a frame value the
+         * TOML parser accepts. */
+        printf("frame        = \"central_inertial\"\n");
         printf("position_km  = [%.17g, %.17g, %.17g]\n", r[0], r[1], r[2]);
         printf("velocity_kms = [%.17g, %.17g, %.17g]\n", v[0], v[1], v[2]);
         return 0;

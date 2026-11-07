@@ -29,6 +29,8 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.axes import Axes
 
+from spopy import interp_lagrange
+
 from .spec import PlotSpec
 
 
@@ -93,7 +95,15 @@ def align_or_interp(a: np.ndarray, b: np.ndarray
     duration_s) but the middle samples can drift apart by *seconds*,
     turning what should be a m-level diff into a km-level garbage
     plot. The current check requires every t-pair to match within
-    1 ms, which costs one O(N) numpy pass but stays honest."""
+    1 ms, which costs one O(N) numpy pass but stays honest.
+
+    A reference with no velocities (every vx, vy, vz exactly 0, as
+    `spody convert sp3` writes it: SP3 carries positions only) takes
+    neither path above: Hermite would use v = 0 as the slope, and the
+    velocity diff would be A's velocity itself. It goes through
+    `_lagrange_position_only` instead, on the same grid as well."""
+    if not (np.any(b["vx"]) or np.any(b["vy"]) or np.any(b["vz"])):
+        return _lagrange_position_only(a, b)
     same_len = len(a) == len(b)
     same_grid = (
         same_len
@@ -138,6 +148,51 @@ def align_or_interp(a: np.ndarray, b: np.ndarray
     note = (f"B interpolated onto A's grid "
             f"({len(b)} -> {len(a_clip)} samples, "
             f"cubic Hermite on r, linear on v)")
+    return a_clip, b_aligned, True, note
+
+
+# Nodes per Lagrange window, inside the 8-12 centred nodes the
+# spody_interp_lagrange header gives for 5-15 min precise-orbit
+# positions. Lagrange interpolation of GPS precise orbits is reviewed
+# by Schenewerk (2003), GPS Solutions 6(4), 265-267.
+_LAGRANGE_NODES = 10
+
+
+def _lagrange_position_only(a: np.ndarray, b: np.ndarray
+                            ) -> tuple[np.ndarray, np.ndarray, bool, str]:
+    """`align_or_interp` for a position-only B: a centred
+    `_LAGRANGE_NODES`-node Lagrange polynomial through B's positions
+    at each of A's epochs inside B's span, its derivative as B's
+    velocity. On B's own epochs the position is the node itself, bit
+    for bit. Repeated B epochs (consecutive SP3 day files share the
+    midnight epoch) are kept once."""
+    t_b, iu = np.unique(b["t"], return_index=True)
+    if len(t_b) < 2:
+        raise ValueError("diff: the reference has fewer than 2 distinct epochs.")
+    mask = (a["t"] >= t_b[0]) & (a["t"] <= t_b[-1])
+    a_clip = a[mask]
+    if len(a_clip) < 2:
+        raise ValueError(
+            f"diff requires overlapping time windows "
+            f"(A: [{a['t'][0]:.1f}, {a['t'][-1]:.1f}] s, "
+            f"B: [{t_b[0]:.1f}, {t_b[-1]:.1f}] s -- no overlap).")
+    r_b = np.column_stack((b["x"][iu], b["y"][iu], b["z"][iu]))
+    n = min(_LAGRANGE_NODES, len(t_b))
+    t_q = a_clip["t"]
+    lo = np.clip(np.searchsorted(t_b, t_q) - n // 2, 0, len(t_b) - n)
+    win = lo[:, None] + np.arange(n)[None, :]
+    r_i, v_i = interp_lagrange(t_b[win], r_b[win], t_q)
+
+    b_aligned = np.empty(len(a_clip), dtype=a.dtype)
+    b_aligned["t"]  = t_q
+    b_aligned["x"]  = r_i[:, 0]
+    b_aligned["y"]  = r_i[:, 1]
+    b_aligned["z"]  = r_i[:, 2]
+    b_aligned["vx"] = v_i[:, 0]
+    b_aligned["vy"] = v_i[:, 1]
+    b_aligned["vz"] = v_i[:, 2]
+    note = (f"B has positions only: {n}-node Lagrange onto A's grid "
+            f"({len(t_b)} -> {len(a_clip)} samples, v = derivative)")
     return a_clip, b_aligned, True, note
 
 

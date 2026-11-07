@@ -27,7 +27,8 @@ Workflow:
            the source run.
          - Writes the filtered cases.csv there.
          - Writes a new input.toml there, identical to the snapshot but
-           with every file path (ephemeris, harmonics, cases_file,
+           with every file path (ephemeris, harmonics, EOP, IAU 2006
+           tables, space weather, density scale, cases_file,
            output_dir) rewritten to an absolute path. Absolute paths
            sidestep the trap that the snapshot's relatives were written
            against the ORIGINAL TOML's dir, not the snapshot's.
@@ -66,7 +67,9 @@ from PySide6.QtWidgets import (
 from spody_io import (
     EVENT_KIND_ALT_CROSSING,
     EVENT_KIND_ECLIPSE,
+    EVENT_KIND_FINAL_STATE,
     EVENT_KIND_IMPACT,
+    EVENT_KIND_INITIAL_STATE,
     read_events,
 )
 
@@ -185,11 +188,17 @@ def _annotate_with_events(rows: list[_CaseRow], events_path: Path) -> None:
         i = int(r["case_idx"])
         if not (0 <= i < n):
             continue
+        kind = int(r["kind"])
+        # The life markers are written for every case whatever happened
+        # to it, so they say nothing about the case: counting them would
+        # give every case two events and make FINAL_STATE the "last
+        # event" of every survivor.
+        if kind in (EVENT_KIND_INITIAL_STATE, EVENT_KIND_FINAL_STATE):
+            continue
         row = rows[i]
         row.n_events += 1
         # Keep the LAST event (in sim time) and prefer IMPACT over
         # ECLIPSE at equal time, since IMPACT terminates the run.
-        kind = int(r["kind"])
         t    = float(r["t"])
         if row.last_t is None or t > row.last_t or (
             t == row.last_t and kind == EVENT_KIND_IMPACT):
@@ -202,9 +211,13 @@ def _annotate_with_events(rows: list[_CaseRow], events_path: Path) -> None:
 # in analysis/table_model.py::_EVENT_KIND_LABEL) or the view shows a
 # raw `kind=N` int -- see developer-guide.md recipe 5.5 step 5.
 _KIND_LABEL = {
-    EVENT_KIND_IMPACT:       "IMPACT",
-    EVENT_KIND_ECLIPSE:      "ECLIPSE",
-    EVENT_KIND_ALT_CROSSING: "ALT_CROSSING",
+    EVENT_KIND_IMPACT:        "IMPACT",
+    EVENT_KIND_ECLIPSE:       "ECLIPSE",
+    EVENT_KIND_ALT_CROSSING:  "ALT_CROSSING",
+    # Skipped by _annotate_with_events, listed so the table stays
+    # complete against spody_event_kind.
+    EVENT_KIND_INITIAL_STATE: "INITIAL_STATE",
+    EVENT_KIND_FINAL_STATE:   "FINAL_STATE",
 }
 
 
@@ -234,6 +247,10 @@ def _absolutise_paths(cfg: dict[str, Any], snapshot_dir: Path) -> None:
     targets: list[tuple[str, str]] = [
         ("ephemeris",   "file"),
         ("force_model", "harmonics_file"),
+        ("force_model", "eop_file"),
+        ("force_model", "iau2006_dir"),
+        ("force_model", "space_weather_file"),
+        ("force_model", "density_scale_file"),
         ("batch",       "output_dir"),
         ("output",      "output_dir"),
     ]

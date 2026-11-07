@@ -42,6 +42,10 @@ Today the package covers:
 - `geodesy.bf_to_geodetic`: body-fixed cartesian -> geodetic latitude /
   longitude / altitude on a spheroid, twin of `spody_bf_to_geodetic`
   in `src/spody_math.c` (same Bowring passes).
+- `interp.interp_lagrange`: Lagrange polynomial and its derivative
+  over per-query node windows, twin of `spody_interp_lagrange` in
+  `src/spody_interp.c`; the GUI diff reads position-only references
+  (SP3) with it.
 
 Together these let the GUI compute, for any ET instant, the ICRF
 positions of Sun/Earth/Moon and the ICRF<->body-fixed rotation
@@ -69,6 +73,7 @@ from .kepler import (
 )
 from .cr3bp import inertial_to_synodic, synodic_to_inertial
 from .geodesy import bf_to_geodetic
+from .interp import interp_lagrange
 from .time import (
     utc_to_et, et_to_utc, parse_utc_iso, format_utc_iso,
 )
@@ -85,5 +90,6 @@ __all__ = [
     "keplerian_to_cartesian", "cartesian_to_keplerian",
     "inertial_to_synodic", "synodic_to_inertial",
     "bf_to_geodetic",
+    "interp_lagrange",
     "utc_to_et", "et_to_utc", "parse_utc_iso", "format_utc_iso",
 ]
