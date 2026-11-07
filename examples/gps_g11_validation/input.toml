@@ -49,8 +49,9 @@
 
 [simulation]
 name       = "gps_g11_2024_01_21_7d"
-et_start_s = 7.590672511844698e+08   # 2024-01-21 00:00:00 GPS = 00:00:51.184 TT
-                                     # + 0.479 ms deltet (TT -> TDB)
+et_start_s = 759067251.18447864      # 2024-01-21 00:00:00 GPS = 00:00:51.184 TT
+                                     # + 0.479 ms deltet (TT -> TDB); the time
+                                     # anchor t0 `spody convert gps` logs
 duration_s = 6.039e+05               # 167.75 h (matches the 672-record SP3 reference)
 
 [spacecraft]
@@ -68,11 +69,15 @@ mass_kg = 1633.0                     # GPS Block IIF dry mass (Boeing factsheet)
 # gps_g11_2024_01_21_7d_brdc.bin record 0 (the IS-GPS-200 Kepler
 # propagation of the first broadcast nav message at its own TOC).
 # This is the broadcast-precision state the GPS satellite was
-# transmitting at 2024-01-21 00:00 GPST, so the day-1 residual
-# against the SP3 truth has no initial-condition artefact.
+# transmitting at 2024-01-21 00:00 GPST. It is a broadcast state, so
+# it carries the broadcast error (2.3 m in position against the IGS
+# final orbit at the same epoch); see manual chapter 15 for what that does
+# over 7 days. Regenerated 2026-11-08 with the current converter (the
+# earlier values predated the Earth angular-velocity fix and were off
+# by 11.8 m / 2.8 mm/s).
 frame        = "central_inertial"
-position_km  = [26369.319541540, 1270.708005072, -3120.358313261]
-velocity_kms = [    0.269061980,    2.230834330,    3.151614451]
+position_km  = [26369.318063577186, 1270.7106380572686, -3120.3697308788373]
+velocity_kms = [0.26906324065720216, 2.2308318516971157, 3.151614321011234]
 
 [force_model]
 central_body     = "Earth"

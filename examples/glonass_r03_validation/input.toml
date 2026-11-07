@@ -41,20 +41,24 @@
 
 [simulation]
 name       = "glonass_r03_2024_01_21_7d"
-et_start_s = 7.59068169184001e+08    # TOC of first R03 broadcast (UTC + 69.184s)
+et_start_s = 759068169.184479        # TOC of first R03 broadcast (UTC + 69.184 s
+                                     # + 0.479 ms deltet); the time anchor t0
+                                     # `spody convert glonass` logs
 duration_s = 6.03000e+05             # 167.5 h (matches the 336-record reference, 7 daily files)
 
 [spacecraft]
 mass_kg = 1415.0                     # GLONASS-M nominal dry mass (Roscosmos factsheet)
 # SRP intentionally left out: at GLONASS altitude with srp=false the
-# residual against the broadcast is ~177 m RMS at 24h, dominated by
+# residual against the broadcast is 131 m RMS over day 1 (804 m over
+# the 7 days; measured 2026-11-08, manual chapter 15), dominated by
 # antenna thrust + un-modelled empirical accelerations + box-wing SRP
 # direction effects. Over 7 days the residual is expected to grow
 # roughly secularly (dominant term is along-track due to mis-modelled
 # in-track perturbation) -- see the analysis-panel diff for the actual
 # RMS-vs-time curve. A cannonball SRP with guessed (area, Cr) made
-# things worse (~200-280 m RMS at 24h) because the in-track sign
-# happens to coincide with the residual. Closing the residual to < 10 m
+# things worse in an earlier test (2026-06, before the initial state
+# was regenerated) because the in-track sign happens to coincide with
+# the residual. Closing the residual to < 10 m
 # requires either a proper IGS BOX-WING SRP (Rodriguez-Solano 2014
 # optical parameters, paywall) or ECOM5-style empirical accelerations.
 
@@ -64,9 +68,12 @@ mass_kg = 1415.0                     # GLONASS-M nominal dry mass (Roscosmos fac
 # omega_earth x r correction already applied by spody convert glonass).
 # The first-record state is identical to the 24h baseline since day 1
 # of the 7-day reference IS the original single-day broadcast file.
+# Regenerated 2026-11-08 with the current converter (the earlier
+# values predated the Earth angular-velocity fix and were off by
+# 24 m / 4 mm/s, and et_start_s was 0.48 ms early).
 frame        = "central_inertial"
-position_km  = [-8552.101405666, 22904.249106065, 7434.346273165]
-velocity_kms = [-1.275631495,    -1.570732693,   3.387706378]
+position_km  = [-8552.0974878728557, 22904.24313042916, 7434.3691901143357]
+velocity_kms = [-1.275629140025325, -1.5707357519232916, 3.3877074778406513]
 
 [force_model]
 central_body     = "Earth"
