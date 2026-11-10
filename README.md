@@ -86,19 +86,29 @@ PyInstaller bundle.
   density heatmap), a 3D body-textured impact scene with body-fixed
   and ICRF triads, an optional equirectangular star-map background,
   diff-RIC plots, and Jacobi-constant conservation for CR3BP.
-- Releases ship signed-sha256 bundles for Windows / Linux x86_64 /
-  macOS arm64, plus a 14-chapter user manual PDF.
+- Releases ship bundles for Windows / Linux x86_64 / macOS arm64, each
+  with a SHA-256 checksum, plus a 17-chapter user manual PDF.
 
-**Validation.** The library underneath (`spody-core`) is checked
-against SPICE LRO POD ephemerides (sub-km position drift over the
-6-day window, Moon central body), GLONASS R03 broadcast vs MGEX SP3
-(177 m RMS on 24h, ~200 m/day linear growth over 7 days, Earth
-central body), and a scipy DOP853 differential-corrector closure on
-an L1 Lyapunov (30 microns / 1.6e-10 km/s over one synodic period,
-CR3BP). The Python-side `spopy` package re-implements the read-side
-helpers (DE440 reader, ICRF&lt;-&gt;Moon Principal Axes rotations)
-bit-identically: 104/104 checks at atol 1e-9 km/rad, &sim;1 ULP
-IEEE 754.
+**Validation.** Every benchmark against real data, with the method
+used to compute it, is in chapter 15 of the user manual (*Validation
+and benchmarks*). In short, with the bundled examples:
+
+| case | reference | result |
+|---|---|---|
+| LRO around the Moon, 6 days | mission orbit (SPICE) | 1.13 km at most at harmonics degree 80; a linear in-track drift of about 145 m/day from degree 150 on |
+| GPS G11, 7 days | IGS final orbits | 1.16 km RMS, almost all in-track |
+| GLONASS R03, 7 days | CODE MGEX final orbits | 0.80 km RMS, almost all in-track |
+| ISS with drag, 15 days | NASA/JSC ephemeris | 8&ndash;41 m in-track RMS per day after `spody calibrate` |
+
+The GNSS cases run without radiation pressure and start from a
+broadcast state, so they measure that state and the missing radiation
+pressure rather than the gravity, frame or time chain. Solid tides,
+relativity, eclipse contacts and TT integration are also cross-checked
+against Orekit, GMAT or Tudat (see the CHANGELOG for which tool and the
+numbers). The Python-side `spopy`
+package mirrors the spody-core functions the GUI needs (ephemeris,
+time chain, rotations, interpolation) bit for bit, checked against the
+C code.
 
 The remaining narrow scope keeps the "beta" label: no Mars /
 Sun-Earth central bodies, drag limited to the Earth (the per-body
@@ -305,8 +315,8 @@ Ordered roughly by what unlocks the most for users.
 - [x] Event detection: always-on multi-body IMPACT (stop) + opt-in
       ECLIPSE (`[events].eclipse_threshold`, recurring) + opt-in
       ALT_CROSSING (`[[events.altitude_crossing]]`, ascending +
-      descending, per-event refinement opt-out), all with sub-
-      microsecond Hermite + Brent localisation
+      descending, per-event refinement opt-out), all localised at the
+      integrator's accuracy by quintic Hermite dense output + Brent
 - [x] Per-object life markers (INITIAL_STATE / FINAL_STATE, always on
       like IMPACT): an object that fires no predicate at all is still
       in the log, so the object count and each object's starting
@@ -321,14 +331,14 @@ Ordered roughly by what unlocks the most for users.
       co-rotation, CelesTrak space-weather input (observed daily
       F10.7 + storm-time 3-hour Ap history), WGS-84 geodetic
       sub-satellite point; `force_model.drag` +
-      `[spacecraft.drag]` / debris `am_drag`+`Cd`, all batch
-      targets
+      `[spacecraft.drag]` / debris `am_drag`+`Cd`, the drag
+      parameters being batch targets
 - [x] Per-column batch modes: plain `target = "..."` (override) and
       inline `{ target = "...", mode = "delta" }` (additive
       perturbation); empty-string `target = ""` sentinel for metadata
       columns
 - [x] Rotating-frame batch input: `cases_frame = "ric"` or `"lvlh"`,
-      rotated at Generate-TOML by the GUI into whichever frame the
+      rotated by the GUI before every run into whichever frame the
       propagator integrates in — ICRF under `high_fidelity`, synodic
       under `cr3bp` (there the local basis is built about the nearer
       primary, not the barycentre)
@@ -418,7 +428,7 @@ Ordered roughly by what unlocks the most for users.
 - [x] **Release pipeline**: tag-triggered GitHub Actions workflow
       builds PyInstaller bundles for Win64 / Linux x86_64 / macOS
       arm64, computes sha256 sidecars, and drafts a GitHub release
-      with the bundled 14-chapter user manual PDF
+      with the bundled 17-chapter user manual PDF
 - [x] Examples: [`lro_6day/`](examples/lro_6day/),
       [`batch_demo/`](examples/batch_demo/),
       [`debris_demo/`](examples/debris_demo/),
@@ -427,6 +437,7 @@ Ordered roughly by what unlocks the most for users.
       [`gps_g11_validation/`](examples/gps_g11_validation/),
       [`glonass_r03_validation/`](examples/glonass_r03_validation/),
       [`iss_drag_calibration/`](examples/iss_drag_calibration/),
+      [`iss_montecarlo/`](examples/iss_montecarlo/),
       [`cr3bp_em_l4/`](examples/cr3bp_em_l4/) (Earth-Moon L4
       stability smoke test)
 
@@ -444,8 +455,8 @@ Ordered roughly by what unlocks the most for users.
 - [ ] PyInstaller runtime hook to drop the Python 3.9 pin in the
       Windows release path
 - [ ] Additional examples: GEO with SRP
-- [ ] Conjunction-analysis feature (deep design parked; see internal
-      brainstorm)
+- [ ] Absolute epoch in the trajectory binaries, so the Analysis-tab
+      diff can align two files that start at different instants
 
 ---
 
@@ -484,14 +495,15 @@ spody/
 │   ├── spody_gui/            # PySide6 frontend (Setup wizard, TOML editor, runner,
 │   │                         #  Uncertainty tab, Analysis tab, UTC<->ET converter, ...)
 │   ├── spody_io/             # NumPy readers for the binary outputs (.bin / SPDYEVTB)
-│   ├── spopy/                # Pure-Python DE440 + ICRF<->Moon PA rotations
+│   ├── spopy/                # Pure-Python twins of spody-core read-side functions
+│   │                         #  (DE440, time chain, EOP / frame rotations, interpolation)
 │   ├── spoviz/               # 3D astrodynamics visualization library (VTK + numpy;
 │   │                         #  Qt only in spoviz.qt — renders offscreen without it)
 │   ├── pyproject.toml
 │   ├── build_bundle.py       # PyInstaller driver (rebuilds manual + packs the dist)
 │   └── spody_gui.spec        # PyInstaller spec, one-folder mode
 ├── docs/
-│   ├── user-manual/          # 14-chapter Markdown + build_pdf.py + committed PDF
+│   ├── user-manual/          # 17-chapter Markdown + build_pdf.py + committed PDF
 │   ├── developer-guide.md    # system map, conventions, extension recipes
 │   └── RELEASES.md           # release protocol notes
 ├── CHANGELOG.md
@@ -523,8 +535,10 @@ Apache License 2.0 — see [`LICENSE`](./LICENSE).
 
 ## Acknowledgements
 
-The core of SpOdy (`spody-core`) is the work of **Valerio (@ValeEng)**. The engineering polish that turns the research codebase into a shippable, production-grade tool was done in pair-programming with **Anthropic's Claude Opus 4.7**.
+The core of SpOdy (`spody-core`) is the work of **Valerio (@ValeEng)**. The engineering polish that turns the research codebase into a shippable, production-grade tool was done in pair-programming with **Anthropic's Claude Opus 4.7 to 5.5**.
 
 A few high-level patterns are inspired by established mission-analysis
-systems, notably **GMAT** (NASA, Apache 2.0). Validation work uses SPICE
-LRO POD ephemerides as the ground-truth reference.
+systems, notably **GMAT** (NASA, Apache 2.0). The validation uses
+orbits reconstructed by independent teams as ground truth: the LRO
+mission orbit from the SPICE archive, IGS and CODE precise GNSS
+orbits, and the NASA/JSC ISS ephemeris.
