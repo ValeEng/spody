@@ -71,7 +71,11 @@ jobs:
             os-label: win64
             archive-ext: zip
             shell: pwsh
-          - os: ubuntu-latest
+          # Pinned, not ubuntu-latest: the bundle needs Python 3.9 (see
+          # "set up python"), and actions/python-versions publishes 3.9
+          # builds for Ubuntu 22.04 and 24.04 only. ubuntu-latest moved
+          # to 26.04 and the v0.5.0-beta tag failed there.
+          - os: ubuntu-24.04
             os-label: linux-x86_64
             archive-ext: tar.gz
             shell: bash
@@ -96,7 +100,7 @@ jobs:
       # windows-latest at well-known paths -- prepending the MinGW
       # bin dir to PATH is enough and dodges the broken cleanup
       # script in egor-tensin/setup-mingw on current images.
-      # Linux: gcc + cmake preinstalled on ubuntu-latest.
+      # Linux: gcc + cmake preinstalled on ubuntu-24.04.
       # macOS:  clang preinstalled (system default); cmake from the
       #          stock Homebrew install on macos-latest.
       - name: expose preinstalled MinGW (windows)

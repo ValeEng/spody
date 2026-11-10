@@ -103,7 +103,12 @@ Each OS runner runs the same steps:
    - **Windows**: MinGW-w64 gcc via the
      [setup-mingw](https://github.com/egor-tensin/setup-mingw)
      action, plus cmake via chocolatey.
-   - **Linux**: gcc + cmake are preinstalled on `ubuntu-latest`.
+   - **Linux**: gcc + cmake are preinstalled on `ubuntu-24.04`. The
+     runner is pinned, not `ubuntu-latest`: `actions/setup-python`
+     has Python 3.9 builds only for Ubuntu 22.04 and 24.04, and when
+     `ubuntu-latest` became 26.04 the Linux job of the v0.5.0-beta
+     tag failed at *set up python*. Move the pin only together with
+     the Python 3.9 pin below.
    - **macOS**: clang (system default) + cmake (preinstalled).
 3. Install a Chromium-class browser for the user manual PDF step:
    - **Windows**: Microsoft Edge (ships with the OS).
