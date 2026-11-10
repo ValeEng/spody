@@ -455,6 +455,8 @@ Ordered roughly by what unlocks the most for users.
 - [ ] PyInstaller runtime hook to drop the Python 3.9 pin in the
       Windows release path
 - [ ] Additional examples: GEO with SRP
+- [ ] Conjunction analysis (close-approach screening and collision
+      probability)
 - [ ] Absolute epoch in the trajectory binaries, so the Analysis-tab
       diff can align two files that start at different instants
 
