@@ -4,7 +4,7 @@ All notable changes to SpOdy are listed here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 match the git tags published on `github.com/ValeEng/spody/releases`.
 
-## Unreleased
+## v0.5.0-beta &mdash; 2026-11-10
 
 ### Added
 
@@ -722,9 +722,6 @@ match the git tags published on `github.com/ValeEng/spody/releases`.
   stack only reads when the contributors sit within a decade of each
   other, true at GNSS/GEO altitudes and false in LEO, where the
   harmonics take 99.99% and every other band falls below one pixel.
-
-### Changed
-
 - **Acceleration views name each third body.** The per-force
   breakdown collapsed the per-body data the binary already carries
   into a single `3rd-body` line, so it could not answer "is this the

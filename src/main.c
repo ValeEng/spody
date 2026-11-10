@@ -80,7 +80,7 @@ static double now_seconds(void) {
 #endif
 }
 
-#define SPODY_APP_VERSION "0.4.1-beta"
+#define SPODY_APP_VERSION "0.5.0-beta"
 
 /* The parameters a CR3BP propagation actually integrates -- the
  * primary separation L and the two GM values -- are resolved from the

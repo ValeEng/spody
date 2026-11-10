@@ -169,7 +169,7 @@ Smoke test:
 
 ```bash
 $ ./build/spody info
-SpOdy app  : 0.4.1-beta
+SpOdy app  : 0.5.0-beta
 spody-core : 2.0.0  (git <sha>, built <timestamp>)
 ```
 
